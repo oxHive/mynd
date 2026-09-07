@@ -114,7 +114,7 @@ constants in `config.rs`.
 
 ## Service / daemon units  — DONE
 
-- [x] `src/cli/service.rs` - systemd units `mynd` / `mynd-matrix`, launchd labels `com.oxhive.mynd` / `com.oxhive.mynd-matrix`, log `mynd.log`. `CURRENT_UNIT` / `LEGACY_UNITS` constants.
+- [x] `src/cli/service.rs` - systemd units `mynd` / `mynd-matrix`, launchd labels `dev.oxhive.mynd` / `dev.oxhive.mynd-matrix` (reverse-DNS of oxhive.dev; the old code's `com.oxhive.*` was wrong), log `mynd.log`. `CURRENT_UNIT` / `LEGACY_UNITS` / `LEGACY_LAUNCH_AGENT_LABELS` constants.
 - [x] `remove_legacy_units_{linux,macos}()` - `mynd service install` / `uninstall` tear down any `hivemind` unit/agent left by an older build (best-effort), so an upgraded machine never runs two competing services.
 - [x] `src/matrix/keyring_store.rs` - keyring service `mynd-matrix`; `load` falls back to `hivemind-matrix` and migrates it forward (re-save + delete old), so an existing Matrix login survives the upgrade. `delete` clears both.
 - [x] `src/matrix/daemon.rs` - doc comments (`mynd up` / `mynd matrix send`)
@@ -171,13 +171,14 @@ constants in `config.rs`.
 - [ ] `dashboard/src/views/AnalyticsView.vue:83` - "HiveMind configured" hint
 - [ ] `dashboard/src/style.css:258` - "the HiveMind mark" comment
 
-## Service / daemon (systemd, launchd, keyring)
+## Service / daemon (systemd, launchd, keyring)  — DONE (see "Service / daemon units" above)
 
-- [ ] systemd unit basenames `hivemind` / `hivemind-matrix` -> service file `~/.config/systemd/user/hivemind.service` (`src/cli/service.rs`)
-- [ ] launchd labels `com.oxhive.hivemind` / `com.oxhive.hivemind-matrix` -> plist `~/Library/LaunchAgents/com.oxhive.hivemind.plist`
-- [ ] logs `~/Library/Logs/hivemind.log`
-- [ ] `src/matrix/keyring_store.rs:13,19,28` - keyring service name `"hivemind-matrix"` (breaking - existing saved Matrix sessions become unreachable; migration or re-login)
-- [ ] `src/cli/service.rs` tests (`:228-248`) - assertion strings
+- [x] systemd units -> `mynd` / `mynd-matrix` (`~/.config/systemd/user/mynd.service`)
+- [x] launchd labels -> `dev.oxhive.mynd` / `dev.oxhive.mynd-matrix` (reverse-DNS of oxhive.dev)
+- [x] logs -> `~/Library/Logs/mynd.log`
+- [x] keyring service -> `mynd-matrix` with fallback-read + forward-migration of `hivemind-matrix`
+- [x] legacy-unit teardown on install/uninstall; `service.rs` tests updated + constant-pin test added
+- [ ] `README.md` service table (`~/.config/systemd/user/`, `~/Library/LaunchAgents/`, log path) - Docs pass
 
 ## Matrix bot
 

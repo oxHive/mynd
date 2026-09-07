@@ -3,9 +3,9 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 // ── service management ────────────────────────────────────────────────────────
-// Unit / agent names carry the `mynd` name; the pre-rename `hivemind` names are
-// kept only so `install` and `uninstall` can tear down units left behind by an
-// older build (see remove_legacy_units_* below).
+// Unit / agent names carry the `mynd` name (launchd labels use reverse-DNS of
+// oxhive.dev). Older names are kept only so `install` / `uninstall` can tear
+// down units left behind by a previous build (see remove_legacy_units_* below).
 
 #[cfg(target_os = "linux")]
 const CURRENT_UNIT: &str = "mynd";
@@ -286,17 +286,23 @@ mod matrix_service_tests {
 
 // ── macOS / launchd ───────────────────────────────────────────────────────────
 
+// Reverse-DNS of the domain oxHive controls (oxhive.dev).
 #[cfg(target_os = "macos")]
-const LAUNCH_AGENT_LABEL: &str = "com.oxhive.mynd";
+const LAUNCH_AGENT_LABEL: &str = "dev.oxhive.mynd";
 
 #[cfg(target_os = "macos")]
-const MATRIX_LAUNCH_AGENT_LABEL: &str = "com.oxhive.mynd-matrix";
+const MATRIX_LAUNCH_AGENT_LABEL: &str = "dev.oxhive.mynd-matrix";
 
-/// Pre-rename launchd labels, torn down on install/uninstall so an upgraded
-/// machine does not keep an orphaned `hivemind` LaunchAgent loaded.
+/// Labels written by older builds, torn down on install/uninstall so an
+/// upgraded machine does not keep an orphaned LaunchAgent loaded. Covers the
+/// pre-rename name and the earlier `com.oxhive.*` prefix.
 #[cfg(target_os = "macos")]
-const LEGACY_LAUNCH_AGENT_LABELS: [&str; 2] =
-    ["com.oxhive.hivemind", "com.oxhive.hivemind-matrix"];
+const LEGACY_LAUNCH_AGENT_LABELS: [&str; 4] = [
+    "com.oxhive.hivemind",
+    "com.oxhive.hivemind-matrix",
+    "com.oxhive.mynd",
+    "com.oxhive.mynd-matrix",
+];
 
 #[cfg(target_os = "macos")]
 fn launch_agent_path(label: &str) -> PathBuf {
