@@ -55,9 +55,7 @@ pub fn cmd_matrix_login() -> Result<()> {
                 "Logged in as {} (device {}).",
                 response.user_id, response.device_id
             );
-            println!(
-                "Session saved to the OS keyring. Run `mynd matrix run` to start the bot."
-            );
+            println!("Session saved to the OS keyring. Run `mynd matrix run` to start the bot.");
             anyhow::Ok(())
         })
 }
@@ -82,7 +80,11 @@ pub fn cmd_matrix_status() -> Result<()> {
                         println!("rooms:");
                         for room in &reply.rooms {
                             let label = room.alias.as_deref().unwrap_or(&room.room_id);
-                            let session = if room.active_session { "active session" } else { "no active session" };
+                            let session = if room.active_session {
+                                "active session"
+                            } else {
+                                "no active session"
+                            };
                             println!("  {label}  ({session})");
                         }
                     }
@@ -94,7 +96,9 @@ pub fn cmd_matrix_status() -> Result<()> {
                     Ok(())
                 }
                 Err(crate::matrix::status::QueryError::Protocol(msg)) => {
-                    println!("mynd matrix appears to be running but returned invalid status data: {msg}");
+                    println!(
+                        "mynd matrix appears to be running but returned invalid status data: {msg}"
+                    );
                     Ok(())
                 }
             }

@@ -97,10 +97,7 @@ impl GitHubVersionSource {
         let resp = self
             .client
             .get(&self.api_url)
-            .header(
-                "User-Agent",
-                concat!("mynd/", env!("CARGO_PKG_VERSION")),
-            )
+            .header("User-Agent", concat!("mynd/", env!("CARGO_PKG_VERSION")))
             .header("Accept", "application/vnd.github+json")
             .send()
             .await

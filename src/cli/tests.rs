@@ -278,7 +278,9 @@ fn migrate_global_claude_block_preserves_user_content_around_it() {
     let path = dir.path().join("CLAUDE.md");
     fs::write(
         &path,
-        format!("# My rules\n\nAlways write tests first.\n\n{SAMPLE_LEGACY_BLOCK}\n# After\n\nkeep me\n"),
+        format!(
+            "# My rules\n\nAlways write tests first.\n\n{SAMPLE_LEGACY_BLOCK}\n# After\n\nkeep me\n"
+        ),
     )
     .unwrap();
 
@@ -385,10 +387,7 @@ fn scaffold_preserves_existing_user_claude_md() {
         gc.contains("Always write tests first."),
         "user content must be preserved"
     );
-    assert!(
-        gc.contains("# Mynd Memory System"),
-        "hook block appended"
-    );
+    assert!(gc.contains("# Mynd Memory System"), "hook block appended");
 }
 
 #[tokio::test]
@@ -512,10 +511,7 @@ async fn render_status_without_config_reports_missing() {
     )
     .await
     .unwrap();
-    assert!(
-        out.contains("mynd init"),
-        "suggests init when no config"
-    );
+    assert!(out.contains("mynd init"), "suggests init when no config");
 }
 
 #[tokio::test]
@@ -908,12 +904,7 @@ fn append_block_if_absent_no_trailing_newline_in_existing_file() {
 fn upsert_json_mcp_creates_new_file_with_mcp_servers_key() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
-    upsert_json_mcp(
-        &path,
-        "mynd",
-        serde_json::json!({"command": "mynd"}),
-    )
-    .unwrap();
+    upsert_json_mcp(&path, "mynd", serde_json::json!({"command": "mynd"})).unwrap();
     let raw = fs::read_to_string(&path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(val["mcpServers"]["mynd"]["command"] == "mynd");
@@ -943,12 +934,7 @@ fn upsert_json_mcp_updates_existing_entry() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     fs::write(&path, r#"{"mcpServers":{"other":{"command":"other"}}}"#).unwrap();
-    upsert_json_mcp(
-        &path,
-        "mynd",
-        serde_json::json!({"command": "mynd"}),
-    )
-    .unwrap();
+    upsert_json_mcp(&path, "mynd", serde_json::json!({"command": "mynd"})).unwrap();
     let raw = fs::read_to_string(&path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(
@@ -962,12 +948,7 @@ fn upsert_json_mcp_updates_existing_entry() {
 fn upsert_json_mcp_creates_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nested").join("deep").join("mcp.json");
-    upsert_json_mcp(
-        &path,
-        "mynd",
-        serde_json::json!({"command": "mynd"}),
-    )
-    .unwrap();
+    upsert_json_mcp(&path, "mynd", serde_json::json!({"command": "mynd"})).unwrap();
     assert!(path.exists());
 }
 
@@ -976,12 +957,7 @@ fn upsert_json_mcp_detects_mcp_key_from_existing_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("opencode.json");
     fs::write(&path, r#"{"mcp":{"existing":{"type":"local"}}}"#).unwrap();
-    upsert_json_mcp(
-        &path,
-        "mynd",
-        serde_json::json!({"command": "mynd"}),
-    )
-    .unwrap();
+    upsert_json_mcp(&path, "mynd", serde_json::json!({"command": "mynd"})).unwrap();
     let raw = fs::read_to_string(&path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(val["mcp"]["mynd"]["command"] == "mynd");
@@ -1000,16 +976,22 @@ fn upsert_json_mcp_drops_a_stale_hivemind_entry_when_writing_mynd() {
 
     upsert_json_mcp(&path, "mynd", serde_json::json!({"command": "mynd"})).unwrap();
 
-    let val: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     assert!(val["mcpServers"]["mynd"]["command"] == "mynd");
-    assert!(val["mcpServers"]["other"]["command"] == "o", "unrelated entry kept");
-    assert!(val["mcpServers"].get("hivemind").is_none(), "stale entry dropped");
+    assert!(
+        val["mcpServers"]["other"]["command"] == "o",
+        "unrelated entry kept"
+    );
+    assert!(
+        val["mcpServers"].get("hivemind").is_none(),
+        "stale entry dropped"
+    );
 }
 
 #[test]
 fn strip_toml_table_removes_only_the_named_table() {
-    let doc = "[a]\nx = 1\n\n[mcp_servers.hivemind]\ncommand = \"hivemind\"\nargs = []\n\n[b]\ny = 2\n";
+    let doc =
+        "[a]\nx = 1\n\n[mcp_servers.hivemind]\ncommand = \"hivemind\"\nargs = []\n\n[b]\ny = 2\n";
     let out = strip_toml_table(doc, "[mcp_servers.hivemind]");
     assert!(!out.contains("mcp_servers.hivemind"));
     assert!(!out.contains("command = \"hivemind\""));

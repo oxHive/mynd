@@ -34,8 +34,7 @@ pub fn relocate_dir(old: &Path, new: &Path) -> Result<Outcome> {
         Err(_) => {
             copy_dir_all(old, new)
                 .with_context(|| format!("copying {} to {}", old.display(), new.display()))?;
-            std::fs::remove_dir_all(old)
-                .with_context(|| format!("removing {}", old.display()))?;
+            std::fs::remove_dir_all(old).with_context(|| format!("removing {}", old.display()))?;
             Ok(Outcome::Migrated)
         }
     }
@@ -51,8 +50,7 @@ pub fn relocate_legacy_db_file(legacy_db: &Path, new_dir: &Path) -> Result<Outco
     if !legacy_db.is_file() {
         return Ok(Outcome::NoLegacy);
     }
-    std::fs::create_dir_all(new_dir)
-        .with_context(|| format!("creating {}", new_dir.display()))?;
+    std::fs::create_dir_all(new_dir).with_context(|| format!("creating {}", new_dir.display()))?;
     let dest = new_dir.join("memories.db");
     if std::fs::rename(legacy_db, &dest).is_err() {
         std::fs::copy(legacy_db, &dest)
@@ -98,7 +96,10 @@ pub fn run_startup_migration() {
     // users who upgrade without re-running `mynd init`.
     let global_claude_md = crate::cli::home_dir().join(".claude").join("CLAUDE.md");
     match crate::cli::migrate_global_claude_block(&global_claude_md) {
-        Ok(true) => eprintln!("mynd: updated the memory block in {}", global_claude_md.display()),
+        Ok(true) => eprintln!(
+            "mynd: updated the memory block in {}",
+            global_claude_md.display()
+        ),
         Ok(false) => {}
         Err(e) => eprintln!("mynd: ~/.claude/CLAUDE.md update skipped ({e:#})"),
     }
@@ -155,14 +156,16 @@ mod tests {
 
         assert_eq!(outcome, Outcome::AlreadyPresent);
         assert!(old.exists());
-        assert_eq!(fs::read_to_string(new.join("config.toml")).unwrap(), "current");
+        assert_eq!(
+            fs::read_to_string(new.join("config.toml")).unwrap(),
+            "current"
+        );
     }
 
     #[test]
     fn reports_nothing_to_do_when_no_legacy_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let outcome =
-            relocate_dir(&tmp.path().join("hivemind"), &tmp.path().join("mynd")).unwrap();
+        let outcome = relocate_dir(&tmp.path().join("hivemind"), &tmp.path().join("mynd")).unwrap();
         assert_eq!(outcome, Outcome::NoLegacy);
     }
 

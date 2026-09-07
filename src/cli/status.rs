@@ -493,11 +493,7 @@ pub fn format_status_text(data: &StatusData) -> String {
     match &data.matrix {
         MatrixStatusLine::NotConfigured => {}
         MatrixStatusLine::NotRunning => {
-            writeln!(
-                out,
-                "Matrix:     configured, not running (mynd matrix run)"
-            )
-            .unwrap();
+            writeln!(out, "Matrix:     configured, not running (mynd matrix run)").unwrap();
         }
         MatrixStatusLine::Running {
             user_id,

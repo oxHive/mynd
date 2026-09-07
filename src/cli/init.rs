@@ -129,8 +129,7 @@ pub(crate) fn detect_registered_clients(home: &Path) -> Vec<&'static str> {
     let codex_cfg = home.join(".codex").join("config.toml");
     if codex_cfg.exists()
         && let Ok(contents) = std::fs::read_to_string(&codex_cfg)
-        && (contents.contains("[mcp_servers.mynd]")
-            || contents.contains("[mcp_servers.hivemind]"))
+        && (contents.contains("[mcp_servers.mynd]") || contents.contains("[mcp_servers.hivemind]"))
     {
         found.push("codex");
     }

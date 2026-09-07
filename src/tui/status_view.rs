@@ -287,9 +287,7 @@ fn draw(
     }
     if data.project.is_none() {
         lines.push(Line::from(""));
-        lines.push(Line::from(
-            "No .mynd.toml found in this directory tree.",
-        ));
+        lines.push(Line::from("No .mynd.toml found in this directory tree."));
     }
 
     // Error takes priority over an info message when both are somehow set;

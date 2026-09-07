@@ -207,11 +207,7 @@ pub async fn send_direct_message(
     Ok(())
 }
 
-pub async fn run(
-    settings: MatrixSettings,
-    agent: AgentSettings,
-    mynd_bin: String,
-) -> Result<()> {
+pub async fn run(settings: MatrixSettings, agent: AgentSettings, mynd_bin: String) -> Result<()> {
     use matrix_sdk::config::SyncSettings as MatrixSyncSettings;
     use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
     use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent};
