@@ -67,7 +67,7 @@ fn up_plain_flag_parses() {
     }
 }
 
-/// Default server settings, built the same way `hivemind status` does when
+/// Default server settings, built the same way `mynd status` does when
 /// no global config exists.
 fn default_settings() -> crate::config::ServerSettings {
     crate::config::load_server_settings(Path::new("/nonexistent/mynd-global.toml")).unwrap()

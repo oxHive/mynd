@@ -70,7 +70,7 @@ pub fn app_router(
 }
 
 pub fn dashboard_router(api_url: &str) -> Router {
-    let config_js = format!("window.HIVEMIND_API = {};\n", serde_json::json!(api_url));
+    let config_js = format!("window.MYND_API = {};\n", serde_json::json!(api_url));
     Router::new()
         .route(
             "/config.js",
@@ -566,7 +566,7 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             std::str::from_utf8(&body).unwrap().trim(),
-            "window.HIVEMIND_API = \"http://127.0.0.1:3456\";"
+            "window.MYND_API = \"http://127.0.0.1:3456\";"
         );
     }
 }

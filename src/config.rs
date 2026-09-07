@@ -959,23 +959,23 @@ mod tests {
             "config.toml",
             "[matrix]\n\
              homeserver_url=\"https://matrix.org\"\n\
-             user_id=\"@hivemind-bot:matrix.org\"\n\
+             user_id=\"@mynd-bot:matrix.org\"\n\
              allowed_users=[\"@you:matrix.org\"]\n\
              \n\
              [[matrix.rooms]]\n\
              room_id=\"!abc123:matrix.org\"\n\
-             alias=\"hivemind-project\"\n\
+             alias=\"mynd-project\"\n\
              base_tags=[\"project:hivemind\"]\n",
         );
         let s = load_matrix_settings(&tmp.path().join("config.toml"))
             .unwrap()
             .expect("matrix settings should be present");
         assert_eq!(s.homeserver_url, "https://matrix.org");
-        assert_eq!(s.user_id, "@hivemind-bot:matrix.org");
+        assert_eq!(s.user_id, "@mynd-bot:matrix.org");
         assert_eq!(s.allowed_users, vec!["@you:matrix.org".to_string()]);
         assert_eq!(s.rooms.len(), 1);
         assert_eq!(s.rooms[0].room_id, "!abc123:matrix.org");
-        assert_eq!(s.rooms[0].alias.as_deref(), Some("hivemind-project"));
+        assert_eq!(s.rooms[0].alias.as_deref(), Some("mynd-project"));
         assert_eq!(s.rooms[0].base_tags, vec!["project:hivemind".to_string()]);
         assert_eq!(s.session_ttl_seconds, DEFAULT_SESSION_TTL_SECONDS);
     }

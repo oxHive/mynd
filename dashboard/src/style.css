@@ -255,7 +255,7 @@ button:focus-visible {
   border-radius: 4px;
 }
 
-/* Hexagon cell — the HiveMind mark, shared by legends and badges */
+/* Hexagon cell — the Mynd mark, shared by legends and badges */
 .hm-hex {
   display: inline-block;
   clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);

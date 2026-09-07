@@ -74,7 +74,7 @@ mod tests {
             last_sync_at: Some("2026-07-18T10:03:00Z".to_string()),
             rooms: vec![RoomStatus {
                 room_id: "!abc:matrix.org".to_string(),
-                alias: Some("hivemind-project".to_string()),
+                alias: Some("mynd-project".to_string()),
                 active_session: true,
                 last_active_at: Some("2026-07-18T10:02:40Z".to_string()),
             }],

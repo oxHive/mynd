@@ -81,7 +81,7 @@ const conflictDot = computed(() => (conflictCount.value > 0 ? 'amber' : 'green')
             fill="none" stroke="var(--hm-accent)" stroke-width="1.2" />
           <circle cx="8" cy="8" r="2" fill="var(--hm-accent)" />
         </svg>
-        <div style="font-size:19px; font-weight:600; letter-spacing:-0.01em; color:var(--hm-text-primary); line-height:1">HiveMind</div>
+        <div style="font-size:19px; font-weight:600; letter-spacing:-0.01em; color:var(--hm-text-primary); line-height:1">Mynd</div>
       </div>
       <span class="font-mono self-end" style="font-size:10px; color:var(--hm-text-tertiary); line-height:1">
         v{{ ui.serverInfo?.version || '—' }}

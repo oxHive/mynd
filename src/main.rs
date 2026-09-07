@@ -174,9 +174,9 @@ async fn run_matrix(debug: bool) -> Result<()> {
             anyhow::anyhow!("no [matrix] config found — run `mynd matrix login` first")
         })?;
     let server_settings = config::load_server_settings(&config::global_config_path())?;
-    let hivemind_bin = std::env::current_exe()?.to_string_lossy().into_owned();
+    let mynd_bin = std::env::current_exe()?.to_string_lossy().into_owned();
     tracing::debug!("starting matrix daemon");
-    oxmynd::matrix::daemon::run(settings, server_settings.agent, hivemind_bin).await
+    oxmynd::matrix::daemon::run(settings, server_settings.agent, mynd_bin).await
 }
 
 #[tokio::main]

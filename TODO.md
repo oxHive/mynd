@@ -24,10 +24,12 @@ listed last and are optional.
 
 ## Progress
 
-- **DONE:** Crate / binary / packaging; CLI command surface; Config files & paths;
-  Environment variables; Service / daemon units; MCP tool + server integration;
-  Claude plugin; Claude skills; OpenCode plugin (see sections below). `cargo build`
-  / `cargo test` / `cargo clippy` green.
+- **All sections DONE.** Crate / binary / packaging; CLI; config files & paths;
+  env vars; service / daemon units; MCP tool + server; Claude plugin; Claude
+  skills; OpenCode plugin; dashboard; Matrix bot; CI; just recipes; docs.
+  `cargo build` / `cargo test` / `cargo clippy` green; `dashboard bun run build`
+  and `plugins/opencode bun run build` green. Only `docs/superpowers/**`
+  historical records left untouched by design.
 - The earlier `<mynd-context>` / `<hivemind-context>` interim mismatch is **resolved**:
   the global CLAUDE block now matches the emitter, and `migrate_global_claude_block`
   rewrites the pre-rename block in `~/.claude/CLAUDE.md` in place (via `mynd init`
@@ -145,24 +147,56 @@ constants in `config.rs`.
 - [ ] `plugins/opencode/scripts/resolve-skills.ts` - check for name refs
 - [ ] `README.md:140,146-150` - `@oxhive/opencode-hivemind`
 
-## Dashboard (`dashboard/`)
+## Dashboard (`dashboard/`)  — DONE
 
-- [ ] `dashboard/package.json` + `dashboard/bun.lock` - `name: "hivemind-dashboard"`
-- [ ] `dashboard/index.html:5,7` - `<title>HiveMind</title>`, `window.HIVEMIND_API=undefined` onerror fallback
-- [ ] `dashboard/src/App.vue:36,103,110` - `window.HIVEMIND_API`, "Connecting to HiveMind server", "Run `hivemind up`"
-- [ ] `dashboard/src/api/client.js:1` - `window.HIVEMIND_API`
-- [ ] `src/http.rs:73,569` - server emits `window.HIVEMIND_API = ...` in `config.js`
-- [ ] localStorage keys (breaking - users lose UI state, consider migration):
-  - `dashboard/src/stores/theme.js:4` - `hivemind.theme`
-  - `dashboard/src/stores/fontScale.js:4` - `hivemind.fontScale`
-  - `dashboard/src/stores/memories.js:5` - `hivemind.memories.drafts`
-  - `dashboard/src/components/graph/GraphCanvas.vue:22,39` - `hivemind.graph.camera`, `hivemind.graph.pinned`
-- [ ] `dashboard/src/components/settings/DataSection.vue:16,52` - export filename `hivemind-export-*.json`, "HiveMind export" text
-- [ ] `dashboard/src/components/settings/TagsSection.vue:20,124` - "global hivemind config" prose
-- [ ] `dashboard/src/stores/tagSettings.js:8,14` - "built into HiveMind" / "global hivemind config" comments
-- [ ] `dashboard/src/components/sidebar/AppSidebar.vue:84` - "HiveMind" brand text
-- [ ] `dashboard/src/views/AnalyticsView.vue:83` - "HiveMind configured" hint
-- [ ] `dashboard/src/style.css:258` - "the HiveMind mark" comment
+- [x] `dashboard/package.json` + `dashboard/bun.lock` - `mynd-dashboard`
+- [x] `dashboard/index.html` - `<title>Mynd</title>`, `window.MYND_API=undefined` fallback
+- [x] `dashboard/src/App.vue` - `window.MYND_API`, "Connecting to Mynd server", "Run `mynd up`"
+- [x] `dashboard/src/api/client.js` - `window.MYND_API`
+- [x] `src/http.rs` - server emits `window.MYND_API = ...` in `config.js` + its test
+- [x] localStorage keys -> `mynd.*`, with `dashboard/src/lib/localStore.js` `readStored()`
+  helper that adopts (and clears) a `hivemind.*` value on first read so theme /
+  fontScale / drafts / graph camera & pins survive the rename. Applied in
+  `stores/theme.js`, `stores/fontScale.js`, `stores/memories.js`,
+  `components/graph/GraphCanvas.vue`.
+- [x] `DataSection.vue` export filename `mynd-export-*.json` + text
+- [x] `TagsSection.vue`, `tagSettings.js`, `AppSidebar.vue`, `AnalyticsView.vue`, `style.css` - prose/brand
+- [x] `dashboard bun run build` passes
+
+## Matrix bot  — DONE
+
+- [x] `src/matrix/agent.rs` - `mcpServers` key `mynd` + `mcp__mynd__*` (pass 4); `mynd_bin` param; opencode agent profile `mynd-bot`; test path literals `/usr/local/bin/mynd`
+- [x] `src/suggest_session.rs` - `mynd` key + `mcp__mynd__*` (pass 4); opencode agent `mynd-suggest`; comment
+- [x] `src/matrix/daemon.rs` - `mynd_bin` param, user-facing strings ("mynd matrix failed to store", "mynd matrix hit an error", "run `mynd matrix login` first")
+- [x] `src/matrix/store_direct.rs` - "Spawns `mynd`", spawn/connect error strings
+- [x] `src/main.rs` - `mynd_bin`, "run `mynd matrix login` first" (pass 1)
+- [x] `README.md` - opencode `mynd-bot` profile, `~/.config/mynd/config.toml`, `@mynd-bot:matrix.org`, `alias = "mynd-project"`
+- [x] example tags `project:hivemind` -> `project:mynd` in `matrix/rooms.rs`, `matrix/daemon.rs`, `matrix/status.rs`
+- NOTE keyring `LEGACY_SERVICE = "hivemind-matrix"` kept for the login-survives-upgrade fallback (Service pass)
+
+## CI / workflows  — DONE
+
+- [x] `.github/workflows/publish.yml` - `package-name: oxmynd`, `binary-name: mynd`
+- [x] `cliff.toml` - changelog commit link `github.com/oxHive/mynd`
+- [x] `README.md` badge URLs - CI / codecov / crates / release -> `oxhive/mynd` / `oxmynd`
+- NOTE other workflows (`pull-request.yml` etc) reference no repo slug; GitHub repo already renamed to `oxHive/mynd`
+
+## just recipes  — DONE (pass 2)
+
+- [x] `.justfile` - `mynd mcp install {{client}}`
+- [x] `recipes/testenv.just` - paths + `mynd up` / `mynd status`
+
+## Docs  — DONE
+
+- [x] `README.md` - full pass: install (`cargo binstall oxmynd`), badges, every `mynd <cmd>`, `.mynd.toml*`, `~/.config/mynd`, `$XDG_*`, `MYND_DB_PATH`, `~/.local/share/mynd`, plugin install (`mynd@mynd`, `@oxhive/opencode-mynd`), detection table (`"mynd"`), service paths (`mynd.service`, `dev.oxhive.mynd.plist`, `mynd.log`), FAQ, `mynd_session_start`, `<mynd-context>`, `[mcp_servers.mynd]`. Kept: `~/.hivemind/memories.db` (pre-0.3 legacy path, 3 refs).
+- [x] `PRODUCT.md` - "Mynd" product name
+- [x] `docs/INTEGRATING.md` - full pass
+- [x] `docs/api/bruno.json` - "Mynd API"
+- [x] `docs/api/settings/save-sync-settings.bru` - done in pass 2
+
+### Historical (left as-is)
+
+- [ ] `docs/superpowers/**` plans + specs - historical records; filenames + internal `HiveMind`/`oxhivemind`/`.hivemind.toml` left untouched by design.
 
 ## Service / daemon (systemd, launchd, keyring)  — DONE (see "Service / daemon units" above)
 
