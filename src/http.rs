@@ -1,7 +1,7 @@
 use crate::{
     api,
     config::{AgentSettings, ServerSettings, SyncSettings},
-    server::HiveMind,
+    server::Mynd,
     store::SqliteStore,
     suggest_session::SuggestSessionManager,
     update::SharedUpdateState,
@@ -44,11 +44,11 @@ pub fn app_router(
             let trigger = notify_on_store.clone();
             let events_tx = events_tx.clone();
             move || {
-                let hivemind = match &trigger {
-                    Some(t) => HiveMind::with_sync(store.clone(), t.clone()),
-                    None => HiveMind::with_store(store.clone()),
+                let mynd = match &trigger {
+                    Some(t) => Mynd::with_sync(store.clone(), t.clone()),
+                    None => Mynd::with_store(store.clone()),
                 };
-                Ok(hivemind.with_events(events_tx.clone()))
+                Ok(mynd.with_events(events_tx.clone()))
             }
         },
         Arc::new(LocalSessionManager::default()),
@@ -185,7 +185,7 @@ async fn bind_with_retry(host: &str, port: u16) -> Result<tokio::net::TcpListene
     }
 }
 
-/// Records this process's PID so `hivemind status`'s `k` shortcut (a
+/// Records this process's PID so `mynd status`'s `k` shortcut (a
 /// separate process, with no other way to identify the server) can find and
 /// signal it.
 fn write_pidfile() -> Result<PidGuard> {
@@ -333,7 +333,7 @@ pub async fn run_up(
     Ok(())
 }
 
-/// Re-execs this binary as `hivemind up [--headless] --plain`, detached from
+/// Re-execs this binary as `mynd up [--headless] --plain`, detached from
 /// the controlling terminal (new session via `setsid`, stdio redirected to a
 /// log file), and does not wait for it. Used by the `up` TUI's `d` (detach)
 /// key: the caller aborts its own listeners and exits right after this

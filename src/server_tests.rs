@@ -3,7 +3,7 @@ use crate::{config::SyncSettings, db, store::SqliteStore};
 use rmcp::model::ContentBlock;
 use tempfile::TempDir;
 
-async fn test_hivemind() -> (HiveMind, TempDir) {
+async fn test_hivemind() -> (Mynd, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let sync = SyncSettings::default();
@@ -12,10 +12,10 @@ async fn test_hivemind() -> (HiveMind, TempDir) {
         .unwrap();
     let conn = database.connect().unwrap();
     db::run_migrations(&conn).await.unwrap();
-    (HiveMind::new(SqliteStore::new(conn)), dir)
+    (Mynd::new(SqliteStore::new(conn)), dir)
 }
 
-async fn seed_two(hm: &HiveMind) -> (String, String) {
+async fn seed_two(hm: &Mynd) -> (String, String) {
     for (t, c) in [("alpha", "a"), ("beta", "b")] {
         hm.do_memory_store(MemoryStoreInput {
             title: t.to_string(),
@@ -157,7 +157,7 @@ async fn get_info_advertises_name_and_tools_capability() {
     use rmcp::ServerHandler;
     let (hm, _dir) = test_hivemind().await;
     let info = hm.get_info();
-    assert_eq!(info.server_info.name, "hivemind");
+    assert_eq!(info.server_info.name, "mynd");
     assert!(
         info.capabilities.tools.is_some(),
         "tools capability must be advertised"
@@ -177,7 +177,7 @@ async fn get_info_advertises_prompts_capability() {
 
 #[test]
 fn list_prompts_returns_memory_list() {
-    let prompts = HiveMind::prompt_router().list_all();
+    let prompts = Mynd::prompt_router().list_all();
     let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
     assert!(
         names.contains(&"memory-list"),
@@ -813,7 +813,7 @@ async fn with_store_constructor() {
     let conn = database.connect().unwrap();
     db::run_migrations(&conn).await.unwrap();
     let store = Arc::new(SqliteStore::new(conn));
-    let hm = HiveMind::with_store(Arc::clone(&store));
+    let hm = Mynd::with_store(Arc::clone(&store));
     assert!(hm.sync_trigger.is_none());
 }
 
@@ -829,7 +829,7 @@ async fn with_sync_constructor_stores_trigger() {
     db::run_migrations(&conn).await.unwrap();
     let store = Arc::new(SqliteStore::new(conn));
     let trigger = Arc::new(tokio::sync::Notify::new());
-    let hm = HiveMind::with_sync(store, trigger);
+    let hm = Mynd::with_sync(store, trigger);
     assert!(hm.sync_trigger.is_some());
 }
 
@@ -845,7 +845,7 @@ async fn memory_store_notifies_sync_trigger() {
     db::run_migrations(&conn).await.unwrap();
     let store = Arc::new(SqliteStore::new(conn));
     let trigger = Arc::new(tokio::sync::Notify::new());
-    let hm = HiveMind::with_sync(store, Arc::clone(&trigger));
+    let hm = Mynd::with_sync(store, Arc::clone(&trigger));
 
     let notified = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let notified2 = Arc::clone(&notified);
@@ -958,7 +958,7 @@ async fn memory_update_preserves_tags_when_not_specified() {
 
 #[test]
 fn all_seven_prompts_are_registered() {
-    let prompts = HiveMind::prompt_router().list_all();
+    let prompts = Mynd::prompt_router().list_all();
     let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
     let expected = [
         "memory-list",

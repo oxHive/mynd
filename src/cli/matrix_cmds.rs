@@ -15,7 +15,7 @@ pub fn cmd_matrix_login() -> Result<()> {
         homeserver_url.to_string()
     };
 
-    print!("User ID (e.g. @hivemind-bot:matrix.org): ");
+    print!("User ID (e.g. @mynd-bot:matrix.org): ");
     std::io::stdout().flush()?;
     let mut user_id = String::new();
     std::io::stdin().read_line(&mut user_id)?;
@@ -35,7 +35,7 @@ pub fn cmd_matrix_login() -> Result<()> {
             let response = client
                 .matrix_auth()
                 .login_username(&user_id, &password)
-                .initial_device_display_name("HiveMind bot")
+                .initial_device_display_name("Mynd bot")
                 .await?;
             drop(password);
             let session = client
@@ -56,7 +56,7 @@ pub fn cmd_matrix_login() -> Result<()> {
                 response.user_id, response.device_id
             );
             println!(
-                "Session saved to the OS keyring. Run `hivemind matrix run` to start the bot."
+                "Session saved to the OS keyring. Run `mynd matrix run` to start the bot."
             );
             anyhow::Ok(())
         })
@@ -89,12 +89,12 @@ pub fn cmd_matrix_status() -> Result<()> {
                     Ok(())
                 }
                 Err(crate::matrix::status::QueryError::NotRunning) => {
-                    println!("hivemind matrix is not running.");
-                    println!("Start it with: hivemind matrix run");
+                    println!("mynd matrix is not running.");
+                    println!("Start it with: mynd matrix run");
                     Ok(())
                 }
                 Err(crate::matrix::status::QueryError::Protocol(msg)) => {
-                    println!("hivemind matrix appears to be running but returned invalid status data: {msg}");
+                    println!("mynd matrix appears to be running but returned invalid status data: {msg}");
                     Ok(())
                 }
             }

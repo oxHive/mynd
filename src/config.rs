@@ -17,7 +17,7 @@ pub struct Recall {
 }
 
 #[derive(Debug, Clone)]
-pub struct HiveMindConfig {
+pub struct MyndConfig {
     pub project_name: String,
     pub max_tokens: usize,
     pub recalls: Vec<Recall>,
@@ -188,7 +188,7 @@ impl Default for UpdateSettings {
     }
 }
 
-/// Which headless-agent CLI `hivemind suggest` / the Matrix bot shell out to.
+/// Which headless-agent CLI `mynd suggest` / the Matrix bot shell out to.
 /// Explicit rather than sniffed from `command`'s file name, so a wrapper
 /// script or a renamed binary doesn't silently change which flags get used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,7 +319,7 @@ pub fn global_config_path() -> PathBuf {
     global_config_dir().join("config.toml")
 }
 
-pub fn load_config(project_path: &Path) -> Result<HiveMindConfig> {
+pub fn load_config(project_path: &Path) -> Result<MyndConfig> {
     let root = discover_project_root(project_path).ok_or_else(|| {
         anyhow::anyhow!(
             "no .hivemind.toml found at or above {}",
@@ -329,7 +329,7 @@ pub fn load_config(project_path: &Path) -> Result<HiveMindConfig> {
     load_config_with_global(&root, &global_config_path())
 }
 
-pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Result<HiveMindConfig> {
+pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Result<MyndConfig> {
     let global_default = if global_path.is_file() {
         let raw: RawGlobal = toml::from_str(&std::fs::read_to_string(global_path)?)
             .with_context(|| format!("parsing {}", global_path.display()))?;
@@ -387,7 +387,7 @@ pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Resul
         raw_project.project.name
     };
 
-    Ok(HiveMindConfig {
+    Ok(MyndConfig {
         project_name,
         max_tokens,
         recalls,
@@ -522,7 +522,7 @@ pub fn load_matrix_settings(global_path: &Path) -> Result<Option<MatrixSettings>
 
 /// Writes `homeserver_url`/`user_id` into the global config's `[matrix]` table,
 /// preserving every other section and any existing `allowed_users`/`[[matrix.rooms]]`.
-/// Used by `hivemind matrix login` after a successful login.
+/// Used by `mynd matrix login` after a successful login.
 pub fn write_matrix_login(global_path: &Path, homeserver_url: &str, user_id: &str) -> Result<()> {
     let mut doc: toml::Value = if global_path.is_file() {
         toml::from_str(&std::fs::read_to_string(global_path)?)

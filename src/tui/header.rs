@@ -34,7 +34,7 @@ pub fn render_header(data: &StatusData, no_color: bool, area: Rect, buf: &mut Bu
         .padding(Padding::new(2, 2, 0, 0))
         .title(Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!("{HEX_MARK} HiveMind"), brand_style),
+            Span::styled(format!("{HEX_MARK} Mynd"), brand_style),
             Span::styled(format!(" v{}", data.version), dim(no_color)),
             Span::raw(" "),
         ]));
@@ -120,7 +120,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(content.contains("HiveMind"));
+        assert!(content.contains("Mynd"));
         assert!(content.contains("oxhive-hivemind"));
         assert!(content.contains("128"));
     }
@@ -139,7 +139,7 @@ mod tests {
         let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
 
         // Text content is unchanged regardless of no_color.
-        assert!(content.contains("HiveMind"));
+        assert!(content.contains("Mynd"));
         assert!(content.contains("oxhive-hivemind"));
         assert!(content.contains("128"));
 

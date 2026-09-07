@@ -1,5 +1,5 @@
 use crate::budget::count_entry_tokens;
-use crate::config::{HiveMindConfig, RecallSource};
+use crate::config::{MyndConfig, RecallSource};
 use crate::store::{MemoryEntry, SqliteStore};
 use anyhow::Result;
 
@@ -78,7 +78,7 @@ impl SessionStartResult {
 /// On over-budget, the entry is skipped and the loop CONTINUES — a later,
 /// smaller entry may still fit. Recalls are resolved title -> FTS.
 pub async fn execute_session_start(
-    config: &HiveMindConfig,
+    config: &MyndConfig,
     store: &SqliteStore,
 ) -> Result<SessionStartResult> {
     let max_tokens = config.max_tokens;
@@ -165,7 +165,7 @@ pub async fn execute_session_start(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{HiveMindConfig, Recall, RecallSource};
+    use crate::config::{MyndConfig, Recall, RecallSource};
     use crate::{db, store::SqliteStore};
     use tempfile::TempDir;
 
@@ -196,8 +196,8 @@ mod tests {
         (store, dir)
     }
 
-    fn config(max: usize, recalls: Vec<&str>) -> HiveMindConfig {
-        HiveMindConfig {
+    fn config(max: usize, recalls: Vec<&str>) -> MyndConfig {
+        MyndConfig {
             project_name: "test-proj".to_string(),
             max_tokens: max,
             recalls: recalls

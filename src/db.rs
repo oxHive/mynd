@@ -23,13 +23,13 @@ pub fn legacy_db_path() -> std::path::PathBuf {
         .join("memories.db")
 }
 
-/// PID file written by `hivemind up` while its server process is running, so
-/// `hivemind status` can find and signal it: $XDG_DATA_HOME/hivemind/hivemind.pid
+/// PID file written by `mynd up` while its server process is running, so
+/// `mynd status` can find and signal it: $XDG_DATA_HOME/hivemind/hivemind.pid
 pub fn up_pidfile_path() -> std::path::PathBuf {
     xdg_data_dir().join("hivemind.pid")
 }
 
-/// PID file written by `hivemind matrix run` while its daemon is running:
+/// PID file written by `mynd matrix run` while its daemon is running:
 /// $XDG_DATA_HOME/hivemind/hivemind-matrix.pid
 pub fn matrix_pidfile_path() -> std::path::PathBuf {
     xdg_data_dir().join("hivemind-matrix.pid")

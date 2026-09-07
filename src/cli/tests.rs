@@ -4,7 +4,7 @@ use std::path::Path;
 
 #[test]
 fn status_plain_flag_parses() {
-    let cli = Cli::try_parse_from(["hivemind", "status", "--plain"]).unwrap();
+    let cli = Cli::try_parse_from(["mynd", "status", "--plain"]).unwrap();
     match cli.command {
         Some(Command::Status { plain }) => assert!(plain),
         _ => panic!("expected Status command"),
@@ -13,7 +13,7 @@ fn status_plain_flag_parses() {
 
 #[test]
 fn parses_matrix_login_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "matrix", "login"]);
+    let cli = Cli::parse_from(["mynd", "matrix", "login"]);
     assert!(matches!(
         cli.command,
         Some(Command::Matrix {
@@ -24,7 +24,7 @@ fn parses_matrix_login_subcommand() {
 
 #[test]
 fn parses_matrix_run_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "matrix", "run"]);
+    let cli = Cli::parse_from(["mynd", "matrix", "run"]);
     assert!(matches!(
         cli.command,
         Some(Command::Matrix {
@@ -35,7 +35,7 @@ fn parses_matrix_run_subcommand() {
 
 #[test]
 fn parses_matrix_send_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "matrix", "send", "@oxgrad:matrix.org", "hi"]);
+    let cli = Cli::parse_from(["mynd", "matrix", "send", "@oxgrad:matrix.org", "hi"]);
     assert!(matches!(
         cli.command,
         Some(Command::Matrix {
@@ -46,7 +46,7 @@ fn parses_matrix_send_subcommand() {
 
 #[test]
 fn parses_matrix_status_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "matrix", "status"]);
+    let cli = Cli::parse_from(["mynd", "matrix", "status"]);
     assert!(matches!(
         cli.command,
         Some(Command::Matrix {
@@ -57,7 +57,7 @@ fn parses_matrix_status_subcommand() {
 
 #[test]
 fn up_plain_flag_parses() {
-    let cli = Cli::try_parse_from(["hivemind", "up", "--plain"]).unwrap();
+    let cli = Cli::try_parse_from(["mynd", "up", "--plain"]).unwrap();
     match cli.command {
         Some(Command::Up { headless, plain }) => {
             assert!(!headless);
@@ -70,7 +70,7 @@ fn up_plain_flag_parses() {
 /// Default server settings, built the same way `hivemind status` does when
 /// no global config exists.
 fn default_settings() -> crate::config::ServerSettings {
-    crate::config::load_server_settings(Path::new("/nonexistent/hivemind-global.toml")).unwrap()
+    crate::config::load_server_settings(Path::new("/nonexistent/mynd-global.toml")).unwrap()
 }
 
 fn sample_result(loaded: bool, skipped: bool) -> crate::session::SessionStartResult {
@@ -115,10 +115,10 @@ fn sample_result(loaded: bool, skipped: bool) -> crate::session::SessionStartRes
 }
 
 #[test]
-fn render_session_start_text_wraps_in_hivemind_context_tags() {
+fn render_session_start_text_wraps_in_mynd_context_tags() {
     let result = sample_result(true, false);
     let out = render_session_start(&result, false);
-    assert!(out.contains("<hivemind-context"));
+    assert!(out.contains("<mynd-context"));
     assert!(out.contains("pref a"));
     assert!(out.contains("short content a"));
 }
@@ -437,7 +437,7 @@ async fn render_status_without_config_reports_missing() {
     .await
     .unwrap();
     assert!(
-        out.contains("hivemind init"),
+        out.contains("mynd init"),
         "suggests init when no config"
     );
 }
@@ -528,9 +528,9 @@ async fn build_status_data_matches_render_status_text() {
     // Pin down the actual rendered format so a regression in
     // format_status_text is caught, not just disagreement between
     // build_status_data and render_status.
-    assert!(via_struct.contains("HiveMind v"));
+    assert!(via_struct.contains("Mynd v"));
     assert!(via_struct.contains(" — test-proj")); // em dash preserved from the original literal output
-    assert!(via_struct.contains("Server:     running at http://127.0.0.1:3456 (hivemind up)"));
+    assert!(via_struct.contains("Server:     running at http://127.0.0.1:3456 (mynd up)"));
     assert!(via_struct.contains("Sync:       disabled (local only)"));
     assert!(via_struct.contains("AI clients: claude"));
     assert!(via_struct.contains("Project:    test-proj"));
@@ -981,11 +981,11 @@ fn scaffold_writes_claude_session_start_hook() {
     scaffold(proj.path(), home.path(), cfg.path()).unwrap();
     let settings = fs::read_to_string(proj.path().join(".claude").join("settings.json")).unwrap();
     assert!(settings.contains("SessionStart"));
-    assert!(settings.contains("hivemind session-start"));
+    assert!(settings.contains("mynd session-start"));
     // idempotent
     scaffold(proj.path(), home.path(), cfg.path()).unwrap();
     let again = fs::read_to_string(proj.path().join(".claude").join("settings.json")).unwrap();
-    assert_eq!(again.matches("hivemind session-start").count(), 1);
+    assert_eq!(again.matches("mynd session-start").count(), 1);
 }
 
 #[test]
@@ -1001,7 +1001,7 @@ fn hook_merge_preserves_existing_settings() {
     ensure_claude_settings_hook(proj.path()).unwrap();
     let merged = fs::read_to_string(dir.join("settings.json")).unwrap();
     assert!(merged.contains("Bash(ls:*)"), "existing keys preserved");
-    assert!(merged.contains("hivemind session-start"));
+    assert!(merged.contains("mynd session-start"));
 }
 
 #[test]

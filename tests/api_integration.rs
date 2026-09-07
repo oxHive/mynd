@@ -4,7 +4,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use oxhivemind::{
+use oxmynd::{
     config::{AgentSettings, SyncSettings},
     db,
     store::SqliteStore,
@@ -39,7 +39,7 @@ async fn test_app() -> (axum::Router, TempDir) {
     let agent = AgentSettings {
         command: script.to_string_lossy().into_owned(),
         args: vec![],
-        kind: oxhivemind::config::AgentKind::Claude,
+        kind: oxmynd::config::AgentKind::Claude,
     };
     let suggest = SuggestSessionManager::new(
         Arc::clone(&store),
@@ -48,16 +48,16 @@ async fn test_app() -> (axum::Router, TempDir) {
         "http://127.0.0.1:3456/mcp".into(),
     );
     let update_state = Arc::new(tokio::sync::RwLock::new(
-        oxhivemind::update::UpdateState::new_idle(),
+        oxmynd::update::UpdateState::new_idle(),
     ));
-    let router = oxhivemind::api::router(
+    let router = oxmynd::api::router(
         store,
         sync,
         "http://127.0.0.1:3457",
         events,
         suggest,
         update_state,
-        oxhivemind::config::AgentSettings::default(),
+        oxmynd::config::AgentSettings::default(),
         true,
     );
     (router, dir)

@@ -43,26 +43,26 @@ pub fn cmd_init() -> Result<()> {
     });
     match registered_clients {
         registered if registered.is_empty() => {
-            println!("HiveMind initialized.");
+            println!("Mynd initialized.");
             println!();
             println!("Next steps:");
             println!("  1. Register with your AI coding client (run once, not per project):");
-            println!("       hivemind mcp install claude      # Claude Code");
-            println!("       hivemind mcp install cursor      # Cursor");
-            println!("       hivemind mcp install windsurf    # Windsurf");
-            println!("       hivemind mcp install opencode    # OpenCode");
-            println!("       hivemind mcp install kimi        # Kimi Code CLI");
-            println!("       hivemind mcp install codex       # OpenAI Codex CLI");
-            println!("  2. Start the server:  hivemind service install  (or: hivemind up)");
+            println!("       mynd mcp install claude      # Claude Code");
+            println!("       mynd mcp install cursor      # Cursor");
+            println!("       mynd mcp install windsurf    # Windsurf");
+            println!("       mynd mcp install opencode    # OpenCode");
+            println!("       mynd mcp install kimi        # Kimi Code CLI");
+            println!("       mynd mcp install codex       # OpenAI Codex CLI");
+            println!("  2. Start the server:  mynd service install  (or: mynd up)");
             println!("  3. Open a new session in your AI client. Memory hooks are now active.");
         }
         registered => {
             let list = registered.join(", ");
-            println!("HiveMind initialized.");
+            println!("Mynd initialized.");
             println!("MCP client already registered: {list}");
             println!();
             println!("Next steps:");
-            println!("  1. Start the server:  hivemind service install  (or: hivemind up)");
+            println!("  1. Start the server:  mynd service install  (or: mynd up)");
             println!("  2. Open a new session. Memory hooks are now active.");
         }
     }
@@ -70,7 +70,7 @@ pub fn cmd_init() -> Result<()> {
     Ok(())
 }
 
-/// Returns names of AI clients that already have HiveMind registered.
+/// Returns names of AI clients that already have Mynd registered.
 pub(crate) fn detect_registered_clients(home: &Path) -> Vec<&'static str> {
     let mut found = Vec::new();
 
@@ -241,7 +241,7 @@ pub(crate) fn append_block_if_absent(
     Ok((path.to_path_buf(), "created"))
 }
 
-/// Merge a SessionStart hook running `hivemind session-start` into the
+/// Merge a SessionStart hook running `mynd session-start` into the
 /// project's .claude/settings.json, preserving all existing content.
 /// If the file exists but is not valid JSON, returns an error instead of
 /// overwriting it, so a malformed user file is never destroyed.
@@ -250,12 +250,12 @@ pub(crate) fn ensure_claude_settings_hook(project_root: &Path) -> Result<(PathBu
 
     let path = project_root.join(".claude").join("settings.json");
     let existing = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
-    if existing.contains("hivemind session-start") {
+    if existing.contains("mynd session-start") || existing.contains("hivemind session-start") {
         return Ok((path, "exists"));
     }
     let mut root: serde_json::Value = serde_json::from_str(&existing).with_context(|| {
         format!(
-            "{} is not valid JSON; fix or remove it, then re-run hivemind init",
+            "{} is not valid JSON; fix or remove it, then re-run mynd init",
             path.display()
         )
     })?;
@@ -272,7 +272,7 @@ pub(crate) fn ensure_claude_settings_hook(project_root: &Path) -> Result<(PathBu
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("\"SessionStart\" is not a JSON array"))?
         .push(serde_json::json!({
-            "hooks": [{ "type": "command", "command": "hivemind session-start" }]
+            "hooks": [{ "type": "command", "command": "mynd session-start" }]
         }));
     std::fs::create_dir_all(path.parent().unwrap())?;
     write_atomic(&path, &serde_json::to_string_pretty(&root)?)?;
@@ -304,7 +304,7 @@ max_tokens = 0\n";
 
 pub(crate) fn project_claude_md(name: &str) -> String {
     format!(
-        "# HiveMind — {name}\n\n\
+        "# Mynd — {name}\n\n\
          Load project context on session start per .hivemind.toml.\n\
          Suggest storing any new architectural decisions made during this session.\n"
     )
@@ -322,6 +322,10 @@ interval_seconds = 300\n\
 sync_on_store = true\n\
 sync_on_startup = true\n";
 
+// NOTE: rename of this marker + block (and the already-installed ~/.claude/CLAUDE.md
+// on user machines) is deferred to the "MCP tool + session-start" rename pass, since
+// it depends on renaming the `hivemind_session_start` MCP tool and needs a migration
+// that rewrites the existing block rather than appending a second one.
 pub(crate) const GLOBAL_CLAUDE_MARKER: &str = "# HiveMind Memory System";
 
 pub(crate) const GLOBAL_CLAUDE_BLOCK: &str = "# HiveMind Memory System

@@ -160,13 +160,13 @@ pub struct MemoryGetEdgesInput {
 }
 
 #[derive(Clone)]
-pub struct HiveMind {
+pub struct Mynd {
     store: Arc<SqliteStore>,
     sync_trigger: Option<Arc<tokio::sync::Notify>>,
     events: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 }
 
-impl HiveMind {
+impl Mynd {
     #[cfg(test)]
     pub fn new(store: SqliteStore) -> Self {
         Self {
@@ -463,7 +463,7 @@ impl HiveMind {
                 })
                 .collect();
             format!(
-                "HiveMind Memory List ({count} memories):\n\n{}",
+                "Mynd Memory List ({count} memories):\n\n{}",
                 lines.join("\n")
             )
         };
@@ -488,7 +488,7 @@ impl HiveMind {
             .collect();
 
         let mut parts = vec![
-            "HiveMind Status".to_string(),
+            "Mynd Status".to_string(),
             "\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}".to_string(),
             format!("Total memories: {count}"),
         ];
@@ -684,7 +684,7 @@ impl HiveMind {
 }
 
 #[tool_router]
-impl HiveMind {
+impl Mynd {
     #[tool(
         description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones."
     )]
@@ -869,11 +869,11 @@ impl HiveMind {
 }
 
 #[prompt_router]
-impl HiveMind {
+impl Mynd {
     /// List all memories with titles and tags
     #[prompt(
         name = "memory-list",
-        description = "List all stored memories with titles and tags. Use to browse what HiveMind knows before searching or editing."
+        description = "List all stored memories with titles and tags. Use to browse what Mynd knows before searching or editing."
     )]
     async fn memory_list_prompt(&self) -> Result<Vec<PromptMessage>, ErrorData> {
         self.do_memory_list_prompt().await
@@ -891,7 +891,7 @@ impl HiveMind {
     /// Search memories by keyword and present results
     #[prompt(
         name = "memory-search",
-        description = "Search HiveMind memories by keyword. Returns matching memories with content snippets. Follow up with memory_recall for full content."
+        description = "Search Mynd memories by keyword. Returns matching memories with content snippets. Follow up with memory_recall for full content."
     )]
     async fn memory_search_prompt(
         &self,
@@ -984,7 +984,7 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
     };
 
     Ok(format!(
-        "HiveMind — Suggest Connections\n\
+        "Mynd — Suggest Connections\n\
          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
          You have {} memories and {} existing connections.\n\n\
          MEMORIES:\n\
@@ -1038,7 +1038,7 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
 
 #[tool_handler]
 #[prompt_handler]
-impl rmcp::ServerHandler for HiveMind {
+impl rmcp::ServerHandler for Mynd {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         rmcp::model::ServerInfo::new(
             rmcp::model::ServerCapabilities::builder()
@@ -1047,7 +1047,7 @@ impl rmcp::ServerHandler for HiveMind {
                 .build(),
         )
         .with_server_info(rmcp::model::Implementation::new(
-            "hivemind",
+            "mynd",
             env!("CARGO_PKG_VERSION"),
         ))
     }

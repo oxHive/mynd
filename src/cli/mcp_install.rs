@@ -3,12 +3,17 @@ use anyhow::Result;
 use super::init::home_dir;
 
 // ── mcp install ───────────────────────────────────────────────────────────────
+// NOTE: the MCP server registration key ("hivemind") and the client-config
+// detection tokens are still "hivemind" on purpose — renaming that key is
+// deferred to the "MCP tool + server integration" rename pass (it orphans
+// existing client registrations and pairs with the hivemind_session_start
+// tool rename).
 
 pub(crate) fn exe_path() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.to_str().map(String::from))
-        .unwrap_or_else(|| "hivemind".to_string())
+        .unwrap_or_else(|| "mynd".to_string())
 }
 
 pub fn cmd_mcp_install(client: &str) -> Result<()> {
@@ -34,7 +39,7 @@ fn install_claude() -> Result<()> {
         anyhow::bail!(
             "claude CLI not found in PATH\n\
              Install Claude Code first: https://claude.ai/download\n\
-             Then re-run: hivemind mcp install claude"
+             Then re-run: mynd mcp install claude"
         );
     }
 
@@ -44,7 +49,7 @@ fn install_claude() -> Result<()> {
         .output()?;
     let list_str = String::from_utf8_lossy(&list_out.stdout);
     if list_str.contains("hivemind") {
-        println!("HiveMind is already registered with Claude Code.");
+        println!("Mynd is already registered with Claude Code.");
         println!("Open a new Claude Code session to use it.");
         return Ok(());
     }
@@ -62,7 +67,7 @@ fn install_claude() -> Result<()> {
         anyhow::bail!("claude mcp add failed. Run `claude mcp list` to inspect existing servers");
     }
 
-    println!("HiveMind registered with Claude Code.");
+    println!("Mynd registered with Claude Code.");
     println!();
     println!("Next steps:");
     println!("  1. Open a new Claude Code session");
@@ -83,7 +88,7 @@ fn install_opencode() -> Result<()> {
             .args(["mcp", "list"])
             .output()?;
         if String::from_utf8_lossy(&list_out.stdout).contains("hivemind") {
-            println!("HiveMind is already registered with OpenCode.");
+            println!("Mynd is already registered with OpenCode.");
             println!("Open a new OpenCode session to use it.");
             return Ok(());
         }
@@ -111,7 +116,7 @@ fn install_opencode() -> Result<()> {
         println!("Written to {}", config_path.display());
     }
 
-    println!("HiveMind registered with OpenCode.");
+    println!("Mynd registered with OpenCode.");
     println!();
     println!("Next steps:");
     println!("  1. Open a new OpenCode session");
@@ -130,7 +135,7 @@ fn install_kimi() -> Result<()> {
             .args(["mcp", "list"])
             .output()?;
         if String::from_utf8_lossy(&list_out.stdout).contains("hivemind") {
-            println!("HiveMind is already registered with Kimi.");
+            println!("Mynd is already registered with Kimi.");
             println!("Open a new Kimi session to use it.");
             return Ok(());
         }
@@ -150,7 +155,7 @@ fn install_kimi() -> Result<()> {
         println!("Written to {}", config_path.display());
     }
 
-    println!("HiveMind registered with Kimi Code CLI.");
+    println!("Mynd registered with Kimi Code CLI.");
     println!();
     println!("Next steps:");
     println!("  1. Open a new Kimi session");
@@ -168,7 +173,7 @@ fn install_codex() -> Result<()> {
 
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
     if existing.contains("[mcp_servers.hivemind]") {
-        println!("HiveMind is already registered with Codex CLI.");
+        println!("Mynd is already registered with Codex CLI.");
         println!("Open a new Codex session to use it.");
         return Ok(());
     }
@@ -182,7 +187,7 @@ fn install_codex() -> Result<()> {
     std::fs::write(&config_path, new_content)?;
     println!("Written to {}", config_path.display());
 
-    println!("HiveMind registered with OpenAI Codex CLI.");
+    println!("Mynd registered with OpenAI Codex CLI.");
     println!();
     println!("Next steps:");
     println!("  1. Open a new Codex session");
@@ -197,7 +202,7 @@ fn install_cursor() -> Result<()> {
         serde_json::json!({ "command": exe_path(), "args": [] }),
     )?;
     println!("Written to {}", config_path.display());
-    println!("HiveMind registered with Cursor.");
+    println!("Mynd registered with Cursor.");
     println!();
     println!("Next steps:");
     println!("  1. Restart Cursor completely for the change to take effect");
@@ -215,7 +220,7 @@ fn install_windsurf() -> Result<()> {
         serde_json::json!({ "command": exe_path(), "args": [] }),
     )?;
     println!("Written to {}", config_path.display());
-    println!("HiveMind registered with Windsurf.");
+    println!("Mynd registered with Windsurf.");
     println!();
     println!("Next steps:");
     println!("  1. Restart Windsurf for the change to take effect");

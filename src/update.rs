@@ -74,7 +74,7 @@ impl Default for GitHubVersionSource {
 impl GitHubVersionSource {
     pub fn new() -> Self {
         let api_url = std::env::var("HIVEMIND_UPDATE_CHECK_URL").unwrap_or_else(|_| {
-            "https://api.github.com/repos/oxhive/hivemind/releases/latest".to_string()
+            "https://api.github.com/repos/oxhive/mynd/releases/latest".to_string()
         });
         GitHubVersionSource::with_url(api_url)
     }
@@ -99,7 +99,7 @@ impl GitHubVersionSource {
             .get(&self.api_url)
             .header(
                 "User-Agent",
-                concat!("hivemind/", env!("CARGO_PKG_VERSION")),
+                concat!("mynd/", env!("CARGO_PKG_VERSION")),
             )
             .header("Accept", "application/vnd.github+json")
             .send()
@@ -241,7 +241,7 @@ async fn ensure_binstall_available() -> Result<()> {
 
 async fn run_binstall() -> Result<()> {
     let output = tokio::process::Command::new("cargo")
-        .args(["binstall", "oxhivemind", "--no-confirm", "--force"])
+        .args(["binstall", "oxmynd", "--no-confirm", "--force"])
         .kill_on_drop(true)
         .output()
         .await
@@ -273,7 +273,7 @@ fn restart(exe: &std::path::Path) -> Result<()> {
 fn restart(_exe: &std::path::Path) -> Result<()> {
     anyhow::bail!(
         "binary updated, but automatic restart is only supported on Unix — \
-         please restart hivemind manually to pick up the new version"
+         please restart mynd manually to pick up the new version"
     )
 }
 
@@ -294,7 +294,7 @@ mod tests {
                     Json(json!({
                         "tag_name": tag_name,
                         "body": body,
-                        "html_url": "https://github.com/oxhive/hivemind/releases/tag/test",
+                        "html_url": "https://github.com/oxhive/mynd/releases/tag/test",
                     }))
                 }
             }),

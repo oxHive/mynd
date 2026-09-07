@@ -3,6 +3,11 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 // ── service management ────────────────────────────────────────────────────────
+// NOTE: systemd unit basenames ("hivemind", "hivemind-matrix"), the launchd
+// labels ("com.oxhive.hivemind*") and the log filename ("hivemind.log") are
+// still "hivemind" on purpose — renaming them orphans units/agents already
+// installed on user machines, so that is deferred to the "Service / daemon"
+// rename pass (which needs a migration that uninstalls the old unit first).
 
 pub fn cmd_service_install(dashboard: bool, matrix: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -10,7 +15,7 @@ pub fn cmd_service_install(dashboard: bool, matrix: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     return service_install_linux(dashboard, matrix);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    anyhow::bail!("hivemind service install is only supported on Linux and macOS");
+    anyhow::bail!("mynd service install is only supported on Linux and macOS");
 }
 
 pub fn cmd_service_uninstall() -> Result<()> {
@@ -19,7 +24,7 @@ pub fn cmd_service_uninstall() -> Result<()> {
     #[cfg(target_os = "linux")]
     return service_uninstall_linux();
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    anyhow::bail!("hivemind service uninstall is only supported on Linux and macOS");
+    anyhow::bail!("mynd service uninstall is only supported on Linux and macOS");
 }
 
 pub fn cmd_service_status() -> Result<()> {
@@ -28,7 +33,7 @@ pub fn cmd_service_status() -> Result<()> {
     #[cfg(target_os = "linux")]
     return service_status_linux();
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    anyhow::bail!("hivemind service status is only supported on Linux and macOS");
+    anyhow::bail!("mynd service status is only supported on Linux and macOS");
 }
 
 // ── Linux / systemd user unit ─────────────────────────────────────────────────
@@ -162,9 +167,9 @@ fn service_status_unit_linux(unit_name: &str) -> Result<()> {
 #[cfg(target_os = "linux")]
 fn service_install_linux(dashboard: bool, matrix: bool) -> Result<()> {
     let (args, desc): (&[&str], &str) = if dashboard {
-        (&["up"], "HiveMind server (API + dashboard)")
+        (&["up"], "Mynd server (API + dashboard)")
     } else {
-        (&["up", "--headless"], "HiveMind server (API only)")
+        (&["up", "--headless"], "Mynd server (API only)")
     };
     service_install_unit_linux("hivemind", desc, args)?;
 
@@ -176,25 +181,25 @@ fn service_install_linux(dashboard: bool, matrix: bool) -> Result<()> {
         if !configured {
             anyhow::bail!(
                 "--matrix was passed but Matrix is not configured.\n\
-                 Run `hivemind matrix login` first, then re-run `hivemind service install --matrix`."
+                 Run `mynd matrix login` first, then re-run `mynd service install --matrix`."
             );
         }
         service_install_unit_linux(
             "hivemind-matrix",
-            "HiveMind Matrix chat bot",
+            "Mynd Matrix chat bot",
             &["matrix", "run"],
         )?;
     }
 
     println!();
-    println!("HiveMind will now start automatically on login.");
+    println!("Mynd will now start automatically on login.");
     if dashboard {
         let port = crate::config::load_server_settings(&crate::config::global_config_path())
             .map(|s| s.dashboard_port)
             .unwrap_or(3457);
         println!("Dashboard: http://127.0.0.1:{port}");
     }
-    println!("Check status: hivemind service status");
+    println!("Check status: mynd service status");
     Ok(())
 }
 
@@ -205,7 +210,7 @@ fn service_uninstall_linux() -> Result<()> {
         service_uninstall_unit_linux("hivemind-matrix")?;
     }
 
-    println!("HiveMind service uninstalled.");
+    println!("Mynd service uninstalled.");
     Ok(())
 }
 
@@ -225,12 +230,12 @@ mod matrix_service_tests {
     #[test]
     fn systemd_unit_content_for_matrix_names_the_unit_and_subcommand() {
         let content = systemd_unit_content(
-            "HiveMind Matrix chat bot",
-            &std::path::PathBuf::from("/usr/local/bin/hivemind"),
+            "Mynd Matrix chat bot",
+            &std::path::PathBuf::from("/usr/local/bin/mynd"),
             &["matrix", "run"],
         );
-        assert!(content.contains("Description=HiveMind Matrix chat bot"));
-        assert!(content.contains("ExecStart=/usr/local/bin/hivemind matrix run"));
+        assert!(content.contains("Description=Mynd Matrix chat bot"));
+        assert!(content.contains("ExecStart=/usr/local/bin/mynd matrix run"));
         assert!(content.contains("WantedBy=default.target"));
     }
 
@@ -241,11 +246,11 @@ mod matrix_service_tests {
         // one might expect. Not this task's job to change that; just don't
         // silently break it while adding the parameterization.
         let content = systemd_unit_content(
-            "HiveMind MCP memory server",
-            &std::path::PathBuf::from("/usr/local/bin/hivemind"),
+            "Mynd MCP memory server",
+            &std::path::PathBuf::from("/usr/local/bin/mynd"),
             &[],
         );
-        assert!(content.contains("ExecStart=/usr/local/bin/hivemind\n"));
+        assert!(content.contains("ExecStart=/usr/local/bin/mynd\n"));
     }
 }
 
@@ -360,7 +365,7 @@ fn service_status_unit_macos(label: &str) -> Result<()> {
         print!("{stdout}");
     } else {
         println!("{label} is not loaded.");
-        println!("Run: hivemind service install");
+        println!("Run: mynd service install");
     }
     Ok(())
 }
@@ -368,9 +373,9 @@ fn service_status_unit_macos(label: &str) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn service_install_macos(dashboard: bool, matrix: bool) -> Result<()> {
     let (args, desc): (&[&str], &str) = if dashboard {
-        (&["up"], "HiveMind server (API + dashboard)")
+        (&["up"], "Mynd server (API + dashboard)")
     } else {
-        (&["up", "--headless"], "HiveMind server (API only)")
+        (&["up", "--headless"], "Mynd server (API only)")
     };
     service_install_unit_macos(LAUNCH_AGENT_LABEL, args, desc)?;
 
@@ -382,18 +387,18 @@ fn service_install_macos(dashboard: bool, matrix: bool) -> Result<()> {
         if !configured {
             anyhow::bail!(
                 "--matrix was passed but Matrix is not configured.\n\
-                 Run `hivemind matrix login` first, then re-run `hivemind service install --matrix`."
+                 Run `mynd matrix login` first, then re-run `mynd service install --matrix`."
             );
         }
         service_install_unit_macos(
             MATRIX_LAUNCH_AGENT_LABEL,
             &["matrix", "run"],
-            "HiveMind Matrix chat bot",
+            "Mynd Matrix chat bot",
         )?;
     }
 
     println!();
-    println!("HiveMind will now start automatically on login.");
+    println!("Mynd will now start automatically on login.");
     if dashboard {
         let port = crate::config::load_server_settings(&crate::config::global_config_path())
             .map(|s| s.dashboard_port)
@@ -401,7 +406,7 @@ fn service_install_macos(dashboard: bool, matrix: bool) -> Result<()> {
         println!("Dashboard: http://127.0.0.1:{port}");
     }
     println!("Logs: ~/Library/Logs/hivemind.log");
-    println!("Check status: hivemind service status");
+    println!("Check status: mynd service status");
     Ok(())
 }
 
@@ -412,7 +417,7 @@ fn service_uninstall_macos() -> Result<()> {
         service_uninstall_unit_macos(MATRIX_LAUNCH_AGENT_LABEL)?;
     }
 
-    println!("HiveMind service uninstalled.");
+    println!("Mynd service uninstalled.");
     Ok(())
 }
 
