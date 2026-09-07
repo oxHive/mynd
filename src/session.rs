@@ -74,19 +74,27 @@ impl SessionStartResult {
     }
 }
 
-/// Run the configured session-start recalls under the token budget.
-/// On over-budget, the entry is skipped and the loop CONTINUES — a later,
-/// smaller entry may still fit. Recalls are resolved title -> FTS.
-pub async fn execute_session_start(
-    config: &MyndConfig,
+/// Run the configured recalls against a single store, adding to `loaded`
+/// whatever fits under `max_tokens` (tracked via `used_tokens`) and to
+/// `skipped` whatever doesn't resolve or doesn't fit. On over-budget, the
+/// entry is skipped and the loop CONTINUES — a later, smaller entry may
+/// still fit. Recalls are resolved title -> FTS.
+///
+/// `loaded_queries` collects the query string of every recall that loaded at
+/// least one entry from this store, so a caller running multiple passes
+/// (e.g. personal/workspace then org) can tell that a recall was ultimately
+/// satisfied even though a *different* pass is the one that pushed a
+/// `SkippedEntry` for it.
+async fn recall_pass(
     store: &SqliteStore,
-) -> Result<SessionStartResult> {
-    let max_tokens = config.max_tokens;
-    let mut used_tokens = 0usize;
-    let mut loaded = Vec::new();
-    let mut skipped = Vec::new();
-
-    for recall in &config.recalls {
+    recalls: &[crate::config::Recall],
+    max_tokens: usize,
+    used_tokens: &mut usize,
+    loaded: &mut Vec<LoadedEntry>,
+    skipped: &mut Vec<SkippedEntry>,
+    loaded_queries: &mut std::collections::HashSet<String>,
+) {
+    for recall in recalls {
         let is_tag_expr = crate::tag_query::looks_like_tag_expr(&recall.query);
 
         let entries_result = if is_tag_expr {
@@ -132,10 +140,10 @@ pub async fn execute_session_start(
         let mut any_loaded = false;
         for entry in candidates {
             let tokens = count_entry_tokens(&entry.title, &entry.content);
-            if used_tokens + tokens > max_tokens {
+            if *used_tokens + tokens > max_tokens {
                 continue;
             }
-            used_tokens += tokens;
+            *used_tokens += tokens;
             loaded.push(LoadedEntry {
                 entry,
                 tokens,
@@ -143,13 +151,93 @@ pub async fn execute_session_start(
             });
             any_loaded = true;
         }
-        if !any_loaded {
+        if any_loaded {
+            loaded_queries.insert(recall.query.clone());
+        } else {
             skipped.push(SkippedEntry {
                 query: recall.query.clone(),
                 reason: SkipReason::BudgetExceeded,
             });
         }
     }
+}
+
+/// Run the configured session-start recalls under the token budget.
+/// Personal/workspace recalls (from `store`) fill the budget first, exactly
+/// as before this function gained org support. Org recalls (from
+/// `org_store`, if present) then spend whatever budget remains — org never
+/// displaces personal/workspace. A missing `org_store`, or any error running
+/// org recalls, is treated as "nothing more to load" rather than a failure.
+pub async fn execute_session_start(
+    config: &MyndConfig,
+    store: &SqliteStore,
+    org_store: Option<&SqliteStore>,
+) -> Result<SessionStartResult> {
+    let max_tokens = config.max_tokens;
+    let mut used_tokens = 0usize;
+    let mut loaded = Vec::new();
+    let mut skipped = Vec::new();
+    let mut loaded_queries = std::collections::HashSet::new();
+
+    recall_pass(
+        store,
+        &config.recalls,
+        max_tokens,
+        &mut used_tokens,
+        &mut loaded,
+        &mut skipped,
+        &mut loaded_queries,
+    )
+    .await;
+
+    if let Some(org) = org_store {
+        recall_pass(
+            org,
+            &config.recalls,
+            max_tokens,
+            &mut used_tokens,
+            &mut loaded,
+            &mut skipped,
+            &mut loaded_queries,
+        )
+        .await;
+    }
+
+    // This merge/collapse pass only matters when a second (org) pass ran —
+    // with a single store, `loaded_queries` can't diverge from `skipped` in
+    // a way this logic would change, but gating it here makes the
+    // single-store path byte-for-byte identical to pre-org-layer behavior
+    // by construction, not by coincidence (e.g. duplicate recall query
+    // strings from project + `.hivemind.local.toml` recall lists, with no
+    // dedup, could otherwise reorder `skipped` even with only one store).
+    let skipped = if org_store.is_some() {
+        // A query loaded in either pass is not "skipped" overall, even if the
+        // other pass (a different store) didn't have it. Drop those first.
+        skipped.retain(|s| !loaded_queries.contains(&s.query));
+
+        // Remaining entries are genuinely unsatisfied in every store tried. A
+        // query can still appear once per pass (e.g. NotFound in primary,
+        // BudgetExceeded in org) — collapse to one entry per query, preferring
+        // BudgetExceeded (it means the memory exists somewhere, it just didn't
+        // fit) over NotFound (it exists nowhere).
+        let mut by_query: std::collections::HashMap<String, SkippedEntry> =
+            std::collections::HashMap::new();
+        for entry in skipped {
+            by_query
+                .entry(entry.query.clone())
+                .and_modify(|existing| {
+                    if entry.reason == SkipReason::BudgetExceeded {
+                        existing.reason = SkipReason::BudgetExceeded;
+                    }
+                })
+                .or_insert(entry);
+        }
+        let mut skipped: Vec<SkippedEntry> = by_query.into_values().collect();
+        skipped.sort_by(|a, b| a.query.cmp(&b.query));
+        skipped
+    } else {
+        skipped
+    };
 
     let memories_recalled = loaded.len();
     Ok(SessionStartResult {
@@ -257,7 +345,7 @@ mod tests {
             ("id_b", "pref b", "short content b", vec![]),
         ])
         .await;
-        let r = execute_session_start(&config(2000, vec!["pref a", "pref b"]), &s)
+        let r = execute_session_start(&config(2000, vec!["pref a", "pref b"]), &s, None)
             .await
             .unwrap();
         assert_eq!(r.loaded.len(), 2);
@@ -270,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn records_not_found_recalls() {
         let (s, _dir) = store_with(&[("id_a", "pref a", "content a", vec![])]).await;
-        let r = execute_session_start(&config(2000, vec!["pref a", "does not exist"]), &s)
+        let r = execute_session_start(&config(2000, vec!["pref a", "does not exist"]), &s, None)
             .await
             .unwrap();
         assert_eq!(r.loaded.len(), 1);
@@ -282,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn to_json_matches_mcp_shape() {
         let (s, _dir) = store_with(&[("id_a", "pref a", "short content a", vec![])]).await;
-        let r = execute_session_start(&config(2000, vec!["pref a"]), &s)
+        let r = execute_session_start(&config(2000, vec!["pref a"]), &s, None)
             .await
             .unwrap();
         let v = r.to_json();
@@ -301,7 +389,7 @@ mod tests {
         ])
         .await;
         let small_cost = crate::budget::count_entry_tokens("small", "tiny");
-        let r = execute_session_start(&config(small_cost + 5, vec!["big", "small"]), &s)
+        let r = execute_session_start(&config(small_cost + 5, vec!["big", "small"]), &s, None)
             .await
             .unwrap();
         assert_eq!(r.loaded.len(), 1, "only the small entry fits");
@@ -334,7 +422,7 @@ mod tests {
             ),
         ])
         .await;
-        let r = execute_session_start(&config(2000, vec!["tag:project:hivemind"]), &s)
+        let r = execute_session_start(&config(2000, vec!["tag:project:hivemind"]), &s, None)
             .await
             .unwrap();
         assert_eq!(
@@ -360,11 +448,98 @@ mod tests {
         // "tag:" with no value is a parse error, not a valid expression —
         // must NOT fall back to treating it as a literal FTS/title query,
         // even though a memory with that literal title exists.
-        let r = execute_session_start(&config(2000, vec!["tag:"]), &s)
+        let r = execute_session_start(&config(2000, vec!["tag:"]), &s, None)
             .await
             .unwrap();
         assert_eq!(r.loaded.len(), 0);
         assert_eq!(r.skipped.len(), 1);
         assert_eq!(r.skipped[0].reason, SkipReason::NotFound);
+    }
+
+    #[tokio::test]
+    async fn org_recalls_fill_remaining_budget_after_personal_and_workspace() {
+        let (s, _dir) = store_with(&[("id_a", "pref a", "short content a", vec![])]).await;
+        let (org, _org_dir) = store_with(&[]).await;
+        org.store(&crate::store::NewMemoryRow {
+            id: "id_org",
+            title: "org pref",
+            content: "org content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+
+        let r = execute_session_start(&config(2000, vec!["pref a", "org pref"]), &s, Some(&org))
+            .await
+            .unwrap();
+        assert_eq!(r.loaded.len(), 2);
+        assert!(r.loaded.iter().any(|l| l.entry.title == "org pref"));
+        assert!(r.loaded.iter().any(|l| l.entry.title == "pref a"));
+    }
+
+    #[tokio::test]
+    async fn org_recall_skipped_gracefully_when_no_org_store() {
+        let (s, _dir) = store_with(&[("id_a", "pref a", "short content a", vec![])]).await;
+        let r = execute_session_start(&config(2000, vec!["pref a", "org pref"]), &s, None)
+            .await
+            .unwrap();
+        assert_eq!(r.loaded.len(), 1);
+        assert_eq!(r.loaded[0].entry.title, "pref a");
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!(r.skipped[0].query, "org pref");
+    }
+
+    #[tokio::test]
+    async fn org_recall_never_displaces_personal_or_workspace_when_budget_tight() {
+        let (s, _dir) = store_with(&[("id_a", "pref a", "short content a", vec![])]).await;
+        let (org, _org_dir) = store_with(&[]).await;
+        org.store(&crate::store::NewMemoryRow {
+            id: "id_org",
+            title: "org pref",
+            content: "org content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+
+        // Budget sized to exactly consume "pref a" and nothing else — org
+        // must be skipped as BudgetExceeded, never load ahead of it.
+        let budget = count_entry_tokens("pref a", "short content a");
+        let r = execute_session_start(&config(budget, vec!["pref a", "org pref"]), &s, Some(&org))
+            .await
+            .unwrap();
+        assert_eq!(r.loaded.len(), 1);
+        assert_eq!(r.loaded[0].entry.title, "pref a");
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!(r.skipped[0].reason, SkipReason::BudgetExceeded);
+    }
+
+    /// Fix 5 regression: the merge/collapse pass (retain + HashMap collapse +
+    /// sort) must be a structural no-op guarantee when `org_store` is `None`,
+    /// not merely an empirical one. A duplicate recall query (e.g. from
+    /// project + `.hivemind.local.toml` recall lists with no dedup) would be
+    /// silently collapsed into one `SkippedEntry` if the merge block ran
+    /// unconditionally — this asserts it does NOT run for the single-store
+    /// path: both duplicate skips survive, in original insertion order.
+    #[tokio::test]
+    async fn single_store_skipped_list_preserves_duplicates_and_order_when_no_org() {
+        let (s, _dir) = store_with(&[]).await;
+        let r = execute_session_start(&config(2000, vec!["dup", "dup"]), &s, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.skipped.len(),
+            2,
+            "no org_store: the merge/collapse pass must not run, so duplicate \
+             recall queries are not deduped away"
+        );
+        assert_eq!(r.skipped[0].query, "dup");
+        assert_eq!(r.skipped[1].query, "dup");
     }
 }

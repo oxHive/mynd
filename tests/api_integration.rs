@@ -52,7 +52,9 @@ async fn test_app() -> (axum::Router, TempDir) {
     ));
     let router = oxmynd::api::router(
         store,
+        None,
         sync,
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,

@@ -418,6 +418,14 @@ api_key = ""           # sqld auth token, or Oxhive account key
 interval_seconds = 300
 sync_on_store = true
 sync_on_startup = true
+
+[org_sync]
+enabled = false
+remote_url = ""        # hivemind-gateway URL (paid), or a self-hosted sqld URL
+api_key = ""           # gateway-issued key, or sqld auth token
+interval_seconds = 300
+sync_on_store = true
+sync_on_startup = true
 ```
 
 `$XDG_CONFIG_HOME/mynd/config.toml` is used instead if `XDG_CONFIG_HOME` is set.
@@ -456,6 +464,24 @@ Two `remote_url` targets are supported:
 `api_key` is never sent to Claude or the dashboard. It is only used during replication.
 
 With `sync_on_store = true`, a memory stored through any interface (MCP tool, REST API, or dashboard) triggers an immediate sync in addition to the periodic background sync. If a sync pulls remote changes that overwrite a local edit, Mynd records a conflict holding both versions; pending conflicts appear in the dashboard's Feedback view. Resolving with `keep_local` restores your version of the content, while `keep_remote` accepts the replicated one.
+
+### Org layer (optional)
+
+A third memory layer, alongside `personal` and `workspace`, backed by its own independent database connection — configured separately from `[sync]` via `[org_sync]`:
+
+```toml
+[org_sync]
+enabled = true
+remote_url = "http://pi.local:8080"   # self-hosted sqld, or a hivemind-gateway URL
+api_key = "your-auth-token"
+interval_seconds = 300
+sync_on_store = true
+sync_on_startup = true
+```
+
+Org-layer memories are visible and editable everywhere personal/workspace memories are — MCP tools, the REST API, and the dashboard (Memories list, Graph view, and the layer picker, which disables "org" until `[org_sync]` is configured). They live in a separate local database (`org.db`, next to `memories.db`) and sync independently of `[sync]`. `memory_store` accepts `layer: "personal" | "workspace" | "org"` (default `workspace`).
+
+Mynd ships with no access control of its own — org CRUD is as open as personal/workspace. Multi-user access control for a shared org store is `hivemind-gateway`'s job, not yet built.
 
 ---
 
@@ -628,7 +654,7 @@ Yes. Each project has its own `.mynd.toml` with its own `recalls` list and `max_
 
 **Do my teammates see my personal memories?**
 
-No. Memories stored with `layer = "personal"` follow you, not the repo. Only `layer = "workspace"` memories are project-scoped. The `memory_store` MCP tool accepts `layer: "personal" | "workspace"` (default `workspace`), and the dashboard filters by layer. The `.mynd.local.toml` file is gitignored, and your personal layer is local to your machine unless you configure sync.
+No. Memories stored with `layer = "personal"` follow you, not the repo. Only `layer = "workspace"` memories are project-scoped. The `memory_store` MCP tool accepts `layer: "personal" | "workspace" | "org"` (default `workspace`), and the dashboard filters by layer. The `.mynd.local.toml` file is gitignored, and your personal layer is local to your machine unless you configure sync. See [Org layer](#org-layer-optional) for the third, separately-configured layer.
 
 **Is the MCP connection authenticated?**
 

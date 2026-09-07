@@ -9,9 +9,16 @@ pub(super) struct EdgesParams {
 
 pub(super) async fn list_edges(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Query(p): Query<EdgesParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let edges = store.list_edges(p.memory_id.as_deref()).await?;
+    let mut edges = store.list_edges(p.memory_id.as_deref()).await?;
+    if let Some(org) = &org_store {
+        match org.list_edges(p.memory_id.as_deref()).await {
+            Ok(mut org_edges) => edges.append(&mut org_edges),
+            Err(e) => tracing::warn!("org store list_edges failed: {e:#}"),
+        }
+    }
     Ok(Json(json!({ "count": edges.len(), "edges": edges })))
 }
 
@@ -24,14 +31,30 @@ pub(super) struct CreateEdgeBody {
 
 pub(super) async fn create_edge(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Extension(events): Extension<Events>,
     Json(b): Json<CreateEdgeBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     use crate::model::EdgeCreate;
-    match store
+    let primary_result = store
         .create_edge(&b.source_id, &b.target_id, &b.relationship)
-        .await?
-    {
+        .await?;
+    let result = match (&primary_result, &org_store) {
+        (EdgeCreate::MissingEndpoint, Some(org)) => {
+            match org
+                .create_edge(&b.source_id, &b.target_id, &b.relationship)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("org store create_edge failed: {e:#}");
+                    primary_result
+                }
+            }
+        }
+        _ => primary_result,
+    };
+    match result {
         EdgeCreate::Created(id) => {
             let _ = events.send(json!({ "type": "changed" }));
             Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
@@ -58,6 +81,7 @@ pub(super) struct StatusBody {
 
 pub(super) async fn patch_edge(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Extension(events): Extension<Events>,
     Path(id): Path<String>,
     Json(b): Json<StatusBody>,
@@ -68,7 +92,22 @@ pub(super) async fn patch_edge(
             "status must be active|pending|rejected".into(),
         ));
     }
-    if !store.set_edge_status(&id, &b.status).await? {
+    let primary_updated = store.set_edge_status(&id, &b.status).await?;
+    let updated = if !primary_updated {
+        match &org_store {
+            Some(org) => match org.set_edge_status(&id, &b.status).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("org store set_edge_status failed: {e:#}");
+                    false
+                }
+            },
+            None => false,
+        }
+    } else {
+        true
+    };
+    if !updated {
         return Err(not_found(format!("no edge {id}")));
     }
     let _ = events.send(json!({ "type": "changed" }));

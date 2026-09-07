@@ -559,6 +559,7 @@ async fn build_status_data_matches_render_status_text() {
         api_url: "http://127.0.0.1:3456".into(),
         cors_origin: "http://127.0.0.1:3457".into(),
         sync: SyncSettings::default(),
+        org_sync: None,
         update: crate::config::UpdateSettings::default(),
         agent: crate::config::AgentSettings::default(),
         guard_predefined_namespaces: true,
@@ -617,6 +618,117 @@ async fn build_status_data_matches_render_status_text() {
     let project = data.project.as_ref().unwrap();
     let expected_remaining = project.max_tokens.saturating_sub(project.used_tokens);
     assert!(via_struct.contains(&format!("Remaining:  ~{expected_remaining} tokens")));
+}
+
+/// Fix 1 regression: `build_status_data` (the function `hivemind status`
+/// calls, and a stand-in for `cmd_session_start`'s equivalent async body,
+/// which isn't practically unit-testable at the process/println! level)
+/// must open the org store and merge org recalls when `settings.org_sync`
+/// is configured — this used to always pass `None`, so an org memory
+/// never showed up in the "will inject" preview.
+///
+/// Uses a locally-backed `SyncSettings` (`enabled: false`) for the org
+/// connection: `ServerSettings.org_sync` is only ever `Some` in production
+/// when `enabled = true` (enforced by `load_server_settings`, not the
+/// type), but a live `sqld` isn't available in this test environment —
+/// this still exercises the exact open/migrate/query wiring
+/// `build_status_data` runs in production, just against a local file
+/// instead of a remote replica (same tier of unit coverage the design doc
+/// specifies for `[sync]` itself).
+// The env mutation (HIVEMIND_ORG_DB_PATH) must stay in effect for the
+// entire body, including every await point inside build_status_data's
+// internal resolve_org_db_path() calls — there's no way to inject the org
+// db path directly, so the lock has to span the awaits. `#[tokio::test]`
+// uses a dedicated single-threaded runtime per test, so holding this
+// process-global std Mutex here only blocks other *tests'* OS threads
+// (briefly, until this one finishes) — it can't deadlock this test itself.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn build_status_data_includes_org_memory_when_org_sync_configured() {
+    use crate::{config::SyncSettings, db, store::SqliteStore};
+
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, db_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    db::run_migrations(&conn).await.unwrap();
+    let store = SqliteStore::new(conn);
+
+    // Point resolve_org_db_path() at a scratch file for this test, and
+    // pre-seed it directly with an org memory.
+    let org_dir = tempfile::tempdir().unwrap();
+    let org_db_path = org_dir.path().join("org.db");
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX for the
+    // duration of this test, including the awaits below.
+    unsafe { std::env::set_var("HIVEMIND_ORG_DB_PATH", org_db_path.to_str().unwrap()) };
+
+    let org_database = db::open_database(&SyncSettings::default(), org_db_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let org_conn = org_database.connect().unwrap();
+    db::run_migrations(&org_conn).await.unwrap();
+    let org_store = SqliteStore::new(org_conn);
+    org_store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_org_test",
+            title: "org pref",
+            content: "org content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    drop(org_store);
+    drop(org_database);
+
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join(".hivemind.toml"),
+        "[project]\nname=\"test-proj\"\n[hooks.on_session_start]\nrecalls=[\"org pref\"]\n",
+    )
+    .unwrap();
+    let global_path = dir.path().join("no-global.toml");
+
+    let settings = crate::config::ServerSettings {
+        host: "127.0.0.1".into(),
+        port: 3456,
+        dashboard_port: 3457,
+        api_url: "http://127.0.0.1:3456".into(),
+        cors_origin: "http://127.0.0.1:3457".into(),
+        sync: SyncSettings::default(),
+        org_sync: Some(SyncSettings::default()),
+        update: crate::config::UpdateSettings::default(),
+        agent: crate::config::AgentSettings::default(),
+        guard_predefined_namespaces: true,
+    };
+
+    let data = build_status_data(
+        proj.path(),
+        &global_path,
+        &store,
+        "test.db",
+        &[],
+        &settings,
+        false,
+    )
+    .await
+    .unwrap();
+
+    unsafe { std::env::remove_var("HIVEMIND_ORG_DB_PATH") };
+
+    let project = data.project.expect("project config found");
+    assert!(
+        project.loaded.iter().any(|l| l.title == "org pref"),
+        "build_status_data should load an org memory when org_sync is configured; loaded: {:?}",
+        project.loaded.iter().map(|l| &l.title).collect::<Vec<_>>()
+    );
 }
 
 // ── detect_registered_clients ────────────────────────────────────────────
@@ -1183,4 +1295,20 @@ fn warn_if_not_initialized_config_but_no_clients_prints_hint() {
     warn_if_not_initialized(); // exercises the "config found, no clients" branch
     unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     unsafe { std::env::remove_var("HOME") };
+}
+
+#[test]
+fn global_config_template_parses_with_org_sync_disabled_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(&path, crate::cli::init::GLOBAL_CONFIG).unwrap();
+    let settings = crate::config::load_server_settings(&path).unwrap();
+    assert_eq!(
+        settings.org_sync, None,
+        "template ships with org_sync disabled"
+    );
+    assert!(
+        crate::cli::init::GLOBAL_CONFIG.contains("[org_sync]"),
+        "template should document the org_sync block, even commented out"
+    );
 }

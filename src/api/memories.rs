@@ -10,11 +10,18 @@ pub(super) struct ListMemoriesParams {
 
 pub(super) async fn list_memories(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Query(p): Query<ListMemoriesParams>,
 ) -> Result<Json<Value>, ApiError> {
     let limit = p.limit.unwrap_or(200).clamp(1, 1000);
     let offset = p.offset.unwrap_or(0).max(0);
-    let entries = store.list_memories(limit, offset).await?;
+    let mut entries = store.list_memories(limit, offset).await?;
+    if let Some(org) = &org_store {
+        match org.list_memories(limit, offset).await {
+            Ok(mut org_entries) => entries.append(&mut org_entries),
+            Err(e) => tracing::warn!("org store list_memories failed: {e:#}"),
+        }
+    }
     Ok(Json(json!({
         "count": entries.len(),
         "memories": entries.iter().map(entry_json).collect::<Vec<_>>(),
@@ -60,6 +67,7 @@ pub(super) struct CreateMemoryBody {
 
 pub(super) async fn create_memory(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Extension(events): Extension<Events>,
     Json(b): Json<CreateMemoryBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -77,8 +85,18 @@ pub(super) async fn create_memory(
             .to_string(),
         None => "project".to_string(),
     };
+    let target_store = if layer == "org" {
+        org_store.as_ref().ok_or_else(|| {
+            ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "org layer not configured — set [org_sync] in the global config".to_string(),
+            )
+        })?
+    } else {
+        &store
+    };
     let id = format!("mem_{}", uuid::Uuid::new_v4().simple());
-    store
+    target_store
         .store(&crate::store::NewMemoryRow {
             id: &id,
             title: &b.title,
@@ -95,11 +113,16 @@ pub(super) async fn create_memory(
 
 pub(super) async fn get_memory(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    match store.recall_by_id(&id).await? {
+    let owning = find_owning_store(&store, &org_store, &id).await?;
+    match owning {
         None => Err(not_found(format!("no memory {id}"))),
-        Some(e) => Ok(Json(entry_json(&e))),
+        Some(s) => match s.recall_by_id(&id).await? {
+            None => Err(not_found(format!("no memory {id}"))),
+            Some(e) => Ok(Json(entry_json(&e))),
+        },
     }
 }
 
@@ -112,23 +135,26 @@ pub(super) struct PatchMemoryBody {
 
 pub(super) async fn patch_memory(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Extension(events): Extension<Events>,
     Path(id): Path<String>,
     Json(b): Json<PatchMemoryBody>,
 ) -> Result<Json<Value>, ApiError> {
-    // Fetch current state to fill in unchanged fields
-    let current = store
+    let owning = find_owning_store(&store, &org_store, &id)
+        .await?
+        .ok_or_else(|| not_found(format!("no memory {id}")))?;
+    let current = owning
         .recall_by_id(&id)
         .await?
         .ok_or_else(|| not_found(format!("no memory {id}")))?;
     let title = b.title.as_deref().unwrap_or(&current.title);
     let content = b.content.as_deref().unwrap_or(&current.content);
     let tags = b.tags.as_deref().unwrap_or(&current.tags);
-    let updated = store.update(&id, title, content, tags).await?;
+    let updated = owning.update(&id, title, content, tags).await?;
     if !updated {
         return Err(not_found(format!("no memory {id}")));
     }
-    let entry = store
+    let entry = owning
         .recall_by_id(&id)
         .await?
         .ok_or_else(|| not_found(format!("no memory {id}")))?;
@@ -143,14 +169,18 @@ pub(super) struct TagsBody {
 
 pub(super) async fn add_memory_tags(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Extension(events): Extension<Events>,
     Path(id): Path<String>,
     Json(b): Json<TagsBody>,
 ) -> Result<Json<Value>, ApiError> {
-    if !store.add_tags(&id, &b.tags).await? {
+    let owning = find_owning_store(&store, &org_store, &id)
+        .await?
+        .ok_or_else(|| not_found(format!("no memory {id}")))?;
+    if !owning.add_tags(&id, &b.tags).await? {
         return Err(not_found(format!("no memory {id}")));
     }
-    let entry = store
+    let entry = owning
         .recall_by_id(&id)
         .await?
         .ok_or_else(|| not_found(format!("no memory {id}")))?;
@@ -160,14 +190,18 @@ pub(super) async fn add_memory_tags(
 
 pub(super) async fn remove_memory_tags(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Extension(events): Extension<Events>,
     Path(id): Path<String>,
     Json(b): Json<TagsBody>,
 ) -> Result<Json<Value>, ApiError> {
-    if !store.remove_tags(&id, &b.tags).await? {
+    let owning = find_owning_store(&store, &org_store, &id)
+        .await?
+        .ok_or_else(|| not_found(format!("no memory {id}")))?;
+    if !owning.remove_tags(&id, &b.tags).await? {
         return Err(not_found(format!("no memory {id}")));
     }
-    let entry = store
+    let entry = owning
         .recall_by_id(&id)
         .await?
         .ok_or_else(|| not_found(format!("no memory {id}")))?;
@@ -177,10 +211,14 @@ pub(super) async fn remove_memory_tags(
 
 pub(super) async fn delete_memory(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Extension(events): Extension<Events>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    if !store.delete(&id).await? {
+    let owning = find_owning_store(&store, &org_store, &id)
+        .await?
+        .ok_or_else(|| not_found(format!("no memory {id}")))?;
+    if !owning.delete(&id).await? {
         return Err(not_found(format!("no memory {id}")));
     }
     let _ = events.send(json!({ "type": "changed" }));
@@ -206,10 +244,11 @@ pub(super) struct SearchParams {
 
 pub(super) async fn search(
     State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
     Query(p): Query<SearchParams>,
 ) -> Result<Json<Value>, ApiError> {
     let limit = p.limit.unwrap_or(20).clamp(1, 50);
-    let hits = if crate::tag_query::looks_like_tag_expr(&p.q) {
+    let mut hits = if crate::tag_query::looks_like_tag_expr(&p.q) {
         let expr = crate::tag_query::parse(&p.q)
             .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
         let mut matches = store.find_by_tag_expr(&expr).await?;
@@ -218,6 +257,25 @@ pub(super) async fn search(
     } else {
         store.search(&p.q, limit).await?
     };
+    if hits.len() < limit as usize
+        && let Some(org) = &org_store
+    {
+        let remaining = limit - hits.len() as i64;
+        let org_hits = if crate::tag_query::looks_like_tag_expr(&p.q) {
+            let expr = crate::tag_query::parse(&p.q)
+                .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+            org.find_by_tag_expr(&expr).await
+        } else {
+            org.search(&p.q, remaining).await
+        };
+        match org_hits {
+            Ok(mut org_hits) => {
+                org_hits.truncate(remaining as usize);
+                hits.append(&mut org_hits);
+            }
+            Err(e) => tracing::warn!("org store search failed: {e:#}"),
+        }
+    }
     let results: Vec<_> = hits.iter().map(entry_json).collect();
     Ok(Json(json!({ "count": results.len(), "results": results })))
 }

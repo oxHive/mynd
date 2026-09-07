@@ -73,7 +73,9 @@ async fn test_router_with_guard(guard_predefined_namespaces: bool) -> (Router, T
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
+        None,
         SyncSettings::default(),
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -90,7 +92,9 @@ async fn test_router_with_events() -> (Router, broadcast::Receiver<Value>, TempD
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
+        None,
         SyncSettings::default(),
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -107,7 +111,9 @@ async fn test_router_with_store() -> (Router, Arc<SqliteStore>, TempDir) {
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         Arc::clone(&store),
+        None,
         SyncSettings::default(),
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -116,6 +122,33 @@ async fn test_router_with_store() -> (Router, Arc<SqliteStore>, TempDir) {
         true,
     );
     (r, store, dir)
+}
+
+async fn test_router_with_org() -> (Router, TempDir, TempDir) {
+    let (store, dir) = test_store().await;
+    let (org_store, org_dir) = test_store().await;
+    let (events, _) = broadcast::channel(16);
+    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let r = router(
+        store,
+        Some(org_store),
+        SyncSettings::default(),
+        Some(SyncSettings {
+            enabled: true,
+            remote_url: "https://gateway.example/org".into(),
+            api_key: "hm_org_x".into(),
+            interval_seconds: 60,
+            sync_on_store: true,
+            sync_on_startup: true,
+        }),
+        "http://127.0.0.1:3457",
+        events,
+        suggest,
+        test_update_state(),
+        test_agent_settings(),
+        true,
+    );
+    (r, dir, org_dir)
 }
 
 async fn req(app: Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -315,6 +348,78 @@ async fn status_reports_version_and_count() {
 }
 
 #[tokio::test]
+async fn status_reports_org_not_configured_when_absent() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org"]["configured"], false);
+    assert!(json["org"].get("last_synced_at").is_none() || json["org"]["last_synced_at"].is_null());
+}
+
+#[tokio::test]
+async fn status_reports_org_configured_and_counts_when_present() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org"]["configured"], true);
+    assert_eq!(json["org"]["enabled"], true);
+    assert_eq!(json["org"]["conflict_count"], 0);
+    assert_eq!(json["org"]["count"], 0);
+}
+
+#[tokio::test]
+async fn status_degrades_gracefully_when_org_store_is_broken() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+    // Break the org db out from under the router's already-open connection
+    // by dropping tables that server_status's org block queries depend on.
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    conn.execute_batch("DROP TABLE _meta; DROP TABLE conflicts; DROP TABLE memories;")
+        .await
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org"]["configured"], true);
+    assert_eq!(json["org"]["conflict_count"], 0);
+    assert_eq!(json["org"]["count"], 0);
+}
+
+#[tokio::test]
 async fn settings_sync_returns_defaults() {
     let (app, _dir) = test_router().await;
     let (status, body) = req(app, "GET", "/api/v1/settings/sync", None).await;
@@ -324,10 +429,92 @@ async fn settings_sync_returns_defaults() {
 }
 
 #[tokio::test]
+async fn sync_settings_reports_org_sync_null_when_absent() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/settings/sync")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["org_sync"].is_null());
+}
+
+#[tokio::test]
+async fn sync_settings_reports_org_sync_fields_when_present() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/settings/sync")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org_sync"]["enabled"], true);
+    assert_eq!(
+        json["org_sync"]["remote_url"],
+        "https://gateway.example/org"
+    );
+}
+
+#[tokio::test]
 async fn delete_memory_returns_404_when_not_found() {
     let (app, _dir) = test_router().await;
     let (status, _) = req(app, "DELETE", "/api/v1/memories/mem_nonexistent", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_memory_falls_back_to_org_store() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+    // Reopen the same org.db this router was built with, to seed a memory
+    // directly — router() takes ownership of the Arc<SqliteStore>, so the
+    // test writes through a fresh connection to the same file.
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    db::run_migrations(&conn).await.unwrap(); // idempotent — also sets this connection's pragmas
+    let org_store = SqliteStore::new(conn);
+    org_store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_org1",
+            title: "org title",
+            content: "org content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/memories/mem_org1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["title"], "org title");
 }
 
 #[tokio::test]
@@ -688,6 +875,105 @@ async fn list_edges_filtered() {
 }
 
 #[tokio::test]
+async fn create_edge_retries_against_org_on_missing_endpoint() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    // Two org-layer memories — primary store has neither, so primary's
+    // create_edge returns MissingEndpoint and this should retry in org.
+    let mut ids = vec![];
+    for title in ["a", "b"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/memories")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "title": title, "content": "c", "layer": "org" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        ids.push(json["id"].as_str().unwrap().to_string());
+    }
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/edges")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "source_id": ids[0],
+                        "target_id": ids[1],
+                        "relationship": "sibling"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn list_edges_includes_org_edges_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let mut ids = vec![];
+    for title in ["a", "b"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/memories")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "title": title, "content": "c", "layer": "org" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        ids.push(json["id"].as_str().unwrap().to_string());
+    }
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/edges")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "source_id": ids[0], "target_id": ids[1], "relationship": "sibling" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/edges")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["count"], 1);
+}
+
+#[tokio::test]
 async fn resolve_conflict_success() {
     let (app, store, _dir) = test_router_with_store().await;
 
@@ -731,6 +1017,116 @@ async fn resolve_conflict_returns_404_for_missing() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn resolve_conflict_retries_against_org_when_not_found_in_primary() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    db::run_migrations(&conn).await.unwrap();
+    let org_store = SqliteStore::new(conn);
+    org_store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_org_resolve",
+            title: "org resolve memory",
+            content: "content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let conflict = org_store
+        .write_conflict("mem_org_resolve", "remote content", "local content", 2, 1)
+        .await
+        .unwrap();
+
+    let (status, body) = req(
+        app,
+        "POST",
+        &format!("/api/v1/conflicts/{}/resolve", conflict.id),
+        Some(json!({ "resolution": "keep_local" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["resolved"], true);
+}
+
+#[tokio::test]
+async fn list_conflicts_includes_org_conflicts_stamped_with_layer() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+
+    // Seed a conflict directly into the org db (router() already holds the
+    // org store; this reopens a fresh connection to the same file, same
+    // pattern as get_memory_falls_back_to_org_store).
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    db::run_migrations(&conn).await.unwrap();
+    let org_store = SqliteStore::new(conn);
+    org_store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_org_conflict",
+            title: "org conflict memory",
+            content: "content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    org_store
+        .write_conflict("mem_org_conflict", "remote content", "local content", 2, 1)
+        .await
+        .unwrap();
+
+    let (status, body) = req(app, "GET", "/api/v1/conflicts", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["conflicts"][0]["layer"], "org");
+}
+
+#[tokio::test]
+async fn list_conflicts_primary_entries_have_no_layer_field() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_primary_conflict",
+            title: "primary conflict memory",
+            content: "content",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    store
+        .write_conflict(
+            "mem_primary_conflict",
+            "remote content",
+            "local content",
+            2,
+            1,
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = req(app, "GET", "/api/v1/conflicts", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["count"], 1);
+    assert!(body["conflicts"][0].get("layer").is_none());
 }
 
 #[tokio::test]
@@ -1045,4 +1441,147 @@ async fn revise_validates_session_and_edge() {
     )
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn create_memory_with_org_layer_routes_to_org_store_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "title": "t", "content": "c", "layer": "org" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let id = json["id"].as_str().unwrap().to_string();
+
+    // Confirm it landed in org, not primary, by checking it's retrievable
+    // (get_memory's org fallback from Task 3 makes this ambiguous on its
+    // own, so this test instead directly inspects the response's layer).
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/memories/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let get_body = get_resp.into_body().collect().await.unwrap().to_bytes();
+    let get_json: Value = serde_json::from_slice(&get_body).unwrap();
+    assert_eq!(get_json["layer"], "org");
+}
+
+#[tokio::test]
+async fn create_memory_with_org_layer_errors_when_not_configured() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "title": "t", "content": "c", "layer": "org" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"],
+        "org layer not configured — set [org_sync] in the global config"
+    );
+}
+
+#[tokio::test]
+async fn list_memories_includes_org_entries_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    // Create one workspace memory and one org memory via the API itself.
+    for layer in ["workspace", "org"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/memories")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "title": layer, "content": "c", "layer": layer }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/memories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let titles: Vec<&str> = json["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["title"].as_str().unwrap())
+        .collect();
+    assert!(titles.contains(&"workspace"));
+    assert!(titles.contains(&"org"));
+}
+
+#[tokio::test]
+async fn search_includes_org_entries_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "title": "orgsearchable", "content": "unique org content", "layer": "org" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/search?q=orgsearchable")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["count"], 1);
+    assert_eq!(json["results"][0]["title"], "orgsearchable");
 }

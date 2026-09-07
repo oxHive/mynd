@@ -30,6 +30,12 @@
   --hm-workspace-bg: #1a1830;
   --hm-workspace-ring: #7f77dd40;
 
+  /* Brand — Org (blue) */
+  --hm-org: #3d84d9;
+  --hm-org-dim: #1f5da3;
+  --hm-org-bg: #10233b;
+  --hm-org-ring: #3d84d940;
+
   /* Semantic states */
   --hm-warning: #ba7517;
   --hm-warning-bg: #2a1e0a;
@@ -85,6 +91,7 @@
 
   --hm-personal-bg: #e2f4ec;
   --hm-workspace-bg: #ecebfa;
+  --hm-org-bg: #e2ecfa;
 
   --hm-warning-bg: #fbf0dc;
   --hm-warning-border: #dba14b;

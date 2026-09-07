@@ -61,6 +61,13 @@ pub fn resolve_db_path() -> String {
         .into_owned()
 }
 
+pub fn resolve_org_db_path() -> String {
+    if let Ok(p) = std::env::var("HIVEMIND_ORG_DB_PATH") {
+        return p;
+    }
+    xdg_data_dir().join("org.db").to_string_lossy().into_owned()
+}
+
 pub async fn open_database(sync: &SyncSettings, path: &str) -> Result<libsql::Database> {
     if let Some(dir) = std::path::Path::new(path).parent() {
         tokio::fs::create_dir_all(dir).await?;
@@ -452,5 +459,17 @@ mod tests {
             got,
             vec![("parent".to_string(), 1), ("sibling".to_string(), 1)]
         );
+    }
+
+    #[test]
+    fn org_db_path_sits_next_to_primary_db_path() {
+        // SAFETY: test-only env var mutation, no other test in this module reads
+        // XDG_DATA_HOME concurrently — matches the existing pattern in this file.
+        unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/hivemind-test-xdg") };
+        let primary = resolve_db_path();
+        let org = resolve_org_db_path();
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        assert_eq!(primary, "/tmp/hivemind-test-xdg/mynd/memories.db");
+        assert_eq!(org, "/tmp/hivemind-test-xdg/mynd/org.db");
     }
 }

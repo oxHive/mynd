@@ -40,7 +40,12 @@ const statusDot = computed(() => {
   return 'green'
 })
 
-const memoryCount = computed(() => ui.serverInfo?.memory_count ?? ui.serverInfo?.memoryCount ?? '—')
+const memoryCount = computed(() => {
+  if (!ui.serverInfo) return '—'
+  const primary = ui.serverInfo?.memory_count ?? ui.serverInfo?.memoryCount ?? 0
+  const org = ui.orgInfo?.count ?? 0
+  return primary + org
+})
 
 const serverAddress = computed(() => (BASE || 'http://localhost:3456').replace(/^https?:\/\//, ''))
 
@@ -66,6 +71,27 @@ const syncDot = computed(() => {
 
 const conflictCount = computed(() => syncInfo.value?.conflict_count ?? 0)
 const conflictDot = computed(() => (conflictCount.value > 0 ? 'amber' : 'green'))
+
+const orgInfo = computed(() => ui.orgInfo)
+
+const orgSyncStatusText = computed(() => {
+  if (!orgInfo.value?.configured) return null
+  if (!orgInfo.value?.enabled) return 'configured, sync disabled'
+  const last = orgInfo.value?.last_synced_at
+  if (!last) return 'not yet synced'
+  const diffSec = Math.floor(Date.now() / 1000) - last
+  if (diffSec < 60) return 'synced · just now'
+  const diffMin = Math.floor(diffSec / 60)
+  return `synced · ${diffMin}m ago`
+})
+
+const orgSyncDot = computed(() => {
+  if (!orgInfo.value?.configured || !orgInfo.value?.enabled) return 'gray'
+  const last = orgInfo.value?.last_synced_at
+  if (!last) return 'gray'
+  const diffSec = Math.floor(Date.now() / 1000) - last
+  return diffSec > 600 ? 'amber' : 'green'
+})
 </script>
 
 <template>
@@ -153,6 +179,7 @@ const conflictDot = computed(() => (conflictCount.value > 0 ? 'amber' : 'green')
         style="border-top:0.5px solid var(--hm-border-subtle)">
         <StatusRow :dot="statusDot" k="server" :v="serverAddress" />
         <StatusRow v-if="syncStatusText" :dot="syncDot" pulse k="sync" :v="syncStatusText" class="mt-1" />
+        <StatusRow v-if="orgInfo?.configured" :dot="orgSyncDot" pulse k="org" :v="orgSyncStatusText" class="mt-1" />
         <StatusRow :dot="conflictDot" k="conflicts" :v="String(conflictCount)" class="mt-1" />
         <StatusRow dot="gray" :text="`${memoryCount} memories`" class="mt-1" />
       </div>

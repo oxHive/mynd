@@ -1,13 +1,15 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { PhMagnifyingGlass, PhPlus } from '@phosphor-icons/vue'
 import { useMemoriesStore } from '../../stores/memories.js'
+import { useUiStore } from '../../stores/ui.js'
 import MemoryCard from './MemoryCard.vue'
 import FilterChip from '../shared/FilterChip.vue'
 import SkeletonCard from '../shared/SkeletonCard.vue'
 import TagFilter from '../shared/TagFilter.vue'
 
 const memories = useMemoriesStore()
+const ui = useUiStore()
 const searchEl = ref(null)
 
 function handleSlash(e) {
@@ -21,11 +23,18 @@ function handleSlash(e) {
 onMounted(() => window.addEventListener('keydown', handleSlash))
 onBeforeUnmount(() => window.removeEventListener('keydown', handleSlash))
 
-const filters = [
+const ALL_FILTERS = [
   { label: 'all', value: 'all' },
   { label: 'personal', value: 'personal', layer: 'personal' },
   { label: 'workspace', value: 'workspace', layer: 'workspace' },
+  { label: 'org', value: 'org', layer: 'org' },
 ]
+
+// Org filter only makes sense when the server actually has [org_sync]
+// configured — otherwise it's a picker for a layer nothing can ever be in.
+const filters = computed(() =>
+  ui.orgInfo?.configured ? ALL_FILTERS : ALL_FILTERS.filter(f => f.value !== 'org')
+)
 </script>
 
 <template>

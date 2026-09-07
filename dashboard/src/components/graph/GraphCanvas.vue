@@ -132,6 +132,7 @@ const LABEL_MIN_SCALE = 0.55
 const COLORS = {
   personal: '#1d9e75',
   workspace: '#7f77dd',
+  org: '#3d84d9',
   pending: '#ba7517',
 }
 

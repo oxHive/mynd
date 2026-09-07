@@ -317,6 +317,17 @@ remote_url = \"\" # Oxhive hosted: https://sync.oxhive.dev  or  self-hosted sqld
 api_key = \"\"    # Oxhive account key, or sqld auth token (leave empty if sqld has no auth)\n\
 interval_seconds = 300\n\
 sync_on_store = true\n\
+sync_on_startup = true\n\
+\n\
+# Org layer — a second, independent sync connection for org-shared memory.\n\
+# Leave disabled unless you belong to a paid Oxhive org or have a\n\
+# self-hosted sqld your team shares.\n\
+[org_sync]\n\
+enabled = false\n\
+remote_url = \"\" # hivemind-gateway URL (paid), or a self-hosted sqld URL\n\
+api_key = \"\"    # gateway-issued key, or sqld auth token\n\
+interval_seconds = 300\n\
+sync_on_store = true\n\
 sync_on_startup = true\n";
 
 pub(crate) const GLOBAL_CLAUDE_MARKER: &str = "# Mynd Memory System";

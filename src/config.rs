@@ -280,6 +280,8 @@ struct RawGlobal {
     #[serde(default)]
     sync: RawSync,
     #[serde(default)]
+    org_sync: RawSync,
+    #[serde(default)]
     update: RawUpdate,
     #[serde(default)]
     agent: RawAgent,
@@ -444,6 +446,10 @@ pub struct ServerSettings {
     /// via a custom hostname (e.g. `http://pi.local:3457`).
     pub cors_origin: String,
     pub sync: SyncSettings,
+    /// The org-layer sync connection, if `[org_sync]` is configured and
+    /// enabled with a non-empty `remote_url`. `None` means the org layer is
+    /// unavailable — every org-layer code path must degrade cleanly on `None`.
+    pub org_sync: Option<SyncSettings>,
     pub update: UpdateSettings,
     pub agent: AgentSettings,
     /// Whether predefined tag namespaces (project, topic, status, lang, kind,
@@ -485,6 +491,22 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
         sync_on_store: raw.sync.sync_on_store.unwrap_or(true),
         sync_on_startup: raw.sync.sync_on_startup.unwrap_or(true),
     };
+    let org_sync = {
+        let enabled = raw.org_sync.enabled.unwrap_or(false);
+        let remote_url = raw.org_sync.remote_url.unwrap_or_default();
+        if enabled && !remote_url.is_empty() {
+            Some(SyncSettings {
+                enabled: true,
+                remote_url,
+                api_key: raw.org_sync.api_key.unwrap_or_default(),
+                interval_seconds: raw.org_sync.interval_seconds.unwrap_or(300),
+                sync_on_store: raw.org_sync.sync_on_store.unwrap_or(true),
+                sync_on_startup: raw.org_sync.sync_on_startup.unwrap_or(true),
+            })
+        } else {
+            None
+        }
+    };
     let update = UpdateSettings {
         enabled: raw.update.enabled.unwrap_or(true),
         check_interval_seconds: raw.update.check_interval_seconds.unwrap_or(600),
@@ -507,6 +529,7 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
         api_url,
         cors_origin,
         sync,
+        org_sync,
         update,
         agent,
         guard_predefined_namespaces,
@@ -785,6 +808,51 @@ mod tests {
         assert_eq!(s.sync.api_key, "secret");
         assert_eq!(s.sync.interval_seconds, 60);
         assert!(!s.sync.sync_on_store);
+    }
+
+    #[test]
+    fn org_sync_absent_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load_server_settings(&tmp.path().join("no-global.toml")).unwrap();
+        assert_eq!(s.org_sync, None);
+    }
+
+    #[test]
+    fn org_sync_none_when_present_but_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(
+            &global,
+            "[org_sync]\nenabled = false\nremote_url = \"https://gateway.oxhive.dev\"\napi_key = \"x\"\n",
+        )
+        .unwrap();
+        let s = load_server_settings(&global).unwrap();
+        assert_eq!(s.org_sync, None);
+    }
+
+    #[test]
+    fn org_sync_some_when_enabled_with_remote_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(
+            &global,
+            "[org_sync]\nenabled = true\nremote_url = \"https://gateway.oxhive.dev\"\napi_key = \"hm_org_x\"\ninterval_seconds = 60\n",
+        )
+        .unwrap();
+        let s = load_server_settings(&global).unwrap();
+        let org = s.org_sync.expect("org_sync should be Some");
+        assert_eq!(org.remote_url, "https://gateway.oxhive.dev");
+        assert_eq!(org.api_key, "hm_org_x");
+        assert_eq!(org.interval_seconds, 60);
+    }
+
+    #[test]
+    fn org_sync_none_when_enabled_but_remote_url_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "[org_sync]\nenabled = true\nremote_url = \"\"\n").unwrap();
+        let s = load_server_settings(&global).unwrap();
+        assert_eq!(s.org_sync, None);
     }
 
     #[test]

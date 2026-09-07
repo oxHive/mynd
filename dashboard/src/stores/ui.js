@@ -7,6 +7,7 @@ export const useUiStore = defineStore('ui', () => {
   const serverStatus = ref('checking') // 'checking'|'running'|'unreachable'|'syncing'|'sync_failed'
   const serverInfo = ref(null)
   const syncInfo = ref(null)
+  const orgInfo = ref(null)
   const toast = ref({ message: '', visible: false })
 
   // Lets a view (currently: Settings > Tags) veto a top-level view switch
@@ -52,13 +53,14 @@ export const useUiStore = defineStore('ui', () => {
       serverStatus.value = 'running'
       serverInfo.value = data.info ?? data
       syncInfo.value = data.sync ?? null
+      orgInfo.value = data.org ?? null
     } catch {
       serverStatus.value = 'unreachable'
     }
   }
 
   return {
-    activeView, serverStatus, serverInfo, syncInfo, toast,
+    activeView, serverStatus, serverInfo, syncInfo, orgInfo, toast,
     registerNavigationGuard, clearNavigationGuard, requestActiveView,
     showToast, copyToClipboard, pollServerStatus,
   }

@@ -142,16 +142,45 @@ pub fn cmd_session_start(json: bool) -> Result<()> {
         .enable_all()
         .build()?
         .block_on(async {
-            let settings =
-                crate::config::load_server_settings(&crate::config::global_config_path())
-                    .map(|s| s.sync)
-                    .unwrap_or_default();
-            let database = crate::db::open_database(&settings, &db_path).await?;
+            let (sync_settings, org_sync_settings) =
+                match crate::config::load_server_settings(&crate::config::global_config_path()) {
+                    Ok(s) => (s.sync, s.org_sync),
+                    Err(_) => (crate::config::SyncSettings::default(), None),
+                };
+            let database = crate::db::open_database(&sync_settings, &db_path).await?;
             let conn = database.connect()?;
             crate::db::run_migrations(&conn).await?;
             let store = crate::store::SqliteStore::new(conn);
+
+            let org_store = match &org_sync_settings {
+                Some(org_sync) => {
+                    let org_db_path = crate::db::resolve_org_db_path();
+                    match crate::db::open_database(org_sync, &org_db_path).await {
+                        Ok(org_database) => match org_database.connect() {
+                            Ok(org_conn) => match crate::db::run_migrations(&org_conn).await {
+                                Ok(()) => Some(crate::store::SqliteStore::new(org_conn)),
+                                Err(e) => {
+                                    tracing::warn!("org db migration failed: {e:#}");
+                                    None
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!("org db connect failed: {e:#}");
+                                None
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("could not open org database: {e:#}");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+
             let config = crate::config::load_config(&cwd)?;
-            let result = crate::session::execute_session_start(&config, &store).await?;
+            let result =
+                crate::session::execute_session_start(&config, &store, org_store.as_ref()).await?;
             if let Err(e) = store
                 .log_session_start(&cwd.to_string_lossy(), &result)
                 .await
@@ -362,7 +391,33 @@ pub async fn build_status_data(
         return Ok(data);
     };
 
-    let result = crate::session::execute_session_start(&config, store).await?;
+    let org_store = match &settings.org_sync {
+        Some(org_sync) => {
+            let org_db_path = crate::db::resolve_org_db_path();
+            match crate::db::open_database(org_sync, &org_db_path).await {
+                Ok(org_database) => match org_database.connect() {
+                    Ok(org_conn) => match crate::db::run_migrations(&org_conn).await {
+                        Ok(()) => Some(crate::store::SqliteStore::new(org_conn)),
+                        Err(e) => {
+                            tracing::warn!("org db migration failed: {e:#}");
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("org db connect failed: {e:#}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("could not open org database: {e:#}");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    let result = crate::session::execute_session_start(&config, store, org_store.as_ref()).await?;
 
     data.project = Some(ProjectStatus {
         project_name: config.project_name.clone(),

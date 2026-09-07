@@ -26,7 +26,9 @@ static PLACEHOLDER_HTML: &str = include_str!("dashboard_placeholder.html");
 #[allow(clippy::too_many_arguments)]
 pub fn app_router(
     store: Arc<SqliteStore>,
+    org_store: Option<Arc<SqliteStore>>,
     sync: SyncSettings,
+    org_sync: Option<SyncSettings>,
     notify_on_store: Option<Arc<tokio::sync::Notify>>,
     dashboard_origin: &str,
     events_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
@@ -41,13 +43,17 @@ pub fn app_router(
     let mcp = StreamableHttpService::new(
         {
             let store = store.clone();
+            let org_store = org_store.clone();
             let trigger = notify_on_store.clone();
             let events_tx = events_tx.clone();
             move || {
-                let mynd = match &trigger {
+                let mut mynd = match &trigger {
                     Some(t) => Mynd::with_sync(store.clone(), t.clone()),
                     None => Mynd::with_store(store.clone()),
                 };
+                if let Some(org) = &org_store {
+                    mynd = mynd.with_org_store(org.clone());
+                }
                 Ok(mynd.with_events(events_tx.clone()))
             }
         },
@@ -58,7 +64,9 @@ pub fn app_router(
     let suggest = SuggestSessionManager::new(store.clone(), events_tx.clone(), agent, mcp_url);
     api::router(
         store,
+        org_store,
         sync,
+        org_sync,
         dashboard_origin,
         events_tx,
         suggest,
@@ -199,6 +207,7 @@ fn write_pidfile() -> Result<PidGuard> {
 
 pub async fn run_up(
     store: Arc<SqliteStore>,
+    org_store: Option<Arc<SqliteStore>>,
     settings: &ServerSettings,
     headless: bool,
     plain: bool,
@@ -228,7 +237,9 @@ pub async fn run_up(
     let mcp_url = format!("http://{}:{}/mcp", mcp_host, settings.port);
     let app = app_router(
         store.clone(),
+        org_store,
         settings.sync.clone(),
+        settings.org_sync.clone(),
         notify_on_store,
         &settings.cors_origin,
         events_tx.clone(),
@@ -461,7 +472,9 @@ mod tests {
         };
         let app = app_router(
             store,
+            None,
             crate::config::SyncSettings::default(),
+            None,
             None,
             "http://127.0.0.1:3457",
             events_tx,

@@ -1,5 +1,6 @@
 <script setup>
 import { useFeedbackStore } from '../../stores/feedback.js'
+import LayerBadge from '../shared/LayerBadge.vue'
 
 const props = defineProps({ conflict: Object })
 const fb = useFeedbackStore()
@@ -14,6 +15,7 @@ const fb = useFeedbackStore()
         <span class="font-mono" style="font-size:10px; color:var(--hm-text-tertiary)">{{ conflict.id }}</span>
         <p class="mt-1" style="font-size:13px; font-weight:500; color:var(--hm-text-primary)">{{ conflict.title || 'Conflict' }}</p>
       </div>
+      <LayerBadge v-if="conflict.layer" :layer="conflict.layer" class="shrink-0" />
     </div>
 
     <!-- Two-column diff -->

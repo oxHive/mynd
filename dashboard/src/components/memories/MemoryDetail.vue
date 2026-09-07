@@ -385,6 +385,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             <button class="hm-btn hm-btn-sm"
               :style="memories.draft.layer==='personal' ? 'background:var(--hm-personal-bg); border-color:var(--hm-personal); color:var(--hm-personal)' : 'border-color:var(--hm-border-subtle); color:var(--hm-text-secondary)'"
               @click="memories.draft.layer='personal'">personal</button>
+            <button class="hm-btn hm-btn-sm"
+              :disabled="!ui.orgInfo?.configured"
+              :title="ui.orgInfo?.configured ? '' : 'Org layer not configured — set [org_sync] in the global config'"
+              :style="memories.draft.layer==='org' ? 'background:var(--hm-org-bg); border-color:var(--hm-org); color:var(--hm-org)' : 'border-color:var(--hm-border-subtle); color:var(--hm-text-secondary)'"
+              @click="memories.draft.layer='org'">org</button>
           </div>
         </template>
 

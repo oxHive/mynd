@@ -2,13 +2,23 @@ use super::*;
 
 // --- sync settings (read-only from file in v1) ---
 
-pub(super) async fn get_sync_settings(Extension(sync): Extension<SyncSettings>) -> Json<Value> {
+pub(super) async fn get_sync_settings(
+    Extension(sync): Extension<SyncSettings>,
+    Extension(org_sync): Extension<Option<SyncSettings>>,
+) -> Json<Value> {
     Json(json!({
         "enabled": sync.enabled,
         "remote_url": sync.remote_url,
         "interval_seconds": sync.interval_seconds,
         "sync_on_store": sync.sync_on_store,
         "sync_on_startup": sync.sync_on_startup,
+        "org_sync": org_sync.map(|s| json!({
+            "enabled": s.enabled,
+            "remote_url": s.remote_url,
+            "interval_seconds": s.interval_seconds,
+            "sync_on_store": s.sync_on_store,
+            "sync_on_startup": s.sync_on_startup,
+        })),
     }))
 }
 

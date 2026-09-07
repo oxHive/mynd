@@ -398,7 +398,7 @@ export const useMemoriesStore = defineStore('memories', () => {
 
   async function clearAll() {
     await api.deleteAllMemories()
-    all.value = []
+    all.value = all.value.filter(m => m.layer === 'org')
     stashedDrafts.value = {}
     persistDrafts()
     select(null)

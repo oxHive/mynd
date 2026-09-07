@@ -67,10 +67,10 @@ fn init_tracing_with_default(default_filter: &str) {
 
 async fn open_store(
     sync_settings: &config::SyncSettings,
+    db_path: &str,
 ) -> Result<(Arc<SqliteStore>, libsql::Database)> {
-    let db_path = db::resolve_db_path();
     tracing::info!("opening database at {db_path}");
-    let database = db::open_database(sync_settings, &db_path).await?;
+    let database = db::open_database(sync_settings, db_path).await?;
     let conn = database.connect()?;
     db::run_migrations(&conn).await?;
     let store = Arc::new(SqliteStore::new(conn));
@@ -90,15 +90,16 @@ async fn run_server() -> Result<()> {
                 api_url: "http://127.0.0.1:3456".into(),
                 cors_origin: "http://127.0.0.1:3457".into(),
                 sync: config::SyncSettings::default(),
+                org_sync: None,
                 update: config::UpdateSettings::default(),
                 agent: config::AgentSettings::default(),
                 guard_predefined_namespaces: true,
             }
         });
-    let (store, database) = open_store(&settings.sync).await?;
+    let (store, database) = open_store(&settings.sync, &db::resolve_db_path()).await?;
     // Holds the DB handle so it lives past `server.waiting()` when no sync loop owns it.
     let mut _db_guard: Option<libsql::Database> = None;
-    let service = if settings.sync.enabled {
+    let mut service = if settings.sync.enabled {
         let trigger = Arc::new(Notify::new());
         tokio::spawn(sync::run_sync_loop(
             Arc::new(database),
@@ -117,6 +118,38 @@ async fn run_server() -> Result<()> {
         Mynd::with_store(store)
     };
 
+    // Org layer is entirely optional — absence of [org_sync] must never stop
+    // the server from starting on personal/workspace alone. Unlike the
+    // primary store, org's database handle never needs a bare guard variable:
+    // `ServerSettings.org_sync` is only ever `Some` when already enabled
+    // (Task 2), so this branch always spawns a sync loop that owns the handle.
+    if let Some(org_sync) = &settings.org_sync {
+        match open_store(org_sync, &db::resolve_org_db_path()).await {
+            Ok((org_store, org_database)) => {
+                let org_trigger = Arc::new(Notify::new());
+                tokio::spawn(sync::run_sync_loop(
+                    Arc::new(org_database),
+                    org_store.clone(),
+                    org_sync.interval_seconds,
+                    org_sync.sync_on_startup,
+                    org_trigger.clone(),
+                ));
+                service = if org_sync.sync_on_store {
+                    service
+                        .with_org_store(org_store)
+                        .with_org_sync_trigger(org_trigger)
+                } else {
+                    service.with_org_store(org_store)
+                };
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "could not open org database ({e:#}); org layer unavailable this session"
+                );
+            }
+        }
+    }
+
     tracing::info!("Mynd MCP server starting on stdio");
     let server = service
         .serve((tokio::io::stdin(), tokio::io::stdout()))
@@ -130,7 +163,7 @@ async fn run_up(headless: bool, plain: bool) -> Result<()> {
     cli::warn_if_not_initialized();
     init_tracing();
     let settings = config::load_server_settings(&config::global_config_path())?;
-    let (store, database) = open_store(&settings.sync).await?;
+    let (store, database) = open_store(&settings.sync, &db::resolve_db_path()).await?;
 
     // Holds the DB handle so it lives past `http::run_up` when no sync loop owns it.
     let mut _db_guard: Option<libsql::Database> = None;
@@ -151,7 +184,41 @@ async fn run_up(headless: bool, plain: bool) -> Result<()> {
         _db_guard = Some(database);
     }
 
-    http::run_up(store, &settings, headless, plain, notify_on_store).await
+    // Org layer is entirely optional here too — mirrors run_server's wiring.
+    // Unlike the primary store, org's database handle never needs a bare
+    // guard variable: ServerSettings.org_sync is only ever Some when already
+    // enabled, so this branch always spawns a sync loop that owns the handle.
+    let mut org_store = None;
+    if let Some(org_sync) = &settings.org_sync {
+        match open_store(org_sync, &db::resolve_org_db_path()).await {
+            Ok((org_store_handle, org_database)) => {
+                let org_trigger = Arc::new(Notify::new());
+                tokio::spawn(sync::run_sync_loop(
+                    Arc::new(org_database),
+                    org_store_handle.clone(),
+                    org_sync.interval_seconds,
+                    org_sync.sync_on_startup,
+                    org_trigger,
+                ));
+                org_store = Some(org_store_handle);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "could not open org database ({e:#}); org layer unavailable this session"
+                );
+            }
+        }
+    }
+
+    http::run_up(
+        store,
+        org_store,
+        &settings,
+        headless,
+        plain,
+        notify_on_store,
+    )
+    .await
 }
 
 #[tokio::main]

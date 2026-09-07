@@ -1,19 +1,29 @@
 <script setup>
+import { computed } from 'vue'
 import { PhMagnifyingGlass, PhMinus, PhPlus, PhCornersOut, PhSparkle, PhArrowsClockwise } from '@phosphor-icons/vue'
 import { useGraphStore } from '../../stores/graph.js'
 import { useMemoriesStore } from '../../stores/memories.js'
 import { useSuggestStore } from '../../stores/suggest.js'
+import { useUiStore } from '../../stores/ui.js'
 import TagFilter from '../shared/TagFilter.vue'
 
 const graph = useGraphStore()
 const memories = useMemoriesStore()
 const suggest = useSuggestStore()
+const ui = useUiStore()
 
-const LAYER_FILTERS = [
+const ALL_LAYER_FILTERS = [
   { label: 'All', value: 'all' },
   { label: 'Personal', value: 'personal' },
   { label: 'Workspace', value: 'workspace' },
+  { label: 'Org', value: 'org' },
 ]
+
+// Org filter only makes sense when the server actually has [org_sync]
+// configured — otherwise it's a picker for a layer nothing can ever be in.
+const LAYER_FILTERS = computed(() =>
+  ui.orgInfo?.configured ? ALL_LAYER_FILTERS : ALL_LAYER_FILTERS.filter(f => f.value !== 'org')
+)
 
 function jumpToMatch() {
   const q = graph.searchQuery.trim().toLowerCase()

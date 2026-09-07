@@ -41,7 +41,8 @@ const displayTags = computed(() => {
     class="memory-card"
     :class="{
       'memory-card--selected-personal': selected && mem.layer === 'personal',
-      'memory-card--selected-workspace': selected && mem.layer !== 'personal',
+      'memory-card--selected-org': selected && mem.layer === 'org',
+      'memory-card--selected-workspace': selected && mem.layer !== 'personal' && mem.layer !== 'org',
     }"
     @keydown.enter.space.prevent="$emit('select', mem)"
   >
@@ -108,6 +109,12 @@ const displayTags = computed(() => {
   box-shadow: inset 2px 0 0 var(--hm-workspace);
 }
 
+.memory-card--selected-org {
+  background: var(--hm-org-bg);
+  border-color: var(--hm-org-dim);
+  box-shadow: inset 2px 0 0 var(--hm-org);
+}
+
 .memory-card--selected-personal:hover,
 .memory-card--selected-personal:focus-visible {
   background: var(--hm-personal-bg);
@@ -118,6 +125,12 @@ const displayTags = computed(() => {
 .memory-card--selected-workspace:focus-visible {
   background: var(--hm-workspace-bg);
   border-color: var(--hm-workspace-dim);
+}
+
+.memory-card--selected-org:hover,
+.memory-card--selected-org:focus-visible {
+  background: var(--hm-org-bg);
+  border-color: var(--hm-org-dim);
 }
 
 .draft-label {

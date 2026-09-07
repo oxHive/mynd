@@ -23,6 +23,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 type Store = Arc<SqliteStore>;
 type Events = broadcast::Sender<serde_json::Value>;
+pub(crate) type OrgStore = Option<Arc<SqliteStore>>;
 
 /// Whether predefined tag namespaces can be deleted/modified via
 /// `save_tag_settings` — wrapped so it's a distinct Extension type rather
@@ -46,6 +47,33 @@ impl From<anyhow::Error> for ApiError {
 
 fn not_found(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, msg.into())
+}
+
+/// Tries the primary store first, then org_store — mirrors
+/// `HiveMind::find_owning_store` in `src/server.rs`. An org-store lookup
+/// failure degrades to "not found in org" (never propagates), consistent
+/// with this plan's Global Constraint that org failures never break
+/// primary-store behavior.
+pub(super) async fn find_owning_store<'a>(
+    store: &'a Store,
+    org_store: &'a OrgStore,
+    id: &str,
+) -> Result<Option<&'a Store>, ApiError> {
+    if store.recall_by_id(id).await?.is_some() {
+        return Ok(Some(store));
+    }
+    if let Some(org) = org_store {
+        match org.recall_by_id(id).await {
+            Ok(Some(_)) => return Ok(Some(org)),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "org store lookup failed for id {id}: {e:#}; treating as not found in org"
+                );
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Returns an `AllowOrigin` that accepts both the configured dashboard origin and
@@ -84,7 +112,9 @@ fn localhost_origins(origin: &str) -> AllowOrigin {
 #[allow(clippy::too_many_arguments)]
 pub fn router(
     store: Store,
+    org_store: OrgStore,
     sync: SyncSettings,
+    org_sync: Option<SyncSettings>,
     dashboard_origin: &str,
     events: Events,
     suggest: Arc<SuggestSessionManager>,
@@ -150,7 +180,9 @@ pub fn router(
             post(revise_suggest_session),
         )
         .with_state(store)
+        .layer(Extension(org_store))
         .layer(Extension(sync))
+        .layer(Extension(org_sync))
         .layer(Extension(events))
         .layer(Extension(suggest))
         .layer(Extension(update_state))
