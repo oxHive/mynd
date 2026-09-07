@@ -366,7 +366,9 @@ pub async fn build_status_data(
 
     data.project = Some(ProjectStatus {
         project_name: config.project_name.clone(),
-        has_local_config: root.join(".hivemind.local.toml").is_file(),
+        has_local_config: crate::config::PROJECT_LOCAL_CONFIG_NAMES
+            .iter()
+            .any(|n| root.join(n).is_file()),
         file_open_rule_count: config.file_open_rule_count,
         mention_trigger_count: config.mention_trigger_count,
         loaded: result
@@ -459,7 +461,7 @@ pub fn format_status_text(data: &StatusData) -> String {
     writeln!(out).unwrap();
 
     let Some(project) = &data.project else {
-        writeln!(out, "No .hivemind.toml found in this directory tree.").unwrap();
+        writeln!(out, "No .mynd.toml found in this directory tree.").unwrap();
         writeln!(
             out,
             "Run `mynd init` to set up memory hooks for this project."
@@ -471,9 +473,9 @@ pub fn format_status_text(data: &StatusData) -> String {
     writeln!(out, "Project:    {}", project.project_name).unwrap();
     writeln!(
         out,
-        "Config:     .hivemind.toml{}",
+        "Config:     .mynd.toml{}",
         if project.has_local_config {
-            " + .hivemind.local.toml"
+            " + .mynd.local.toml"
         } else {
             ""
         }

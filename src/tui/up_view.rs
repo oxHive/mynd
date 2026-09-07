@@ -26,7 +26,7 @@ const BODY_FRAME_OVERHEAD: u16 = 6;
 const MIN_BOX_WIDTH: u16 = 40;
 const FOOTER_TEXT: &str = "  d detach   ctrl+c stop server";
 
-/// Runs the interactive `hivemind up` view: header + a live activity feed fed
+/// Runs the interactive `mynd up` view: header + a live activity feed fed
 /// by the existing SSE broadcast channel. Returns on `d` — the caller
 /// (`http::run_up`) then actually detaches: aborts its listeners, re-execs a
 /// background copy of the server, and exits so the shell prompt comes back.

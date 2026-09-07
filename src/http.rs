@@ -342,7 +342,7 @@ fn spawn_detached_child(headless: bool) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let exe = std::env::current_exe()?;
-    let log_path = crate::db::xdg_data_dir().join("hivemind.detached.log");
+    let log_path = crate::db::xdg_data_dir().join("mynd.detached.log");
     if let Some(dir) = log_path.parent() {
         std::fs::create_dir_all(dir)?;
     }

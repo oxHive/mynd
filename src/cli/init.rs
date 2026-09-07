@@ -157,11 +157,11 @@ pub fn scaffold(
 
     let report = vec![
         write_if_absent(
-            &project_root.join(".hivemind.toml"),
+            &project_root.join(".mynd.toml"),
             &project_toml(&project_name),
         )?,
-        write_if_absent(&project_root.join(".hivemind.local.toml"), LOCAL_TOML)?,
-        ensure_line(&project_root.join(".gitignore"), ".hivemind.local.toml")?,
+        write_if_absent(&project_root.join(".mynd.local.toml"), LOCAL_TOML)?,
+        ensure_line(&project_root.join(".gitignore"), ".mynd.local.toml")?,
         write_if_absent(
             &project_root.join("CLAUDE.md"),
             &project_claude_md(&project_name),
@@ -189,7 +189,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-    let tmp = parent.join(format!(".{file_name}.hivemind-tmp"));
+    let tmp = parent.join(format!(".{file_name}.mynd-tmp"));
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -296,7 +296,7 @@ pub(crate) fn project_toml(name: &str) -> String {
     )
 }
 
-pub(crate) const LOCAL_TOML: &str = "# Personal, gitignored recalls — additive on top of .hivemind.toml.\n\
+pub(crate) const LOCAL_TOML: &str = "# Personal, gitignored recalls — additive on top of .mynd.toml.\n\
 # Teammates do not see these. max_tokens here is ADDED to the team budget.\n\
 [hooks.on_session_start]\n\
 recalls = []\n\
@@ -305,7 +305,7 @@ max_tokens = 0\n";
 pub(crate) fn project_claude_md(name: &str) -> String {
     format!(
         "# Mynd — {name}\n\n\
-         Load project context on session start per .hivemind.toml.\n\
+         Load project context on session start per .mynd.toml.\n\
          Suggest storing any new architectural decisions made during this session.\n"
     )
 }
@@ -325,7 +325,9 @@ sync_on_startup = true\n";
 // NOTE: rename of this marker + block (and the already-installed ~/.claude/CLAUDE.md
 // on user machines) is deferred to the "MCP tool + session-start" rename pass, since
 // it depends on renaming the `hivemind_session_start` MCP tool and needs a migration
-// that rewrites the existing block rather than appending a second one.
+// that rewrites the existing block rather than appending a second one. That pass must
+// also flip the block's `.hivemind.toml` and `<hivemind-context>` references, which
+// are stale as of the config-file rename.
 pub(crate) const GLOBAL_CLAUDE_MARKER: &str = "# HiveMind Memory System";
 
 pub(crate) const GLOBAL_CLAUDE_BLOCK: &str = "# HiveMind Memory System

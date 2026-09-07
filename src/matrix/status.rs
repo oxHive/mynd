@@ -30,7 +30,7 @@ pub struct StatusReply {
 }
 
 pub fn socket_path() -> PathBuf {
-    crate::db::xdg_data_dir().join("hivemind-matrix.sock")
+    crate::db::xdg_data_dir().join("mynd-matrix.sock")
 }
 
 pub async fn serve_status(socket_path: &Path, reply_source: Arc<Mutex<StatusReply>>) -> Result<()> {

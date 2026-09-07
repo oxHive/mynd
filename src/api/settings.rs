@@ -14,7 +14,7 @@ pub(super) async fn get_sync_settings(Extension(sync): Extension<SyncSettings>) 
 
 pub(super) async fn save_sync_settings(Json(_): Json<Value>) -> Json<Value> {
     Json(
-        json!({ "saved": false, "message": "Sync settings are managed via config.toml — restart hivemind after editing." }),
+        json!({ "saved": false, "message": "Sync settings are managed via config.toml — restart mynd after editing." }),
     )
 }
 
@@ -86,7 +86,7 @@ fn validate_predefined_namespaces_unchanged(body: &Value) -> Result<(), String> 
             return Err(format!(
                 "namespace {name:?} is predefined and cannot be deleted or modified. \
                  Disable this guard with [tags] guard_predefined_namespaces = false \
-                 in the global hivemind config to allow it."
+                 in the global mynd config to allow it."
             ));
         }
     }

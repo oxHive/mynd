@@ -3,16 +3,23 @@ use libsql::{Builder, params};
 
 use crate::config::SyncSettings;
 
-/// XDG data dir: $XDG_DATA_HOME/hivemind or ~/.local/share/hivemind
-pub fn xdg_data_dir() -> std::path::PathBuf {
+fn xdg_data_base() -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        return std::path::PathBuf::from(xdg).join("hivemind");
+        return std::path::PathBuf::from(xdg);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("hivemind")
+    std::path::PathBuf::from(home).join(".local").join("share")
+}
+
+/// XDG data dir: $XDG_DATA_HOME/mynd or ~/.local/share/mynd
+pub fn xdg_data_dir() -> std::path::PathBuf {
+    xdg_data_base().join("mynd")
+}
+
+/// Pre-rename XDG data dir (`hivemind` instead of `mynd`); source for the
+/// one-time directory relocation in [`crate::dir_migrate`].
+pub fn legacy_xdg_data_dir() -> std::path::PathBuf {
+    xdg_data_base().join("hivemind")
 }
 
 /// Legacy path used before XDG migration: ~/.hivemind/memories.db
@@ -24,15 +31,15 @@ pub fn legacy_db_path() -> std::path::PathBuf {
 }
 
 /// PID file written by `mynd up` while its server process is running, so
-/// `mynd status` can find and signal it: $XDG_DATA_HOME/hivemind/hivemind.pid
+/// `mynd status` can find and signal it: $XDG_DATA_HOME/mynd/mynd.pid
 pub fn up_pidfile_path() -> std::path::PathBuf {
-    xdg_data_dir().join("hivemind.pid")
+    xdg_data_dir().join("mynd.pid")
 }
 
 /// PID file written by `mynd matrix run` while its daemon is running:
-/// $XDG_DATA_HOME/hivemind/hivemind-matrix.pid
+/// $XDG_DATA_HOME/mynd/mynd-matrix.pid
 pub fn matrix_pidfile_path() -> std::path::PathBuf {
-    xdg_data_dir().join("hivemind-matrix.pid")
+    xdg_data_dir().join("mynd-matrix.pid")
 }
 
 pub fn resolve_db_path() -> String {
@@ -166,8 +173,10 @@ mod tests {
         // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
         let result = xdg_data_dir();
+        let legacy = legacy_xdg_data_dir();
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
-        assert_eq!(result, dir.path().join("hivemind"));
+        assert_eq!(result, dir.path().join("mynd"));
+        assert_eq!(legacy, dir.path().join("hivemind"));
     }
 
     #[test]
@@ -176,13 +185,10 @@ mod tests {
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         let result = xdg_data_dir();
-        assert_eq!(
-            result,
-            std::path::PathBuf::from(&home)
-                .join(".local")
-                .join("share")
-                .join("hivemind")
-        );
+        let legacy = legacy_xdg_data_dir();
+        let base = std::path::PathBuf::from(&home).join(".local").join("share");
+        assert_eq!(result, base.join("mynd"));
+        assert_eq!(legacy, base.join("hivemind"));
     }
 
     #[test]
@@ -213,7 +219,7 @@ mod tests {
         unsafe { std::env::remove_var("HIVEMIND_DB_PATH") };
         let result = resolve_db_path();
         assert!(result.ends_with("memories.db"), "got: {result}");
-        assert!(result.contains("hivemind"), "got: {result}");
+        assert!(result.contains("mynd"), "got: {result}");
     }
 
     #[tokio::test]

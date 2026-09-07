@@ -487,7 +487,7 @@ async fn session_start_loads_configured_recalls() {
 
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
-        tmp.path().join(".hivemind.toml"),
+        tmp.path().join(".mynd.toml"),
         "[project]\nname=\"demo\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[\"golang preferences\"]\n",
     ).unwrap();
 
@@ -510,7 +510,7 @@ async fn session_start_writes_a_log_entry() {
     let (hm, _dir) = test_hivemind().await;
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
-        tmp.path().join(".hivemind.toml"),
+        tmp.path().join(".mynd.toml"),
         "[project]\nname=\"demo\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[]\n",
     )
     .unwrap();

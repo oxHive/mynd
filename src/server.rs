@@ -115,7 +115,7 @@ pub struct TagNamespacesListInput {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SessionStartInput {
-    /// Absolute path to the project root where .hivemind.toml lives.
+    /// Absolute path to the project root where .mynd.toml lives.
     pub project_path: String,
 }
 

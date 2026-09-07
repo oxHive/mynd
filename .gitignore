@@ -1,8 +1,8 @@
 /target
 /docs/superpowers/
-/docs/HIVEMIND_*.md
+/docs/MYND_*.md
 /.superpowers/
-.hivemind.local.toml
+.mynd.local.toml
 /.testenv/
 
 # opencode plugin build artifacts

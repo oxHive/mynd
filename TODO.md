@@ -24,8 +24,9 @@ listed last and are optional.
 
 ## Progress
 
-- **DONE:** Crate / binary / packaging + CLI command surface (see sections below).
-  `cargo build` green.
+- **DONE:** Crate / binary / packaging + CLI command surface + Config files & paths
+  (see sections below). `cargo build` / `cargo test` / `cargo clippy` green; auto-migration
+  smoke-tested (dir move, pre-0.3 single-file, idempotent).
 - **Interim mismatch introduced on purpose:** `mynd session-start` now emits
   `<mynd-context>`, but the deferred `GLOBAL_CLAUDE_BLOCK` in `src/cli/init.rs`
   still tells Claude to look for `<hivemind-context>` and call `hivemind_session_start`.
@@ -36,10 +37,10 @@ listed last and are optional.
 - **Still `hivemind` on purpose (deferred, with NOTE comments in the code):**
   - MCP server registration key + client-config detection tokens (`src/cli/mcp_install.rs`, `src/cli/init.rs`)
   - systemd unit basenames, launchd labels, `hivemind.log` (`src/cli/service.rs`)
-  - `hivemind_session_start` MCP tool + `# HiveMind Memory System` global block (`src/server.rs`, `src/cli/init.rs`)
-  - `.hivemind.toml` / `.hivemind.local.toml` / `.hivemind-tmp`, config + data dirs
+  - `hivemind_session_start` MCP tool + `# HiveMind Memory System` global block (`src/server.rs`, `src/cli/init.rs`) - block's `.hivemind.toml` / `<hivemind-context>` refs now stale, sync in that pass
   - `HIVEMIND_*` env vars, `HIVEMIND_GIT_SHA` / `HIVEMIND_IS_TAGGED` in `build.rs`
-  - pidfiles / sockets, keyring service `hivemind-matrix`
+  - keyring service `hivemind-matrix`, `~/.hivemind` pre-0.3 constant (migration source), `test_hivemind()` helper
+  - `mcp__hivemind__*` tool allowlists + `hivemind-suggest` / `hivemind-bot` agent profiles (Matrix / suggest)
 - **Old SessionStart hooks break under the hard cut:** `.claude/settings.json`
   entries running `hivemind session-start` point at a binary that no longer
   exists. `ensure_claude_settings_hook` now writes `mynd session-start` and
@@ -71,23 +72,39 @@ listed last and are optional.
 - [x] `src/cli/matrix_cmds.rs` - `mynd matrix run/status`, example id `@mynd-bot:matrix.org`, device name `Mynd bot`.
 - [x] `src/cli/tests.rs` - `["mynd", ...]` argv, `<mynd-context>` + fn name, `mynd session-start` / `mynd init` / `(mynd up)` asserts, `Mynd v` header. Kept: `# HiveMind` block asserts, MCP-key fixtures, `.hivemind.toml*`, `hivemind/config.toml` dir.
 
-## Config files & paths
+## Config files & paths  — DONE
 
-- [ ] `.hivemind.toml` (repo root) - rename file; `name = "hivemind"` inside; commented example `"project/hivemind"`
-- [ ] `src/config.rs:301,341,366` - `.hivemind.toml` / `.hivemind.local.toml` filename constants
-- [ ] `src/config.rs:310,315` - global config dir: `$XDG_CONFIG_HOME/hivemind`, `~/.config/hivemind`
-- [ ] `src/config.rs:325` - error string "no .hivemind.toml found"
-- [ ] `src/cli/init.rs:160-164` - scaffolds `.hivemind.toml`, `.hivemind.local.toml`, adds `.hivemind.local.toml` to `.gitignore`
-- [ ] `src/cli/init.rs:299` - `LOCAL_TOML` template comment "additive on top of .hivemind.toml"
-- [ ] `src/db.rs:6-35` - data dir `$XDG_DATA_HOME/hivemind` / `~/.local/share/hivemind`; legacy `~/.hivemind`; pidfiles `hivemind.pid`, `hivemind-matrix.pid`
-- [ ] `src/http.rs:345` - detached log `hivemind.detached.log`
-- [ ] `src/matrix/status.rs:33` - socket `hivemind-matrix.sock`
-- [ ] `.gitignore:3,5,9-10` - `/docs/HIVEMIND_*.md`, `.hivemind.local.toml`, `plugins/opencode/hivemind.js`, `plugins/opencode/hivemind.d.ts`
+Migration is **hybrid**: `src/dir_migrate.rs` relocates the global config dir and
+the data dir (`~/.config/hivemind` -> `mynd`, `~/.local/share/hivemind` -> `mynd`,
+`$XDG_*` variants, and the pre-0.3 `~/.hivemind/memories.db`) on startup - wired
+at the top of `main()` via `run_startup_migration()`, prints one stderr line per
+move, skipped entirely when `HIVEMIND_DB_PATH` is set. Project config is
+**fallback-read**: `discover_project_root` / `load_config_with_global` accept
+`.mynd.toml` or `.hivemind.toml` (and `.mynd.local.toml` / `.hivemind.local.toml`),
+preferring the new name. `PROJECT_CONFIG_NAMES` / `PROJECT_LOCAL_CONFIG_NAMES`
+constants in `config.rs`.
+
+- [x] `.hivemind.toml` (repo root) - `git mv` -> `.mynd.toml`, `name = "mynd"`, commented example `project/mynd`
+- [x] `CLAUDE.md` (repo root) - `# Mynd — mynd`, `per .mynd.toml`
+- [x] `src/config.rs` - `global_config_dir()` -> `mynd` + `legacy_global_config_dir()`; project-config fallback-read; error string
+- [x] `src/db.rs` - `xdg_data_dir()` -> `mynd` + `legacy_xdg_data_dir()`; pidfiles `mynd.pid` / `mynd-matrix.pid`; `resolve_db_path` default
+- [x] `src/dir_migrate.rs` - **new module** (`relocate_dir`, `relocate_legacy_db_file`, `run_startup_migration`), TDD, 5 tests
+- [x] `src/main.rs` - calls `run_startup_migration()` before dispatch
+- [x] `src/cli/init.rs` - scaffolds `.mynd.toml` / `.mynd.local.toml`, `.gitignore` line, `.mynd-tmp` suffix, `LOCAL_TOML` + `project_claude_md` templates
+- [x] `src/cli/status.rs`, `src/tui/status_view.rs` - "No .mynd.toml found", "Config: .mynd.toml", local-config detection via fallback constant
+- [x] `src/http.rs` - detached log `mynd.detached.log`
+- [x] `src/matrix/status.rs` - socket `mynd-matrix.sock`
+- [x] `src/api/settings.rs` - "restart mynd" / "global mynd config" messages
+- [x] `src/tui/header.rs` - test fixture `db_path` / project label
+- [x] `.gitignore` - `/docs/MYND_*.md`, `.mynd.local.toml`
+- [x] `recipes/testenv.just`, `.justfile`, `docs/api/settings/save-sync-settings.bru` - paths + command names
+- NOTE kept as `hivemind` on purpose: `~/.hivemind` legacy path constant + its test (pre-0.3 migration source), `HIVEMIND_DB_PATH` env (env-var pass), `test_hivemind()` test helper name, `plugins/opencode/hivemind.{js,d.ts}` gitignore lines (plugin pass), MCP tool description's `.hivemind.toml` mention (fallback still reads it; synced in MCP pass).
+- NOTE `src/cli/status.rs` "Config: .mynd.toml" is hardcoded - a not-yet-migrated repo with `.hivemind.toml` shows the new name in `mynd status`. Cosmetic, transitional.
 
 ## Environment variables (`HIVEMIND_*`)
 
 - [ ] `build.rs:20-21` - `HIVEMIND_GIT_SHA`, `HIVEMIND_IS_TAGGED` (also every `env!("HIVEMIND_GIT_SHA")` consumer)
-- [ ] `src/db.rs:39` - `HIVEMIND_DB_PATH`
+- [ ] `src/db.rs` - `HIVEMIND_DB_PATH` (still read as-is; auto-migration is skipped when it is set)
 - [ ] `src/update.rs:76` - `HIVEMIND_UPDATE_CHECK_URL`
 - [x] `src/main.rs` + `src/update.rs` - tracing target now `mynd=...,oxmynd=...`, user-agent `mynd/{version}` (done in CLI/packaging pass)
 - [ ] dashboard `window.HIVEMIND_API` (see Dashboard section) - JS global, not an env var, but same rename

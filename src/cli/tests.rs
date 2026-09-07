@@ -252,18 +252,18 @@ fn scaffold_creates_all_files() {
     let cfg = tempfile::tempdir().unwrap();
     let report = scaffold(proj.path(), home.path(), cfg.path()).unwrap();
 
-    assert!(proj.path().join(".hivemind.toml").is_file());
-    assert!(proj.path().join(".hivemind.local.toml").is_file());
+    assert!(proj.path().join(".mynd.toml").is_file());
+    assert!(proj.path().join(".mynd.local.toml").is_file());
     assert!(proj.path().join("CLAUDE.md").is_file());
     assert!(proj.path().join(".gitignore").is_file());
     assert!(home.path().join(".claude").join("CLAUDE.md").is_file());
     assert!(cfg.path().join("config.toml").is_file());
 
     let gi = fs::read_to_string(proj.path().join(".gitignore")).unwrap();
-    assert!(gi.contains(".hivemind.local.toml"));
+    assert!(gi.contains(".mynd.local.toml"));
     let gc = fs::read_to_string(home.path().join(".claude").join("CLAUDE.md")).unwrap();
     assert!(gc.contains("HiveMind Memory System"));
-    let pj = fs::read_to_string(proj.path().join(".hivemind.toml")).unwrap();
+    let pj = fs::read_to_string(proj.path().join(".mynd.toml")).unwrap();
     let dirname = proj.path().file_name().unwrap().to_string_lossy();
     assert!(pj.contains(&*dirname));
 
@@ -284,7 +284,7 @@ fn scaffold_is_idempotent_and_does_not_duplicate_global_block() {
     let gc = fs::read_to_string(home.path().join(".claude").join("CLAUDE.md")).unwrap();
     assert_eq!(gc.matches("# HiveMind Memory System").count(), 1);
     let gi = fs::read_to_string(proj.path().join(".gitignore")).unwrap();
-    assert_eq!(gi.matches(".hivemind.local.toml").count(), 1);
+    assert_eq!(gi.matches(".mynd.local.toml").count(), 1);
 }
 
 #[test]
@@ -344,7 +344,7 @@ async fn render_status_previews_injection() {
 
     let proj = tempfile::tempdir().unwrap();
     std::fs::write(
-        proj.path().join(".hivemind.toml"),
+        proj.path().join(".mynd.toml"),
         "[project]\nname=\"demo\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[\"golang preferences\"]\n",
     ).unwrap();
     let missing_global = proj.path().join("no-global.toml");
@@ -471,7 +471,7 @@ async fn build_status_data_matches_render_status_text() {
 
     let proj = tempfile::tempdir().unwrap();
     std::fs::write(
-        proj.path().join(".hivemind.toml"),
+        proj.path().join(".mynd.toml"),
         "[project]\nname=\"test-proj\"\n[hooks.on_session_start]\nrecalls=[\"golang preferences\"]\n",
     )
     .unwrap();
@@ -830,7 +830,7 @@ async fn render_status_shows_nothing_when_no_recalls_resolve() {
 
     let proj = tempfile::tempdir().unwrap();
     std::fs::write(
-        proj.path().join(".hivemind.toml"),
+        proj.path().join(".mynd.toml"),
         "[project]\nname=\"empty\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[\"nonexistent memory\"]\n",
     ).unwrap();
     let missing_global = proj.path().join("no-global.toml");
@@ -872,11 +872,11 @@ async fn render_status_shows_local_toml_indicator() {
 
     let proj = tempfile::tempdir().unwrap();
     std::fs::write(
-        proj.path().join(".hivemind.toml"),
+        proj.path().join(".mynd.toml"),
         "[project]\nname=\"local-test\"\n",
     )
     .unwrap();
-    std::fs::write(proj.path().join(".hivemind.local.toml"), "").unwrap();
+    std::fs::write(proj.path().join(".mynd.local.toml"), "").unwrap();
     let missing_global = proj.path().join("no-global.toml");
 
     let out = render_status(
@@ -891,7 +891,7 @@ async fn render_status_shows_local_toml_indicator() {
     .await
     .unwrap();
     assert!(
-        out.contains(".hivemind.local.toml"),
+        out.contains(".mynd.local.toml"),
         "should mention local toml"
     );
 }
@@ -1029,14 +1029,14 @@ fn ensure_global_config_creates_file_when_missing() {
     unsafe { std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path()) };
     ensure_global_config();
     unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-    assert!(cfg_dir.path().join("hivemind").join("config.toml").exists());
+    assert!(cfg_dir.path().join("mynd").join("config.toml").exists());
 }
 
 #[test]
 fn ensure_global_config_is_idempotent() {
     let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
     let cfg_dir = tempfile::tempdir().unwrap();
-    let config_file = cfg_dir.path().join("hivemind").join("config.toml");
+    let config_file = cfg_dir.path().join("mynd").join("config.toml");
     fs::create_dir_all(config_file.parent().unwrap()).unwrap();
     fs::write(&config_file, "original").unwrap();
     unsafe { std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path()) };
@@ -1062,7 +1062,7 @@ fn warn_if_not_initialized_config_but_no_clients_prints_hint() {
     let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
     let cfg_dir = tempfile::tempdir().unwrap();
     let home_dir_tmp = tempfile::tempdir().unwrap();
-    let config_file = cfg_dir.path().join("hivemind").join("config.toml");
+    let config_file = cfg_dir.path().join("mynd").join("config.toml");
     fs::create_dir_all(config_file.parent().unwrap()).unwrap();
     fs::write(&config_file, "[server]\n").unwrap();
     // SAFETY: test-only env mutation; serialised by ENV_MUTEX.

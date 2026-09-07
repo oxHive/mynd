@@ -10,6 +10,7 @@ use tokio::sync::Notify;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    oxmynd::dir_migrate::run_startup_migration();
     match cli.command {
         None => run_server(),
         Some(Command::Init) => cli::cmd_init(),

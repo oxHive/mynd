@@ -3,6 +3,7 @@ pub mod budget;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod dir_migrate;
 pub mod http;
 pub mod matrix;
 pub mod model;

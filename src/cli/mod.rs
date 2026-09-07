@@ -13,7 +13,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Scaffold .hivemind.toml + CLAUDE.md integration for this project
+    /// Scaffold .mynd.toml + CLAUDE.md integration for this project
     Init,
     /// Show config and preview what session start will inject
     Status {
