@@ -3,16 +3,23 @@ use libsql::{Builder, params};
 
 use crate::config::SyncSettings;
 
-/// XDG data dir: $XDG_DATA_HOME/hivemind or ~/.local/share/hivemind
-pub fn xdg_data_dir() -> std::path::PathBuf {
+fn xdg_data_base() -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        return std::path::PathBuf::from(xdg).join("hivemind");
+        return std::path::PathBuf::from(xdg);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("hivemind")
+    std::path::PathBuf::from(home).join(".local").join("share")
+}
+
+/// XDG data dir: $XDG_DATA_HOME/mynd or ~/.local/share/mynd
+pub fn xdg_data_dir() -> std::path::PathBuf {
+    xdg_data_base().join("mynd")
+}
+
+/// Pre-rename XDG data dir (`hivemind` instead of `mynd`); source for the
+/// one-time directory relocation in [`crate::dir_migrate`].
+pub fn legacy_xdg_data_dir() -> std::path::PathBuf {
+    xdg_data_base().join("hivemind")
 }
 
 /// Legacy path used before XDG migration: ~/.hivemind/memories.db
@@ -23,20 +30,29 @@ pub fn legacy_db_path() -> std::path::PathBuf {
         .join("memories.db")
 }
 
-/// PID file written by `hivemind up` while its server process is running, so
-/// `hivemind status` can find and signal it: $XDG_DATA_HOME/hivemind/hivemind.pid
+/// PID file written by `mynd up` while its server process is running, so
+/// `mynd status` can find and signal it: $XDG_DATA_HOME/mynd/mynd.pid
 pub fn up_pidfile_path() -> std::path::PathBuf {
-    xdg_data_dir().join("hivemind.pid")
+    xdg_data_dir().join("mynd.pid")
 }
 
-/// PID file written by `hivemind matrix run` while its daemon is running:
-/// $XDG_DATA_HOME/hivemind/hivemind-matrix.pid
+/// PID file written by `mynd matrix run` while its daemon is running:
+/// $XDG_DATA_HOME/mynd/mynd-matrix.pid
 pub fn matrix_pidfile_path() -> std::path::PathBuf {
-    xdg_data_dir().join("hivemind-matrix.pid")
+    xdg_data_dir().join("mynd-matrix.pid")
+}
+
+/// Env var that pins the database path, checked before the default location.
+/// `MYND_DB_PATH` is current; `HIVEMIND_DB_PATH` is still honoured as a fallback
+/// so a pre-rename shell profile or service unit keeps working.
+pub fn db_path_override() -> Option<String> {
+    std::env::var("MYND_DB_PATH")
+        .or_else(|_| std::env::var("HIVEMIND_DB_PATH"))
+        .ok()
 }
 
 pub fn resolve_db_path() -> String {
-    if let Ok(p) = std::env::var("HIVEMIND_DB_PATH") {
+    if let Some(p) = db_path_override() {
         return p;
     }
     xdg_data_dir()
@@ -173,8 +189,10 @@ mod tests {
         // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
         let result = xdg_data_dir();
+        let legacy = legacy_xdg_data_dir();
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
-        assert_eq!(result, dir.path().join("hivemind"));
+        assert_eq!(result, dir.path().join("mynd"));
+        assert_eq!(legacy, dir.path().join("hivemind"));
     }
 
     #[test]
@@ -183,13 +201,10 @@ mod tests {
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         let result = xdg_data_dir();
-        assert_eq!(
-            result,
-            std::path::PathBuf::from(&home)
-                .join(".local")
-                .join("share")
-                .join("hivemind")
-        );
+        let legacy = legacy_xdg_data_dir();
+        let base = std::path::PathBuf::from(&home).join(".local").join("share");
+        assert_eq!(result, base.join("mynd"));
+        assert_eq!(legacy, base.join("hivemind"));
     }
 
     #[test]
@@ -206,21 +221,51 @@ mod tests {
     }
 
     #[test]
-    fn resolve_db_path_respects_env_override() {
+    fn resolve_db_path_respects_mynd_env_override() {
         let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
-        unsafe { std::env::set_var("HIVEMIND_DB_PATH", "/custom/path/db.sqlite") };
+        unsafe { std::env::set_var("MYND_DB_PATH", "/custom/path/db.sqlite") };
+        let result = resolve_db_path();
+        unsafe { std::env::remove_var("MYND_DB_PATH") };
+        assert_eq!(result, "/custom/path/db.sqlite");
+    }
+
+    #[test]
+    fn resolve_db_path_falls_back_to_legacy_hivemind_env_override() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::remove_var("MYND_DB_PATH");
+            std::env::set_var("HIVEMIND_DB_PATH", "/legacy/db.sqlite");
+        }
         let result = resolve_db_path();
         unsafe { std::env::remove_var("HIVEMIND_DB_PATH") };
-        assert_eq!(result, "/custom/path/db.sqlite");
+        assert_eq!(result, "/legacy/db.sqlite");
+    }
+
+    #[test]
+    fn resolve_db_path_prefers_mynd_over_legacy_env() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("MYND_DB_PATH", "/new.db");
+            std::env::set_var("HIVEMIND_DB_PATH", "/old.db");
+        }
+        let result = resolve_db_path();
+        unsafe {
+            std::env::remove_var("MYND_DB_PATH");
+            std::env::remove_var("HIVEMIND_DB_PATH");
+        }
+        assert_eq!(result, "/new.db");
     }
 
     #[test]
     fn resolve_db_path_default_ends_with_memories_db() {
         let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
-        unsafe { std::env::remove_var("HIVEMIND_DB_PATH") };
+        unsafe {
+            std::env::remove_var("MYND_DB_PATH");
+            std::env::remove_var("HIVEMIND_DB_PATH");
+        }
         let result = resolve_db_path();
         assert!(result.ends_with("memories.db"), "got: {result}");
-        assert!(result.contains("hivemind"), "got: {result}");
+        assert!(result.contains("mynd"), "got: {result}");
     }
 
     #[tokio::test]
@@ -424,7 +469,7 @@ mod tests {
         let primary = resolve_db_path();
         let org = resolve_org_db_path();
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
-        assert_eq!(primary, "/tmp/hivemind-test-xdg/hivemind/memories.db");
-        assert_eq!(org, "/tmp/hivemind-test-xdg/hivemind/org.db");
+        assert_eq!(primary, "/tmp/hivemind-test-xdg/mynd/memories.db");
+        assert_eq!(org, "/tmp/hivemind-test-xdg/mynd/org.db");
     }
 }

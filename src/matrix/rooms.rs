@@ -60,7 +60,7 @@ mod tests {
         let settings = settings_with_room(MatrixRoomMapping {
             room_id: "!other:matrix.org".into(),
             alias: None,
-            base_tags: vec!["project:hivemind".into()],
+            base_tags: vec!["project:mynd".into()],
         });
         let target = resolve_target(&settings, "!dm-room:matrix.org", true);
         assert_eq!(target.layer, "personal");
@@ -71,14 +71,14 @@ mod tests {
     fn mapped_room_uses_configured_base_tags() {
         let settings = settings_with_room(MatrixRoomMapping {
             room_id: "!abc:matrix.org".into(),
-            alias: Some("hivemind-project".into()),
-            base_tags: vec!["project:hivemind".into(), "topic:matrix".into()],
+            alias: Some("mynd-project".into()),
+            base_tags: vec!["project:mynd".into(), "topic:matrix".into()],
         });
         let target = resolve_target(&settings, "!abc:matrix.org", false);
         assert_eq!(target.layer, "workspace");
         assert_eq!(
             target.tags,
-            vec!["project:hivemind".to_string(), "topic:matrix".to_string()]
+            vec!["project:mynd".to_string(), "topic:matrix".to_string()]
         );
     }
 
@@ -106,11 +106,11 @@ mod tests {
     fn context_system_prompt_includes_layer_and_tags() {
         let target = MemoryTarget {
             layer: "workspace",
-            tags: vec!["project:hivemind".to_string(), "topic:matrix".to_string()],
+            tags: vec!["project:mynd".to_string(), "topic:matrix".to_string()],
         };
         let prompt = context_system_prompt(&target);
         assert!(prompt.contains("workspace"));
-        assert!(prompt.contains("project:hivemind"));
+        assert!(prompt.contains("project:mynd"));
         assert!(prompt.contains("topic:matrix"));
     }
 

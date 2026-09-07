@@ -19,7 +19,7 @@ const WARNING: Color = Color::Rgb(0xf5, 0xa5, 0x24);
 /// shell prompt rather than taking over the full screen.
 const VIEWPORT_HEIGHT: u16 = 12;
 
-/// Runs the interactive `hivemind status` view: header + a key-value panel
+/// Runs the interactive `mynd status` view: header + a key-value panel
 /// that auto-refreshes every 5s, with `r` for an immediate manual refresh.
 /// `q` / Ctrl+C exits. Returns once the user quits.
 #[allow(clippy::too_many_arguments)]
@@ -144,7 +144,7 @@ pub async fn run(
     Ok(())
 }
 
-/// Sends SIGTERM to the PID recorded in `hivemind up`'s pidfile and waits
+/// Sends SIGTERM to the PID recorded in `mynd up`'s pidfile and waits
 /// briefly for it to exit. Shells out to `kill` rather than adding a signal
 /// crate dependency — matches the project's existing Unix-only assumptions
 /// (XDG paths, $HOME, the `open`/`xdg-open` dashboard launcher). Always
@@ -287,9 +287,7 @@ fn draw(
     }
     if data.project.is_none() {
         lines.push(Line::from(""));
-        lines.push(Line::from(
-            "No .hivemind.toml found in this directory tree.",
-        ));
+        lines.push(Line::from("No .mynd.toml found in this directory tree."));
     }
 
     // Error takes priority over an info message when both are somehow set;

@@ -2,9 +2,9 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "hivemind",
+    name = "mynd",
     version,
-    about = "HiveMind — persistent memory for AI coding agents"
+    about = "Mynd — persistent memory for AI coding agents"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -13,7 +13,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Scaffold .hivemind.toml + CLAUDE.md integration for this project
+    /// Scaffold .mynd.toml + CLAUDE.md integration for this project
     Init,
     /// Show config and preview what session start will inject
     Status {
@@ -41,12 +41,12 @@ pub enum Command {
         #[command(subcommand)]
         action: McpAction,
     },
-    /// Manage HiveMind as a background service
+    /// Manage Mynd as a background service
     Service {
         #[command(subcommand)]
         action: ServiceAction,
     },
-    /// Matrix chat interface: capture/recall HiveMind memories from a room or DM
+    /// Matrix chat interface: capture/recall Mynd memories from a room or DM
     Matrix {
         #[command(subcommand)]
         action: MatrixAction,
@@ -63,18 +63,18 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum ServiceAction {
-    /// Install and enable HiveMind as a user-level background service
+    /// Install and enable Mynd as a user-level background service
     Install {
         /// Also serve the dashboard from the background service
         #[arg(long)]
         dashboard: bool,
-        /// Also install the Matrix bot unit (requires `hivemind matrix login` first)
+        /// Also install the Matrix bot unit (requires `mynd matrix login` first)
         #[arg(long)]
         matrix: bool,
     },
-    /// Stop and remove the HiveMind background service
+    /// Stop and remove the Mynd background service
     Uninstall,
-    /// Show the status of the HiveMind background service
+    /// Show the status of the Mynd background service
     Status,
 }
 
@@ -82,7 +82,7 @@ pub enum ServiceAction {
 pub enum MatrixAction {
     /// Log into a Matrix account once; persists the session to the OS keyring
     Login,
-    /// Run the Matrix bot daemon (requires `hivemind matrix login` first)
+    /// Run the Matrix bot daemon (requires `mynd matrix login` first)
     Run {
         /// Print verbose connection/message logs to stderr
         #[arg(long)]
@@ -101,7 +101,7 @@ pub enum MatrixAction {
 
 #[derive(Subcommand)]
 pub enum McpAction {
-    /// Register HiveMind as an MCP server in a supported AI coding client
+    /// Register Mynd as an MCP server in a supported AI coding client
     Install {
         /// Client to register with: claude, opencode, kimi, codex, cursor, windsurf
         client: String,

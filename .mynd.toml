@@ -1,5 +1,5 @@
 [project]
-name = "hivemind"
+name = "mynd"
 layer = "workspace"
 description = "Persistent memory MCP server for AI coding agents"
 
@@ -10,5 +10,5 @@ recalls = [
   "tag:project:pipelines & tag:entrypoint",
   # Exact memory titles to auto-load at session start, e.g.:
   # "golang preferences",
-  # "project/hivemind",
+  # "project/mynd",
 ]

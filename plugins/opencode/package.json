@@ -1,7 +1,7 @@
 {
-  "name": "@oxhive/opencode-hivemind",
+  "name": "@oxhive/opencode-mynd",
   "version": "0.14.3",
-  "description": "HiveMind persistent memory plugin for OpenCode. Auto-registers MCP server and provides memory skills.",
+  "description": "Mynd persistent memory plugin for OpenCode. Auto-registers MCP server and provides memory skills.",
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -10,28 +10,28 @@
     "ai",
     "agent"
   ],
-  "homepage": "https://github.com/oxhive/hivemind#readme",
+  "homepage": "https://github.com/oxhive/mynd#readme",
   "bugs": {
-    "url": "https://github.com/oxhive/hivemind/issues"
+    "url": "https://github.com/oxhive/mynd/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/oxHive/hivemind.git",
+    "url": "git+https://github.com/oxHive/mynd.git",
     "directory": "plugins/opencode"
   },
   "license": "AGPL-3.0-only",
   "author": "oxhive",
   "type": "commonjs",
-  "main": "hivemind.js",
+  "main": "mynd.js",
   "files": [
-    "hivemind.js",
+    "mynd.js",
     "skills/"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "bun build --target=bun hivemind.ts --outfile=hivemind.js && bun run scripts/resolve-skills.ts",
+    "build": "bun build --target=bun mynd.ts --outfile=mynd.js && bun run scripts/resolve-skills.ts",
     "prepublishOnly": "bun run build"
   },
   "peerDependencies": {

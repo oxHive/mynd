@@ -1,7 +1,7 @@
 use crate::{
     api,
     config::{AgentSettings, ServerSettings, SyncSettings},
-    server::HiveMind,
+    server::Mynd,
     store::SqliteStore,
     suggest_session::SuggestSessionManager,
     update::SharedUpdateState,
@@ -47,14 +47,14 @@ pub fn app_router(
             let trigger = notify_on_store.clone();
             let events_tx = events_tx.clone();
             move || {
-                let mut hivemind = match &trigger {
-                    Some(t) => HiveMind::with_sync(store.clone(), t.clone()),
-                    None => HiveMind::with_store(store.clone()),
+                let mut mynd = match &trigger {
+                    Some(t) => Mynd::with_sync(store.clone(), t.clone()),
+                    None => Mynd::with_store(store.clone()),
                 };
                 if let Some(org) = &org_store {
-                    hivemind = hivemind.with_org_store(org.clone());
+                    mynd = mynd.with_org_store(org.clone());
                 }
-                Ok(hivemind.with_events(events_tx.clone()))
+                Ok(mynd.with_events(events_tx.clone()))
             }
         },
         Arc::new(LocalSessionManager::default()),
@@ -78,7 +78,7 @@ pub fn app_router(
 }
 
 pub fn dashboard_router(api_url: &str) -> Router {
-    let config_js = format!("window.HIVEMIND_API = {};\n", serde_json::json!(api_url));
+    let config_js = format!("window.MYND_API = {};\n", serde_json::json!(api_url));
     Router::new()
         .route(
             "/config.js",
@@ -193,7 +193,7 @@ async fn bind_with_retry(host: &str, port: u16) -> Result<tokio::net::TcpListene
     }
 }
 
-/// Records this process's PID so `hivemind status`'s `k` shortcut (a
+/// Records this process's PID so `mynd status`'s `k` shortcut (a
 /// separate process, with no other way to identify the server) can find and
 /// signal it.
 fn write_pidfile() -> Result<PidGuard> {
@@ -344,7 +344,7 @@ pub async fn run_up(
     Ok(())
 }
 
-/// Re-execs this binary as `hivemind up [--headless] --plain`, detached from
+/// Re-execs this binary as `mynd up [--headless] --plain`, detached from
 /// the controlling terminal (new session via `setsid`, stdio redirected to a
 /// log file), and does not wait for it. Used by the `up` TUI's `d` (detach)
 /// key: the caller aborts its own listeners and exits right after this
@@ -353,7 +353,7 @@ fn spawn_detached_child(headless: bool) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let exe = std::env::current_exe()?;
-    let log_path = crate::db::xdg_data_dir().join("hivemind.detached.log");
+    let log_path = crate::db::xdg_data_dir().join("mynd.detached.log");
     if let Some(dir) = log_path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -579,7 +579,7 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             std::str::from_utf8(&body).unwrap().trim(),
-            "window.HIVEMIND_API = \"http://127.0.0.1:3456\";"
+            "window.MYND_API = \"http://127.0.0.1:3456\";"
         );
     }
 }

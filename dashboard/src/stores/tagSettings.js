@@ -5,13 +5,13 @@ import { getTagSettings, saveTagSettings } from '../api/settings.js'
 export const useTagSettingsStore = defineStore('tagSettings', () => {
   const namespaces = ref({})
   const loaded = ref(false)
-  // Which namespace names are predefined (built into HiveMind) vs
+  // Which namespace names are predefined (built into Mynd) vs
   // user-created. Drives the "predefined" label and hides the Remove
   // button in the settings UI. Authoritative list comes from the backend
   // (default_tag_namespaces()), not duplicated here.
   const predefined = ref([])
   // Whether the predefined-namespace guard is active. Set false via
-  // [tags] guard_predefined_namespaces = false in the global hivemind
+  // [tags] guard_predefined_namespaces = false in the global mynd
   // config to allow editing/deleting predefined namespaces again.
   const guardPredefinedNamespaces = ref(true)
   // Snapshot of `namespaces` as last fetched/saved, used to detect unsaved
