@@ -14,7 +14,7 @@ impl Drop for PidGuard {
 }
 
 /// Records this process's PID at `crate::db::matrix_pidfile_path()` while the
-/// daemon is running, mirroring `hivemind up`'s pidfile in `http.rs` — kept
+/// daemon is running, mirroring `mynd up`'s pidfile in `http.rs` — kept
 /// as a small self-contained duplicate rather than sharing that module's
 /// private guard across modules.
 fn write_pidfile() -> Result<PidGuard> {
@@ -179,7 +179,7 @@ async fn find_or_join_dm_room(
 }
 
 /// Sends a text message to the given user's DM room, creating the DM if one
-/// doesn't already exist. Used for one-off connectivity checks (`hivemind
+/// doesn't already exist. Used for one-off connectivity checks (`mynd
 /// matrix send`) independent of the daemon's sync loop.
 pub async fn send_direct_message(
     settings: &MatrixSettings,

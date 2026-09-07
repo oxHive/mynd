@@ -57,7 +57,7 @@ pub struct ReleaseInfo {
 }
 
 /// Fetches release info from GitHub's releases API. The URL is overridable
-/// (constructor param, or `HIVEMIND_UPDATE_CHECK_URL` env var for the
+/// (constructor param, or `MYND_UPDATE_CHECK_URL` env var for the
 /// production default) so tests and manual E2E runs can point this at a
 /// local mock server instead of the real GitHub API.
 pub struct GitHubVersionSource {
@@ -73,7 +73,7 @@ impl Default for GitHubVersionSource {
 
 impl GitHubVersionSource {
     pub fn new() -> Self {
-        let api_url = std::env::var("HIVEMIND_UPDATE_CHECK_URL").unwrap_or_else(|_| {
+        let api_url = std::env::var("MYND_UPDATE_CHECK_URL").unwrap_or_else(|_| {
             "https://api.github.com/repos/oxhive/mynd/releases/latest".to_string()
         });
         GitHubVersionSource::with_url(api_url)

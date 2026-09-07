@@ -24,9 +24,10 @@ listed last and are optional.
 
 ## Progress
 
-- **DONE:** Crate / binary / packaging + CLI command surface + Config files & paths
-  (see sections below). `cargo build` / `cargo test` / `cargo clippy` green; auto-migration
-  smoke-tested (dir move, pre-0.3 single-file, idempotent).
+- **DONE:** Crate / binary / packaging; CLI command surface; Config files & paths;
+  Environment variables; Service / daemon units (see sections below). `cargo build`
+  / `cargo test` / `cargo clippy` green; auto-migration smoke-tested (dir move,
+  pre-0.3 single-file, idempotent).
 - **Interim mismatch introduced on purpose:** `mynd session-start` now emits
   `<mynd-context>`, but the deferred `GLOBAL_CLAUDE_BLOCK` in `src/cli/init.rs`
   still tells Claude to look for `<hivemind-context>` and call `hivemind_session_start`.
@@ -38,8 +39,8 @@ listed last and are optional.
   - MCP server registration key + client-config detection tokens (`src/cli/mcp_install.rs`, `src/cli/init.rs`)
   - systemd unit basenames, launchd labels, `hivemind.log` (`src/cli/service.rs`)
   - `hivemind_session_start` MCP tool + `# HiveMind Memory System` global block (`src/server.rs`, `src/cli/init.rs`) - block's `.hivemind.toml` / `<hivemind-context>` refs now stale, sync in that pass
-  - `HIVEMIND_*` env vars, `HIVEMIND_GIT_SHA` / `HIVEMIND_IS_TAGGED` in `build.rs`
-  - keyring service `hivemind-matrix`, `~/.hivemind` pre-0.3 constant (migration source), `test_hivemind()` helper
+  - `HIVEMIND_DB_PATH` env fallback (deliberate), `~/.hivemind` pre-0.3 constant (migration source), `test_hivemind()` helper
+  - `hivemind` systemd unit / launchd / keyring names kept only for legacy teardown + forward-migration
   - `mcp__hivemind__*` tool allowlists + `hivemind-suggest` / `hivemind-bot` agent profiles (Matrix / suggest)
 - **Old SessionStart hooks break under the hard cut:** `.claude/settings.json`
   entries running `hivemind session-start` point at a binary that no longer
@@ -101,13 +102,23 @@ constants in `config.rs`.
 - NOTE kept as `hivemind` on purpose: `~/.hivemind` legacy path constant + its test (pre-0.3 migration source), `HIVEMIND_DB_PATH` env (env-var pass), `test_hivemind()` test helper name, `plugins/opencode/hivemind.{js,d.ts}` gitignore lines (plugin pass), MCP tool description's `.hivemind.toml` mention (fallback still reads it; synced in MCP pass).
 - NOTE `src/cli/status.rs` "Config: .mynd.toml" is hardcoded - a not-yet-migrated repo with `.hivemind.toml` shows the new name in `mynd status`. Cosmetic, transitional.
 
-## Environment variables (`HIVEMIND_*`)
+## Environment variables  — DONE
 
-- [ ] `build.rs:20-21` - `HIVEMIND_GIT_SHA`, `HIVEMIND_IS_TAGGED` (also every `env!("HIVEMIND_GIT_SHA")` consumer)
-- [ ] `src/db.rs` - `HIVEMIND_DB_PATH` (still read as-is; auto-migration is skipped when it is set)
-- [ ] `src/update.rs:76` - `HIVEMIND_UPDATE_CHECK_URL`
-- [x] `src/main.rs` + `src/update.rs` - tracing target now `mynd=...,oxmynd=...`, user-agent `mynd/{version}` (done in CLI/packaging pass)
-- [ ] dashboard `window.HIVEMIND_API` (see Dashboard section) - JS global, not an env var, but same rename
+- [x] `build.rs` - `MYND_GIT_SHA`, `MYND_IS_TAGGED` (compile-time `rustc-env`; no consumers today)
+- [x] `src/db.rs` - `db_path_override()`: `MYND_DB_PATH`, falls back to `HIVEMIND_DB_PATH`. Auto-migration checks the same. TDD, 3 new tests.
+- [x] `src/update.rs` - `MYND_UPDATE_CHECK_URL` (internal test/E2E knob, no fallback)
+- [x] `src/main.rs` + `src/update.rs` - tracing target `mynd=...,oxmynd=...`, user-agent `mynd/{version}` (done in pass 1)
+- [x] `src/test_env_lock.rs` - doc comment
+- [ ] dashboard `window.HIVEMIND_API` - JS global, not an env var; Dashboard pass
+- NOTE `HIVEMIND_DB_PATH` still honoured as a fallback on purpose (shell profiles / service units); drop it a release cycle later.
+
+## Service / daemon units  — DONE
+
+- [x] `src/cli/service.rs` - systemd units `mynd` / `mynd-matrix`, launchd labels `com.oxhive.mynd` / `com.oxhive.mynd-matrix`, log `mynd.log`. `CURRENT_UNIT` / `LEGACY_UNITS` constants.
+- [x] `remove_legacy_units_{linux,macos}()` - `mynd service install` / `uninstall` tear down any `hivemind` unit/agent left by an older build (best-effort), so an upgraded machine never runs two competing services.
+- [x] `src/matrix/keyring_store.rs` - keyring service `mynd-matrix`; `load` falls back to `hivemind-matrix` and migrates it forward (re-save + delete old), so an existing Matrix login survives the upgrade. `delete` clears both.
+- [x] `src/matrix/daemon.rs` - doc comments (`mynd up` / `mynd matrix send`)
+- NOTE real systemd/launchd/keyring paths are shell-outs; covered by the existing `systemd_unit_content` tests + a new constant-pinning test, not by end-to-end unit tests.
 
 ## MCP tool + server integration
 

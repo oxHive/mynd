@@ -42,8 +42,17 @@ pub fn matrix_pidfile_path() -> std::path::PathBuf {
     xdg_data_dir().join("mynd-matrix.pid")
 }
 
+/// Env var that pins the database path, checked before the default location.
+/// `MYND_DB_PATH` is current; `HIVEMIND_DB_PATH` is still honoured as a fallback
+/// so a pre-rename shell profile or service unit keeps working.
+pub fn db_path_override() -> Option<String> {
+    std::env::var("MYND_DB_PATH")
+        .or_else(|_| std::env::var("HIVEMIND_DB_PATH"))
+        .ok()
+}
+
 pub fn resolve_db_path() -> String {
-    if let Ok(p) = std::env::var("HIVEMIND_DB_PATH") {
+    if let Some(p) = db_path_override() {
         return p;
     }
     xdg_data_dir()
@@ -205,18 +214,48 @@ mod tests {
     }
 
     #[test]
-    fn resolve_db_path_respects_env_override() {
+    fn resolve_db_path_respects_mynd_env_override() {
         let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
-        unsafe { std::env::set_var("HIVEMIND_DB_PATH", "/custom/path/db.sqlite") };
+        unsafe { std::env::set_var("MYND_DB_PATH", "/custom/path/db.sqlite") };
+        let result = resolve_db_path();
+        unsafe { std::env::remove_var("MYND_DB_PATH") };
+        assert_eq!(result, "/custom/path/db.sqlite");
+    }
+
+    #[test]
+    fn resolve_db_path_falls_back_to_legacy_hivemind_env_override() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::remove_var("MYND_DB_PATH");
+            std::env::set_var("HIVEMIND_DB_PATH", "/legacy/db.sqlite");
+        }
         let result = resolve_db_path();
         unsafe { std::env::remove_var("HIVEMIND_DB_PATH") };
-        assert_eq!(result, "/custom/path/db.sqlite");
+        assert_eq!(result, "/legacy/db.sqlite");
+    }
+
+    #[test]
+    fn resolve_db_path_prefers_mynd_over_legacy_env() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("MYND_DB_PATH", "/new.db");
+            std::env::set_var("HIVEMIND_DB_PATH", "/old.db");
+        }
+        let result = resolve_db_path();
+        unsafe {
+            std::env::remove_var("MYND_DB_PATH");
+            std::env::remove_var("HIVEMIND_DB_PATH");
+        }
+        assert_eq!(result, "/new.db");
     }
 
     #[test]
     fn resolve_db_path_default_ends_with_memories_db() {
         let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
-        unsafe { std::env::remove_var("HIVEMIND_DB_PATH") };
+        unsafe {
+            std::env::remove_var("MYND_DB_PATH");
+            std::env::remove_var("HIVEMIND_DB_PATH");
+        }
         let result = resolve_db_path();
         assert!(result.ends_with("memories.db"), "got: {result}");
         assert!(result.contains("mynd"), "got: {result}");

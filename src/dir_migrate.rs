@@ -68,7 +68,7 @@ pub fn relocate_legacy_db_file(legacy_db: &Path, new_dir: &Path) -> Result<Outco
 /// are reported and swallowed so a migration hiccup never blocks startup.
 pub fn run_startup_migration() {
     // Data dir: skipped entirely when the DB path is pinned by env.
-    if std::env::var_os("HIVEMIND_DB_PATH").is_none() {
+    if crate::db::db_path_override().is_none() {
         let new_data = crate::db::xdg_data_dir();
         match relocate_dir(&crate::db::legacy_xdg_data_dir(), &new_data) {
             Ok(Outcome::Migrated) => {

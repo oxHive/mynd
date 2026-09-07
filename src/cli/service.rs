@@ -3,11 +3,16 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 // ── service management ────────────────────────────────────────────────────────
-// NOTE: systemd unit basenames ("hivemind", "hivemind-matrix"), the launchd
-// labels ("com.oxhive.hivemind*") and the log filename ("hivemind.log") are
-// still "hivemind" on purpose — renaming them orphans units/agents already
-// installed on user machines, so that is deferred to the "Service / daemon"
-// rename pass (which needs a migration that uninstalls the old unit first).
+// Unit / agent names carry the `mynd` name; the pre-rename `hivemind` names are
+// kept only so `install` and `uninstall` can tear down units left behind by an
+// older build (see remove_legacy_units_* below).
+
+#[cfg(target_os = "linux")]
+const CURRENT_UNIT: &str = "mynd";
+#[cfg(target_os = "linux")]
+const CURRENT_MATRIX_UNIT: &str = "mynd-matrix";
+#[cfg(target_os = "linux")]
+const LEGACY_UNITS: [&str; 2] = ["hivemind", "hivemind-matrix"];
 
 pub fn cmd_service_install(dashboard: bool, matrix: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -164,14 +169,26 @@ fn service_status_unit_linux(unit_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Best-effort teardown of units written by a pre-rename (`hivemind`) build, so
+/// an upgraded machine does not end up with two competing services.
+#[cfg(target_os = "linux")]
+fn remove_legacy_units_linux() {
+    for unit in LEGACY_UNITS {
+        if systemd_unit_path(unit).exists() {
+            let _ = service_uninstall_unit_linux(unit);
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn service_install_linux(dashboard: bool, matrix: bool) -> Result<()> {
+    remove_legacy_units_linux();
     let (args, desc): (&[&str], &str) = if dashboard {
         (&["up"], "Mynd server (API + dashboard)")
     } else {
         (&["up", "--headless"], "Mynd server (API only)")
     };
-    service_install_unit_linux("hivemind", desc, args)?;
+    service_install_unit_linux(CURRENT_UNIT, desc, args)?;
 
     if matrix {
         let configured = crate::config::load_matrix_settings(&crate::config::global_config_path())
@@ -185,7 +202,7 @@ fn service_install_linux(dashboard: bool, matrix: bool) -> Result<()> {
             );
         }
         service_install_unit_linux(
-            "hivemind-matrix",
+            CURRENT_MATRIX_UNIT,
             "Mynd Matrix chat bot",
             &["matrix", "run"],
         )?;
@@ -205,9 +222,10 @@ fn service_install_linux(dashboard: bool, matrix: bool) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn service_uninstall_linux() -> Result<()> {
-    service_uninstall_unit_linux("hivemind")?;
-    if systemd_unit_path("hivemind-matrix").exists() {
-        service_uninstall_unit_linux("hivemind-matrix")?;
+    remove_legacy_units_linux();
+    service_uninstall_unit_linux(CURRENT_UNIT)?;
+    if systemd_unit_path(CURRENT_MATRIX_UNIT).exists() {
+        service_uninstall_unit_linux(CURRENT_MATRIX_UNIT)?;
     }
 
     println!("Mynd service uninstalled.");
@@ -216,9 +234,9 @@ fn service_uninstall_linux() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn service_status_linux() -> Result<()> {
-    service_status_unit_linux("hivemind")?;
-    if systemd_unit_path("hivemind-matrix").exists() {
-        service_status_unit_linux("hivemind-matrix")?;
+    service_status_unit_linux(CURRENT_UNIT)?;
+    if systemd_unit_path(CURRENT_MATRIX_UNIT).exists() {
+        service_status_unit_linux(CURRENT_MATRIX_UNIT)?;
     }
     Ok(())
 }
@@ -252,15 +270,33 @@ mod matrix_service_tests {
         );
         assert!(content.contains("ExecStart=/usr/local/bin/mynd\n"));
     }
+
+    #[test]
+    fn unit_names_carry_the_mynd_name_and_legacy_names_are_the_hivemind_ones() {
+        assert_eq!(CURRENT_UNIT, "mynd");
+        assert_eq!(CURRENT_MATRIX_UNIT, "mynd-matrix");
+        assert!(
+            systemd_unit_path(CURRENT_UNIT).ends_with("mynd.service"),
+            "unit path: {}",
+            systemd_unit_path(CURRENT_UNIT).display()
+        );
+        assert_eq!(LEGACY_UNITS, ["hivemind", "hivemind-matrix"]);
+    }
 }
 
 // ── macOS / launchd ───────────────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
-const LAUNCH_AGENT_LABEL: &str = "com.oxhive.hivemind";
+const LAUNCH_AGENT_LABEL: &str = "com.oxhive.mynd";
 
 #[cfg(target_os = "macos")]
-const MATRIX_LAUNCH_AGENT_LABEL: &str = "com.oxhive.hivemind-matrix";
+const MATRIX_LAUNCH_AGENT_LABEL: &str = "com.oxhive.mynd-matrix";
+
+/// Pre-rename launchd labels, torn down on install/uninstall so an upgraded
+/// machine does not keep an orphaned `hivemind` LaunchAgent loaded.
+#[cfg(target_os = "macos")]
+const LEGACY_LAUNCH_AGENT_LABELS: [&str; 2] =
+    ["com.oxhive.hivemind", "com.oxhive.hivemind-matrix"];
 
 #[cfg(target_os = "macos")]
 fn launch_agent_path(label: &str) -> PathBuf {
@@ -296,9 +332,9 @@ fn launch_agent_plist_content(label: &str, exe: &Path, exec_args: &[&str]) -> St
            <key>KeepAlive</key>\n\
            <true/>\n\
            <key>StandardOutPath</key>\n\
-           <string>{log_dir}/hivemind.log</string>\n\
+           <string>{log_dir}/mynd.log</string>\n\
            <key>StandardErrorPath</key>\n\
-           <string>{log_dir}/hivemind.log</string>\n\
+           <string>{log_dir}/mynd.log</string>\n\
          </dict>\n\
          </plist>\n",
         log_dir = log_dir.display(),
@@ -370,8 +406,20 @@ fn service_status_unit_macos(label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Best-effort teardown of LaunchAgents written by a pre-rename (`hivemind`)
+/// build, so an upgraded machine does not run two competing agents.
+#[cfg(target_os = "macos")]
+fn remove_legacy_units_macos() {
+    for label in LEGACY_LAUNCH_AGENT_LABELS {
+        if launch_agent_path(label).exists() {
+            let _ = service_uninstall_unit_macos(label);
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn service_install_macos(dashboard: bool, matrix: bool) -> Result<()> {
+    remove_legacy_units_macos();
     let (args, desc): (&[&str], &str) = if dashboard {
         (&["up"], "Mynd server (API + dashboard)")
     } else {
@@ -405,13 +453,14 @@ fn service_install_macos(dashboard: bool, matrix: bool) -> Result<()> {
             .unwrap_or(3457);
         println!("Dashboard: http://127.0.0.1:{port}");
     }
-    println!("Logs: ~/Library/Logs/hivemind.log");
+    println!("Logs: ~/Library/Logs/mynd.log");
     println!("Check status: mynd service status");
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn service_uninstall_macos() -> Result<()> {
+    remove_legacy_units_macos();
     service_uninstall_unit_macos(LAUNCH_AGENT_LABEL)?;
     if launch_agent_path(MATRIX_LAUNCH_AGENT_LABEL).exists() {
         service_uninstall_unit_macos(MATRIX_LAUNCH_AGENT_LABEL)?;
