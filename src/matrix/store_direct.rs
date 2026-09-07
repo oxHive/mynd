@@ -16,21 +16,21 @@ use crate::matrix::rooms::MemoryTarget;
 use rmcp::ServiceExt;
 use rmcp::transport::TokioChildProcess;
 
-/// Spawns `hivemind` in stdio MCP mode and calls `memory_store` directly —
+/// Spawns `mynd` in stdio MCP mode and calls `memory_store` directly —
 /// no agent CLI, no LLM interpretation. This is the `!hm store` fast path:
 /// verbatim, no cost, no tagging/dedup judgment beyond what resolve_target
 /// already decided.
 pub async fn store_memory(
-    hivemind_bin: &str,
+    mynd_bin: &str,
     content: &str,
     target: &MemoryTarget,
 ) -> Result<(), String> {
-    let transport = TokioChildProcess::new(tokio::process::Command::new(hivemind_bin))
-        .map_err(|e| format!("failed to spawn hivemind: {e}"))?;
+    let transport = TokioChildProcess::new(tokio::process::Command::new(mynd_bin))
+        .map_err(|e| format!("failed to spawn mynd: {e}"))?;
     let client = ()
         .serve(transport)
         .await
-        .map_err(|e| format!("failed to connect to hivemind MCP: {e}"))?;
+        .map_err(|e| format!("failed to connect to mynd MCP: {e}"))?;
 
     let mut arguments = serde_json::Map::new();
     arguments.insert(

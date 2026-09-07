@@ -80,7 +80,7 @@ const typeColor = (d) => {
       </div>
       <EmptyState v-else
         message="No session-start runs logged yet"
-        hint="This fills in once a Claude Code session with HiveMind configured runs its session-start hook." />
+        hint="This fills in once a Claude Code session with Mynd configured runs its session-start hook." />
     </div>
   </div>
 </template>

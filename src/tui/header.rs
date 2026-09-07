@@ -34,7 +34,7 @@ pub fn render_header(data: &StatusData, no_color: bool, area: Rect, buf: &mut Bu
         .padding(Padding::new(2, 2, 0, 0))
         .title(Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!("{HEX_MARK} HiveMind"), brand_style),
+            Span::styled(format!("{HEX_MARK} Mynd"), brand_style),
             Span::styled(format!(" v{}", data.version), dim(no_color)),
             Span::raw(" "),
         ]));
@@ -91,11 +91,11 @@ mod tests {
     fn sample_data() -> StatusData {
         StatusData {
             version: "0.6.0",
-            project_label: Some("oxhive-hivemind".to_string()),
+            project_label: Some("oxhive-mynd".to_string()),
             server_up: true,
             server_host: "127.0.0.1".to_string(),
             server_port: 3456,
-            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            db_path: "~/.local/share/mynd/memories.db".to_string(),
             memory_count: 128,
             sync_enabled: false,
             sync_remote_url: String::new(),
@@ -121,8 +121,8 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(content.contains("HiveMind"));
-        assert!(content.contains("oxhive-hivemind"));
+        assert!(content.contains("Mynd"));
+        assert!(content.contains("oxhive-mynd"));
         assert!(content.contains("128"));
     }
 
@@ -140,8 +140,8 @@ mod tests {
         let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
 
         // Text content is unchanged regardless of no_color.
-        assert!(content.contains("HiveMind"));
-        assert!(content.contains("oxhive-hivemind"));
+        assert!(content.contains("Mynd"));
+        assert!(content.contains("oxhive-mynd"));
         assert!(content.contains("128"));
 
         // No cell in the rendered buffer carries a foreground color when no_color is set.

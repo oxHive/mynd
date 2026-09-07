@@ -1,11 +1,11 @@
 {
-  "name": "hivemind",
+  "name": "mynd",
   "version": "0.14.3",
-  "description": "HiveMind: persistent memory for AI coding agents. Gives Claude Code access to a local memory store that survives across sessions.",
+  "description": "Mynd: persistent memory for AI coding agents. Gives Claude Code access to a local memory store that survives across sessions.",
   "commands": ["./plugins/claude/skills"],
   "mcpServers": {
-    "hivemind": {
-      "command": "hivemind",
+    "mynd": {
+      "command": "mynd",
       "args": []
     }
   }

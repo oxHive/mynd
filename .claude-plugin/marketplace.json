@@ -1,6 +1,6 @@
 {
   "$schema": "https://cdn.jsdelivr.net/gh/anthropics/claude-code@main/plugins/marketplace-schema.json",
-  "name": "hivemind",
+  "name": "mynd",
   "description": "Persistent memory for AI coding agents. Keeps context, preferences, and project knowledge alive across sessions.",
   "owner": {
     "name": "oxHive",
@@ -8,12 +8,12 @@
   },
   "plugins": [
     {
-      "name": "hivemind",
-      "displayName": "HiveMind",
+      "name": "mynd",
+      "displayName": "Mynd",
       "source": "./",
       "description": "Persistent memory store for Claude Code. Store and recall project context, preferences, and decisions across sessions.",
-      "homepage": "https://github.com/oxHive/hivemind",
-      "repository": "https://github.com/oxHive/hivemind",
+      "homepage": "https://github.com/oxHive/mynd",
+      "repository": "https://github.com/oxHive/mynd",
       "license": "AGPL-3.0",
       "keywords": ["memory", "context", "mcp", "persistence", "claude-code"],
       "category": "productivity"

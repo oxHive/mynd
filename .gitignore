@@ -1,13 +1,13 @@
 /target
 /docs/superpowers/
-/docs/HIVEMIND_*.md
+/docs/MYND_*.md
 /.superpowers/
-.hivemind.local.toml
+.mynd.local.toml
 /.testenv/
 
 # opencode plugin build artifacts
-plugins/opencode/hivemind.js
-plugins/opencode/hivemind.d.ts
+plugins/opencode/mynd.js
+plugins/opencode/mynd.d.ts
 plugins/opencode/node_modules/
 
 # skills

@@ -33,7 +33,7 @@ useThemeStore() // applies data-theme to <html> as soon as the store is created
 useFontScaleStore() // applies zoom to <html> as soon as the store is created
 
 const VIEWS = ['analytics', 'memories', 'graph', 'feedback', 'settings']
-const apiBase = window.HIVEMIND_API || 'http://localhost:3456'
+const apiBase = window.MYND_API || 'http://localhost:3456'
 let pollInterval
 let eventSource
 
@@ -100,16 +100,16 @@ onBeforeUnmount(() => {
       class="flex flex-col items-center justify-center w-full gap-3"
       style="color:var(--hm-text-tertiary)">
       <div class="hm-hex hm-skeleton" style="width:28px; height:28px"></div>
-      <p style="font-size:12px">Connecting to HiveMind server…</p>
+      <p style="font-size:12px">Connecting to Mynd server…</p>
     </div>
 
     <!-- Full-screen error when server unreachable on first load -->
     <div v-else-if="ui.serverStatus === 'unreachable' && !memories.all.length"
       class="flex flex-col items-center justify-center w-full gap-4"
       style="color:var(--hm-text-secondary)">
-      <p style="font-size:14px">Cannot connect to HiveMind server at
+      <p style="font-size:14px">Cannot connect to Mynd server at
         <code class="font-mono">{{ apiBase }}</code>.</p>
-      <p style="font-size:12px; color:var(--hm-text-tertiary)">Run <code class="font-mono">hivemind up</code> and then retry.</p>
+      <p style="font-size:12px; color:var(--hm-text-tertiary)">Run <code class="font-mono">mynd up</code> and then retry.</p>
       <button class="hm-btn hm-btn-default mt-2" @click="ui.pollServerStatus().then(() => memories.fetchAll())">
         Retry
       </button>
