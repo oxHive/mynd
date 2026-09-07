@@ -3,30 +3,30 @@ import { existsSync, mkdirSync, readdirSync, copyFileSync } from "node:fs"
 import { resolve, join } from "node:path"
 import { homedir } from "node:os"
 
-const HIVEMIND_INSTRUCTIONS = `# HiveMind Memory System
+const MYND_INSTRUCTIONS = `# Mynd Memory System
 
-You have access to HiveMind via MCP tools: memory_store, memory_recall,
-memory_search, memory_update, memory_delete, memory_store_edge, hivemind_session_start.
+You have access to Mynd via MCP tools: memory_store, memory_recall,
+memory_search, memory_update, memory_delete, memory_store_edge, mynd_session_start.
 
 At the start of every session, before doing anything else:
 
-1. Check if .hivemind.toml exists in the project root.
-2. If it exists, call hivemind_session_start with the project root path immediately.
+1. Check if .mynd.toml exists in the project root.
+2. If it exists, call mynd_session_start with the project root path immediately.
 3. Incorporate the returned context silently -- do not narrate it.
 
-After calling hivemind_session_start:
+After calling mynd_session_start:
 
 - If budget.truncated is true, mention once: "Some memory entries were skipped
-  due to token budget. Run hivemind status to review."
+  due to token budget. Run mynd status to review."
 - If any skipped entry has reason not_found, mention once which recalls were not
-  found so the user can check their .hivemind.toml.
+  found so the user can check their .mynd.toml.
 - Then proceed normally.
 
-If .hivemind.toml does not exist:
+If .mynd.toml does not exist:
 
-- Do not call hivemind_session_start.
+- Do not call mynd_session_start.
 - Tools remain available on demand.
-- If the user seems to be starting a new project, suggest: "Run hivemind init
+- If the user seems to be starting a new project, suggest: "Run mynd init
   to set up memory hooks for this project."
 
 ## Suggest storing -- never auto-store
@@ -37,61 +37,61 @@ Wait for explicit confirmation before calling memory_store.
 `
 
 export default (async ({ client, directory, $ }) => {
-  const hivemindBin = await resolveHivemind($)
+  const myndBin = await resolveMynd($)
   const installedSkills = installSkills()
   if (installedSkills.length) {
     await client.app.log({
       body: {
-        service: "hivemind",
+        service: "mynd",
         level: "info",
         message: `installed ${installedSkills.length} skill(s) to ${globalSkillsDir()}`,
       },
     })
   }
 
-  if (hivemindBin) {
+  if (myndBin) {
     await client.app.log({
       body: {
-        service: "hivemind",
+        service: "mynd",
         level: "info",
-        message: `hivemind binary found: ${hivemindBin}`,
+        message: `mynd binary found: ${myndBin}`,
       },
     })
   } else {
     await client.app.log({
       body: {
-        service: "hivemind",
+        service: "mynd",
         level: "warn",
         message:
-          "hivemind binary not found in PATH. MCP server not registered. Install: cargo binstall oxhivemind",
+          "mynd binary not found in PATH. MCP server not registered. Install: cargo binstall oxmynd",
       },
     })
   }
 
   return {
     config: (cfg) => {
-      if (!hivemindBin) return
+      if (!myndBin) return
       if (!cfg.mcp) cfg.mcp = {}
-      if (cfg.mcp.hivemind) return
+      if (cfg.mcp.mynd) return
 
-      cfg.mcp.hivemind = {
+      cfg.mcp.mynd = {
         type: "local",
-        command: [hivemindBin],
+        command: [myndBin],
         enabled: true,
       }
     },
 
     "experimental.chat.system.transform": async (_input, output) => {
       if (!output.content) output.content = []
-      const configPath = resolve(directory, ".hivemind.toml")
+      const configPath = resolve(directory, ".mynd.toml")
       if (!existsSync(configPath)) {
         output.content.push(
-          "HiveMind is available but not initialized for this project. Run: hivemind init",
+          "Mynd is available but not initialized for this project. Run: mynd init",
         )
         return
       }
 
-      output.content.push(HIVEMIND_INSTRUCTIONS)
+      output.content.push(MYND_INSTRUCTIONS)
     },
   }
 }) satisfies Plugin
@@ -130,11 +130,11 @@ function installSkills(): string[] {
   }
 }
 
-async function resolveHivemind(
+async function resolveMynd(
   $: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<{ stdout: Uint8Array }>,
 ): Promise<string | null> {
   try {
-    const result = await $`which hivemind`
+    const result = await $`which mynd`
     const path = result.stdout.toString().trim()
     if (path) return path
   } catch {

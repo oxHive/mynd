@@ -6,8 +6,8 @@
 /.testenv/
 
 # opencode plugin build artifacts
-plugins/opencode/hivemind.js
-plugins/opencode/hivemind.d.ts
+plugins/opencode/mynd.js
+plugins/opencode/mynd.d.ts
 plugins/opencode/node_modules/
 
 # skills

@@ -90,14 +90,14 @@ pub(crate) fn detect_registered_clients(home: &Path) -> Vec<&'static str> {
     .any(|p| {
         p.exists()
             && std::fs::read_to_string(p)
-                .map(|s| s.contains("hivemind"))
+                .map(|s| super::already_registered(&s))
                 .unwrap_or(false)
     });
     if claude_ok {
         found.push("claude");
     }
 
-    // File-based clients: just grep for "hivemind" in their config
+    // File-based clients: grep for either server key in their config.
     let file_clients: &[(&str, &[&str])] = &[
         ("cursor", &[".cursor", "mcp.json"]),
         ("windsurf", &[".codeium", "windsurf", "mcp_config.json"]),
@@ -107,7 +107,7 @@ pub(crate) fn detect_registered_clients(home: &Path) -> Vec<&'static str> {
         let path = parts.iter().fold(home.to_path_buf(), |p, s| p.join(s));
         if path.exists()
             && let Ok(contents) = std::fs::read_to_string(&path)
-            && contents.contains("hivemind")
+            && super::already_registered(&contents)
         {
             found.push(name);
         }
@@ -120,7 +120,7 @@ pub(crate) fn detect_registered_clients(home: &Path) -> Vec<&'static str> {
     let opencode_cfg = xdg_config.join("opencode").join("opencode.json");
     if opencode_cfg.exists()
         && let Ok(contents) = std::fs::read_to_string(&opencode_cfg)
-        && contents.contains("hivemind")
+        && super::already_registered(&contents)
     {
         found.push("opencode");
     }
@@ -129,7 +129,8 @@ pub(crate) fn detect_registered_clients(home: &Path) -> Vec<&'static str> {
     let codex_cfg = home.join(".codex").join("config.toml");
     if codex_cfg.exists()
         && let Ok(contents) = std::fs::read_to_string(&codex_cfg)
-        && contents.contains("[mcp_servers.hivemind]")
+        && (contents.contains("[mcp_servers.mynd]")
+            || contents.contains("[mcp_servers.hivemind]"))
     {
         found.push("codex");
     }
@@ -166,11 +167,7 @@ pub fn scaffold(
             &project_root.join("CLAUDE.md"),
             &project_claude_md(&project_name),
         )?,
-        append_block_if_absent(
-            &home.join(".claude").join("CLAUDE.md"),
-            GLOBAL_CLAUDE_MARKER,
-            GLOBAL_CLAUDE_BLOCK,
-        )?,
+        ensure_global_claude_block(&home.join(".claude").join("CLAUDE.md"))?,
         write_if_absent(&config_dir.join("config.toml"), GLOBAL_CONFIG)?,
         ensure_claude_settings_hook(project_root)?,
     ];
@@ -322,42 +319,36 @@ interval_seconds = 300\n\
 sync_on_store = true\n\
 sync_on_startup = true\n";
 
-// NOTE: rename of this marker + block (and the already-installed ~/.claude/CLAUDE.md
-// on user machines) is deferred to the "MCP tool + session-start" rename pass, since
-// it depends on renaming the `hivemind_session_start` MCP tool and needs a migration
-// that rewrites the existing block rather than appending a second one. That pass must
-// also flip the block's `.hivemind.toml` and `<hivemind-context>` references, which
-// are stale as of the config-file rename.
-pub(crate) const GLOBAL_CLAUDE_MARKER: &str = "# HiveMind Memory System";
+pub(crate) const GLOBAL_CLAUDE_MARKER: &str = "# Mynd Memory System";
 
-pub(crate) const GLOBAL_CLAUDE_BLOCK: &str = "# HiveMind Memory System
+pub(crate) const GLOBAL_CLAUDE_BLOCK: &str = "# Mynd Memory System
 
-You have access to HiveMind via MCP tools: memory_store, memory_recall,
-memory_search, memory_update, memory_delete, memory_store_edge, hivemind_session_start.
+You have access to Mynd via MCP tools: memory_store, memory_recall,
+memory_search, memory_update, memory_delete, memory_store_edge, mynd_session_start.
 
 At the start of every session, before doing anything else:
 
-1. Check if .hivemind.toml exists in the project root.
-2. If it exists, call `hivemind_session_start` with the project root path immediately.
+1. Check if .mynd.toml exists in the project root.
+2. If it exists, call `mynd_session_start` with the project root path immediately.
 3. Incorporate the returned context silently — do not narrate it.
 
-After calling hivemind_session_start:
+After calling mynd_session_start:
 
 - If budget.truncated is true, mention once: \"Some memory entries were skipped
-  due to token budget. Run `hivemind status` to review.\"
+  due to token budget. Run `mynd status` to review.\"
 - If any skipped entry has reason not_found, mention once which recalls were not
-  found so the user can check their .hivemind.toml.
+  found so the user can check their .mynd.toml.
 - Then proceed normally.
 
-If .hivemind.toml does not exist:
+If .mynd.toml does not exist:
 
-- Do not call hivemind_session_start.
+- Do not call mynd_session_start.
 - Tools remain available on demand.
-- If the user seems to be starting a new project, suggest: \"Run `hivemind init`
+- If the user seems to be starting a new project, suggest: \"Run `mynd init`
   to set up memory hooks for this project.\"
 
-If a <hivemind-context> block is already present in the session context (injected
-by the SessionStart hook), do NOT call hivemind_session_start again; use the
+If a <mynd-context> block is already present in the session context (injected
+by the SessionStart hook), do NOT call mynd_session_start again; use the
 injected context directly.
 
 ## Suggest storing — never auto-store
@@ -366,3 +357,51 @@ When the user shares something worth persisting (preferences, project context,
 design decisions), suggest: \"That seems worth remembering — should I store it?\"
 Wait for explicit confirmation before calling memory_store.
 ";
+
+/// Pre-rename marker for the `~/.claude/CLAUDE.md` block. Its presence (with
+/// [`GLOBAL_CLAUDE_MARKER`] absent) triggers the one-time in-place rewrite in
+/// [`migrate_global_claude_block`].
+pub(crate) const LEGACY_GLOBAL_CLAUDE_MARKER: &str = "# HiveMind Memory System";
+
+/// Rewrite the pre-rename memory block in `path` to the current one, in place,
+/// preserving everything the user has around it. No-op when the current block
+/// is already there or no block is present at all. Returns whether it changed
+/// the file.
+pub(crate) fn migrate_global_claude_block(path: &Path) -> Result<bool> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    if existing.contains(GLOBAL_CLAUDE_MARKER) {
+        return Ok(false);
+    }
+    let Some(start) = existing.find(LEGACY_GLOBAL_CLAUDE_MARKER) else {
+        return Ok(false);
+    };
+    // The block runs from its heading to the next top-level heading, or EOF.
+    let rest_from = start + LEGACY_GLOBAL_CLAUDE_MARKER.len();
+    let end = existing[rest_from..]
+        .find("\n# ")
+        .map(|i| rest_from + i + 1)
+        .unwrap_or(existing.len());
+
+    let mut body = String::with_capacity(existing.len());
+    body.push_str(&existing[..start]);
+    body.push_str(GLOBAL_CLAUDE_BLOCK.trim_end());
+    body.push('\n');
+    let tail = &existing[end..];
+    if !tail.is_empty() {
+        if !tail.starts_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(tail);
+    }
+    write_atomic(path, &body)?;
+    Ok(true)
+}
+
+/// Migrate a pre-rename block in place, else append the current block if the
+/// file has no memory block yet.
+pub(crate) fn ensure_global_claude_block(path: &Path) -> Result<(PathBuf, &'static str)> {
+    if migrate_global_claude_block(path)? {
+        return Ok((path.to_path_buf(), "migrated"));
+    }
+    append_block_if_absent(path, GLOBAL_CLAUDE_MARKER, GLOBAL_CLAUDE_BLOCK)
+}

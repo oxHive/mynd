@@ -245,6 +245,82 @@ fn append_block_if_absent_is_idempotent() {
     );
 }
 
+const SAMPLE_LEGACY_BLOCK: &str = "# HiveMind Memory System\n\
+\n\
+You have access to HiveMind via MCP tools: memory_store, hivemind_session_start.\n\
+\n\
+1. Check if .hivemind.toml exists in the project root.\n\
+2. If it exists, call `hivemind_session_start` immediately.\n\
+\n\
+## Suggest storing — never auto-store\n\
+\n\
+Wait for explicit confirmation before calling memory_store.\n";
+
+#[test]
+fn migrate_global_claude_block_rewrites_legacy_block_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    fs::write(&path, SAMPLE_LEGACY_BLOCK).unwrap();
+
+    let changed = migrate_global_claude_block(&path).unwrap();
+
+    assert!(changed);
+    let gc = fs::read_to_string(&path).unwrap();
+    assert!(gc.contains("# Mynd Memory System"));
+    assert!(!gc.contains("# HiveMind Memory System"));
+    assert!(gc.contains("mynd_session_start"));
+    assert!(!gc.contains("hivemind_session_start"));
+}
+
+#[test]
+fn migrate_global_claude_block_preserves_user_content_around_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    fs::write(
+        &path,
+        format!("# My rules\n\nAlways write tests first.\n\n{SAMPLE_LEGACY_BLOCK}\n# After\n\nkeep me\n"),
+    )
+    .unwrap();
+
+    assert!(migrate_global_claude_block(&path).unwrap());
+
+    let gc = fs::read_to_string(&path).unwrap();
+    assert!(gc.contains("Always write tests first."));
+    assert!(gc.contains("# After\n\nkeep me"));
+    assert!(gc.contains("# Mynd Memory System"));
+    assert!(!gc.contains("HiveMind"));
+}
+
+#[test]
+fn migrate_global_claude_block_is_noop_when_current_or_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+
+    // no block at all: file untouched, not created
+    assert!(!migrate_global_claude_block(&path).unwrap());
+    assert!(!path.exists());
+
+    // current block already present
+    fs::write(&path, GLOBAL_CLAUDE_BLOCK).unwrap();
+    assert!(!migrate_global_claude_block(&path).unwrap());
+}
+
+#[test]
+fn scaffold_migrates_an_existing_legacy_global_block() {
+    let proj = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    let global = home.path().join(".claude").join("CLAUDE.md");
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    fs::write(&global, SAMPLE_LEGACY_BLOCK).unwrap();
+
+    scaffold(proj.path(), home.path(), cfg.path()).unwrap();
+
+    let gc = fs::read_to_string(&global).unwrap();
+    assert_eq!(gc.matches("Mynd Memory System").count(), 1);
+    assert!(!gc.contains("HiveMind"));
+}
+
 #[test]
 fn scaffold_creates_all_files() {
     let proj = tempfile::tempdir().unwrap();
@@ -262,7 +338,7 @@ fn scaffold_creates_all_files() {
     let gi = fs::read_to_string(proj.path().join(".gitignore")).unwrap();
     assert!(gi.contains(".mynd.local.toml"));
     let gc = fs::read_to_string(home.path().join(".claude").join("CLAUDE.md")).unwrap();
-    assert!(gc.contains("HiveMind Memory System"));
+    assert!(gc.contains("Mynd Memory System"));
     let pj = fs::read_to_string(proj.path().join(".mynd.toml")).unwrap();
     let dirname = proj.path().file_name().unwrap().to_string_lossy();
     assert!(pj.contains(&*dirname));
@@ -282,7 +358,7 @@ fn scaffold_is_idempotent_and_does_not_duplicate_global_block() {
     assert!(report2.iter().all(|(_, status)| *status == "exists"));
 
     let gc = fs::read_to_string(home.path().join(".claude").join("CLAUDE.md")).unwrap();
-    assert_eq!(gc.matches("# HiveMind Memory System").count(), 1);
+    assert_eq!(gc.matches("# Mynd Memory System").count(), 1);
     let gi = fs::read_to_string(proj.path().join(".gitignore")).unwrap();
     assert_eq!(gi.matches(".mynd.local.toml").count(), 1);
 }
@@ -310,7 +386,7 @@ fn scaffold_preserves_existing_user_claude_md() {
         "user content must be preserved"
     );
     assert!(
-        gc.contains("# HiveMind Memory System"),
+        gc.contains("# Mynd Memory System"),
         "hook block appended"
     );
 }
@@ -722,13 +798,13 @@ fn upsert_json_mcp_creates_new_file_with_mcp_servers_key() {
     let path = dir.path().join("mcp.json");
     upsert_json_mcp(
         &path,
-        "hivemind",
-        serde_json::json!({"command": "hivemind"}),
+        "mynd",
+        serde_json::json!({"command": "mynd"}),
     )
     .unwrap();
     let raw = fs::read_to_string(&path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert!(val["mcpServers"]["hivemind"]["command"] == "hivemind");
+    assert!(val["mcpServers"]["mynd"]["command"] == "mynd");
 }
 
 #[test]
@@ -737,13 +813,13 @@ fn upsert_json_mcp_uses_mcp_key_when_entry_has_type_field() {
     let path = dir.path().join("opencode.json");
     upsert_json_mcp(
         &path,
-        "hivemind",
-        serde_json::json!({"type": "local", "command": "hivemind", "args": []}),
+        "mynd",
+        serde_json::json!({"type": "local", "command": "mynd", "args": []}),
     )
     .unwrap();
     let raw = fs::read_to_string(&path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert!(val["mcp"]["hivemind"]["type"] == "local");
+    assert!(val["mcp"]["mynd"]["type"] == "local");
     assert!(
         val.get("mcpServers").is_none(),
         "should use 'mcp' not 'mcpServers'"
@@ -757,8 +833,8 @@ fn upsert_json_mcp_updates_existing_entry() {
     fs::write(&path, r#"{"mcpServers":{"other":{"command":"other"}}}"#).unwrap();
     upsert_json_mcp(
         &path,
-        "hivemind",
-        serde_json::json!({"command": "hivemind"}),
+        "mynd",
+        serde_json::json!({"command": "mynd"}),
     )
     .unwrap();
     let raw = fs::read_to_string(&path).unwrap();
@@ -767,7 +843,7 @@ fn upsert_json_mcp_updates_existing_entry() {
         val["mcpServers"]["other"]["command"] == "other",
         "must preserve existing"
     );
-    assert!(val["mcpServers"]["hivemind"]["command"] == "hivemind");
+    assert!(val["mcpServers"]["mynd"]["command"] == "mynd");
 }
 
 #[test]
@@ -776,8 +852,8 @@ fn upsert_json_mcp_creates_parent_dirs() {
     let path = dir.path().join("nested").join("deep").join("mcp.json");
     upsert_json_mcp(
         &path,
-        "hivemind",
-        serde_json::json!({"command": "hivemind"}),
+        "mynd",
+        serde_json::json!({"command": "mynd"}),
     )
     .unwrap();
     assert!(path.exists());
@@ -790,14 +866,50 @@ fn upsert_json_mcp_detects_mcp_key_from_existing_file() {
     fs::write(&path, r#"{"mcp":{"existing":{"type":"local"}}}"#).unwrap();
     upsert_json_mcp(
         &path,
-        "hivemind",
-        serde_json::json!({"command": "hivemind"}),
+        "mynd",
+        serde_json::json!({"command": "mynd"}),
     )
     .unwrap();
     let raw = fs::read_to_string(&path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert!(val["mcp"]["hivemind"]["command"] == "hivemind");
+    assert!(val["mcp"]["mynd"]["command"] == "mynd");
     assert!(val.get("mcpServers").is_none());
+}
+
+#[test]
+fn upsert_json_mcp_drops_a_stale_hivemind_entry_when_writing_mynd() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp.json");
+    fs::write(
+        &path,
+        r#"{"mcpServers":{"hivemind":{"command":"hivemind"},"other":{"command":"o"}}}"#,
+    )
+    .unwrap();
+
+    upsert_json_mcp(&path, "mynd", serde_json::json!({"command": "mynd"})).unwrap();
+
+    let val: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(val["mcpServers"]["mynd"]["command"] == "mynd");
+    assert!(val["mcpServers"]["other"]["command"] == "o", "unrelated entry kept");
+    assert!(val["mcpServers"].get("hivemind").is_none(), "stale entry dropped");
+}
+
+#[test]
+fn strip_toml_table_removes_only_the_named_table() {
+    let doc = "[a]\nx = 1\n\n[mcp_servers.hivemind]\ncommand = \"hivemind\"\nargs = []\n\n[b]\ny = 2\n";
+    let out = strip_toml_table(doc, "[mcp_servers.hivemind]");
+    assert!(!out.contains("mcp_servers.hivemind"));
+    assert!(!out.contains("command = \"hivemind\""));
+    assert!(out.contains("[a]\nx = 1"));
+    assert!(out.contains("[b]\ny = 2"));
+}
+
+#[test]
+fn already_registered_matches_either_server_key() {
+    assert!(already_registered(r#"{"mcpServers":{"mynd":{}}}"#));
+    assert!(already_registered(r#"{"mcpServers":{"hivemind":{}}}"#));
+    assert!(!already_registered(r#"{"mcpServers":{"other":{}}}"#));
 }
 
 #[test]

@@ -25,28 +25,23 @@ listed last and are optional.
 ## Progress
 
 - **DONE:** Crate / binary / packaging; CLI command surface; Config files & paths;
-  Environment variables; Service / daemon units (see sections below). `cargo build`
-  / `cargo test` / `cargo clippy` green; auto-migration smoke-tested (dir move,
-  pre-0.3 single-file, idempotent).
-- **Interim mismatch introduced on purpose:** `mynd session-start` now emits
-  `<mynd-context>`, but the deferred `GLOBAL_CLAUDE_BLOCK` in `src/cli/init.rs`
-  still tells Claude to look for `<hivemind-context>` and call `hivemind_session_start`.
-  Effect: on machines with the old `~/.claude/CLAUDE.md`, Claude may redundantly
-  call the MCP tool at session start (wasteful, not broken). Fixed when the
-  "MCP tool + session-start" section is done - that pass must sync the block to
-  `<mynd-context>` and add the `~/.claude/CLAUDE.md` migration.
+  Environment variables; Service / daemon units; MCP tool + server integration;
+  Claude plugin; Claude skills; OpenCode plugin (see sections below). `cargo build`
+  / `cargo test` / `cargo clippy` green.
+- The earlier `<mynd-context>` / `<hivemind-context>` interim mismatch is **resolved**:
+  the global CLAUDE block now matches the emitter, and `migrate_global_claude_block`
+  rewrites the pre-rename block in `~/.claude/CLAUDE.md` in place (via `mynd init`
+  and unconditionally at startup).
 - **Still `hivemind` on purpose (deferred, with NOTE comments in the code):**
-  - MCP server registration key + client-config detection tokens (`src/cli/mcp_install.rs`, `src/cli/init.rs`)
-  - systemd unit basenames, launchd labels, `hivemind.log` (`src/cli/service.rs`)
-  - `hivemind_session_start` MCP tool + `# HiveMind Memory System` global block (`src/server.rs`, `src/cli/init.rs`) - block's `.hivemind.toml` / `<hivemind-context>` refs now stale, sync in that pass
+  - MCP registration key detection still *also* matches `hivemind` (transition), and `install` drops it
   - `HIVEMIND_DB_PATH` env fallback (deliberate), `~/.hivemind` pre-0.3 constant (migration source), `test_hivemind()` helper
   - `hivemind` systemd unit / launchd / keyring names kept only for legacy teardown + forward-migration
-  - `mcp__hivemind__*` tool allowlists + `hivemind-suggest` / `hivemind-bot` agent profiles (Matrix / suggest)
-- **Old SessionStart hooks break under the hard cut:** `.claude/settings.json`
-  entries running `hivemind session-start` point at a binary that no longer
-  exists. `ensure_claude_settings_hook` now writes `mynd session-start` and
-  dedupes against both spellings, but existing hooks need `mynd init` re-run or
-  the migration above.
+  - `hivemind-suggest` / `hivemind-bot` opencode agent-profile names + `hivemind_bin` var + daemon/store_direct strings (Matrix pass)
+  - `project:hivemind` tag fixtures in tests (tag-system fixtures, not the product name)
+- **Upgrade steps still required under the hard cut** (migrations cover config dir,
+  data dir, `~/.claude/CLAUDE.md` block, keyring, service units - not these):
+  - re-run `mynd init` so `.claude/settings.json` runs `mynd session-start` (old hook points at a gone binary)
+  - re-run `mynd mcp install <client>` so the MCP server is registered under the `mynd` key
 
 ## Crate / binary / packaging  — DONE
 
@@ -120,35 +115,33 @@ constants in `config.rs`.
 - [x] `src/matrix/daemon.rs` - doc comments (`mynd up` / `mynd matrix send`)
 - NOTE real systemd/launchd/keyring paths are shell-outs; covered by the existing `systemd_unit_content` tests + a new constant-pinning test, not by end-to-end unit tests.
 
-## MCP tool + server integration
+## MCP tool + server integration  — DONE
 
-- [ ] `src/server.rs:751` - `async fn hivemind_session_start` tool name (breaking; existing `~/.claude/CLAUDE.md` blocks call it by name)
-- [ ] `src/server.rs:749` - tool description mentions `.hivemind.toml`
-- [ ] `src/cli/init.rs:325-354` - `GLOBAL_CLAUDE_MARKER = "# HiveMind Memory System"`, `GLOBAL_CLAUDE_BLOCK` (full text: `hivemind_session_start`, `.hivemind.toml`, `hivemind status`, `hivemind init`, `<hivemind-context>`)
-- [ ] `src/cli/init.rs:307` - per-project `CLAUDE.md` template ("# HiveMind - {name}", "per .hivemind.toml")
-- [x] `src/cli/init.rs` - SessionStart hook command now writes `mynd session-start`; dedupe checks both spellings (done in CLI pass)
-- [ ] `CLAUDE.md` (repo root) - "# HiveMind - hivemind", ".hivemind.toml"
-- [ ] `~/.claude/CLAUDE.md` on user machines - migration needed (can't edit remotely; `mynd init` re-run or `migrate` should rewrite the block). **Must also flip `<hivemind-context>` -> `<mynd-context>` in the block** since the emitter already changed (see Progress).
+- [x] `src/server.rs` - tool `hivemind_session_start` -> `mynd_session_start` (fn name drives the MCP tool name); description now says `.mynd.toml`
+- [x] `src/cli/init.rs` - `GLOBAL_CLAUDE_MARKER` -> `# Mynd Memory System`; `GLOBAL_CLAUDE_BLOCK` fully rewritten (`mynd_session_start`, `.mynd.toml`, `mynd status`, `mynd init`, `<mynd-context>`)
+- [x] `migrate_global_claude_block()` - rewrites the pre-rename block in `~/.claude/CLAUDE.md` in place, preserving surrounding user content. Runs via `scaffold` (`mynd init`) and unconditionally at startup (`run_startup_migration`). No-op when the current block is present or none is. TDD, 4 tests.
+- [x] MCP registration key `hivemind` -> `mynd` (`SERVER_KEY` / `LEGACY_KEY` in `mcp_install.rs`); `install` drops a stale `hivemind` registration first (CLI `mcp remove`, JSON key removal, `strip_toml_table` for codex); `already_registered()` + `detect_registered_clients` accept either key so an in-transition machine is not nagged. TDD, 3 tests.
+- [x] `src/matrix/agent.rs`, `src/suggest_session.rs` - `mcpServers` key + `mcp__mynd__*` allowed-tools (must match the registration key)
+- [x] `CLAUDE.md` (repo root) - done in pass 2
+- [x] session-start context tag - `GLOBAL_CLAUDE_BLOCK` now says `<mynd-context>`, matching the emitter; interim mismatch resolved
+- NOTE still `hivemind`: `hivemind-bot` / `hivemind-suggest` opencode agent-profile names + `hivemind_bin` var + daemon/store_direct strings (Matrix pass); MCP-key detection keeps matching `hivemind` for the transition.
 
-## Session-start context tag  — mostly DONE
+## Claude plugin (`.claude-plugin/`)  — DONE
 
-- [x] Emitter `src/cli/status.rs` now prints `<mynd-context>`; the `mynd: skipped recall` prefix; `src/cli/tests.rs` asserts updated.
-- [ ] `GLOBAL_CLAUDE_BLOCK` reference to `<hivemind-context>` in `src/cli/init.rs:357` still old - flip it in the MCP-tool pass together with the `~/.claude/CLAUDE.md` migration.
+- [x] `.claude-plugin/plugin.json` - `name` `mynd`, description, mcpServers key `mynd`, `command: "mynd"`
+- [x] `.claude-plugin/marketplace.json` - `name` x2, `displayName` `Mynd`, `homepage` / `repository` -> `github.com/oxHive/mynd`
+- [ ] `README.md` - `claude plugin marketplace add oxHive/mynd`, `claude plugin install mynd@mynd` (Docs pass)
 
-## Claude plugin (`.claude-plugin/`)
+## Claude skills (`plugins/claude/skills/`)  — DONE
 
-- [ ] `.claude-plugin/plugin.json` - `name`, `description`, mcpServers key `hivemind`, `command: "hivemind"`
-- [ ] `.claude-plugin/marketplace.json` - `name` (x2), `displayName`, `homepage`, `repository` (`github.com/oxHive/hivemind`)
-- [ ] `README.md` - `claude plugin marketplace add oxHive/hivemind`, `claude plugin install hivemind@hivemind` (appears ~4x)
+- [x] all six `memory-*.md` - `HiveMind` -> `Mynd`, `hivemind_session_start` -> `mynd_session_start`, `.hivemind.toml` -> `.mynd.toml`
 
-## Claude skills (`plugins/claude/skills/`)
+## OpenCode plugin (`plugins/opencode/`)  — DONE
 
-- [ ] `memory-connections.md`, `memory-edit.md`, `memory-list.md`, `memory-search.md`, `memory-status.md`, `memory-store.md` - "HiveMind" in prose/descriptions; `hivemind_session_start` tool call in `memory-status.md:12`; `.hivemind.toml` refs in `memory-status.md:18,25,27` and `memory-store.md:22,60`
-
-## OpenCode plugin (`plugins/opencode/`)
-
-- [ ] `plugins/opencode/hivemind.ts` - rename file; `HIVEMIND_INSTRUCTIONS` const + full instruction text; `resolveHivemind()`, `hivemindBin`, `which hivemind`; `cfg.mcp.hivemind` registration key; toast `service: "hivemind"`; `cargo binstall oxhivemind`; `.hivemind.toml` check
-- [ ] `plugins/opencode/package.json` - `name: "@oxhive/opencode-hivemind"`, `description`, `homepage`, `repository.url`, `bugs.url`, `main: "hivemind.js"`, `files`, `build` script (`hivemind.ts` -> `hivemind.js`)
+- [x] `plugins/opencode/hivemind.ts` -> `mynd.ts` (git mv); `MYND_INSTRUCTIONS` + full text, `resolveMynd()`, `myndBin`, `which mynd`, `cfg.mcp.mynd`, toast `service: "mynd"`, `cargo binstall oxmynd`, `.mynd.toml`
+- [x] `plugins/opencode/package.json` - `name: "@oxhive/opencode-mynd"`, description, homepage / repo / bugs URLs, `main` / `files` / `build` -> `mynd.js` / `mynd.ts`
+- [x] `.gitignore` - `plugins/opencode/mynd.{js,d.ts}`; stale `hivemind.{js,d.ts}` build artifacts deleted
+- [ ] `README.md` - `@oxhive/opencode-mynd` (Docs pass)
 - [ ] `plugins/opencode/scripts/resolve-skills.ts` - check for name refs
 - [ ] `README.md:140,146-150` - `@oxhive/opencode-hivemind`
 

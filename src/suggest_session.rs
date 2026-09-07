@@ -242,7 +242,7 @@ impl SuggestSessionManager {
 
     async fn run_claude_turn(&self, prompt: &str, resume: Option<&str>) -> Result<String, String> {
         let mcp_config = json!({
-            "mcpServers": { "hivemind": { "type": "http", "url": self.mcp_url } }
+            "mcpServers": { "mynd": { "type": "http", "url": self.mcp_url } }
         })
         .to_string();
         let mut cmd = tokio::process::Command::new(&self.agent.command);
@@ -258,7 +258,7 @@ impl SuggestSessionManager {
             .arg(&mcp_config)
             .arg("--strict-mcp-config")
             .arg("--allowedTools")
-            .arg("mcp__hivemind__memory_store_edge,mcp__hivemind__memory_update_edge,mcp__hivemind__memory_get_edges")
+            .arg("mcp__mynd__memory_store_edge,mcp__mynd__memory_update_edge,mcp__mynd__memory_get_edges")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

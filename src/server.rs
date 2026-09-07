@@ -746,9 +746,9 @@ impl Mynd {
     }
 
     #[tool(
-        description = "Call this once at the start of every session when .hivemind.toml exists in the project root. Returns pre-configured memory context for this project."
+        description = "Call this once at the start of every session when .mynd.toml exists in the project root. Returns pre-configured memory context for this project."
     )]
-    async fn hivemind_session_start(
+    async fn mynd_session_start(
         &self,
         Parameters(p): Parameters<SessionStartInput>,
     ) -> Result<CallToolResult, ErrorData> {

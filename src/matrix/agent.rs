@@ -40,7 +40,7 @@ async fn run_claude_turn(
     system_prompt: Option<&str>,
 ) -> Result<TurnResult, String> {
     let mcp_config = json!({
-        "mcpServers": { "hivemind": { "command": hivemind_bin, "args": [] } }
+        "mcpServers": { "mynd": { "command": hivemind_bin, "args": [] } }
     })
     .to_string();
     let mut cmd = tokio::process::Command::new(&agent.command);
@@ -59,7 +59,7 @@ async fn run_claude_turn(
         .arg(&mcp_config)
         .arg("--strict-mcp-config")
         .arg("--allowedTools")
-        .arg("mcp__hivemind__memory_store,mcp__hivemind__memory_recall,mcp__hivemind__memory_search,mcp__hivemind__memory_update")
+        .arg("mcp__mynd__memory_store,mcp__mynd__memory_recall,mcp__mynd__memory_search,mcp__mynd__memory_update")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -194,7 +194,7 @@ mod tests {
         assert!(log.contains("--output-format json"));
         assert!(log.contains("--strict-mcp-config"));
         assert!(log.contains("--allowedTools"));
-        assert!(log.contains("mcp__hivemind__memory_store"));
+        assert!(log.contains("mcp__mynd__memory_store"));
         assert!(
             log.contains("\"command\":\"/usr/local/bin/hivemind\""),
             "mcp-config must point at hivemind in stdio mode, not an HTTP url"

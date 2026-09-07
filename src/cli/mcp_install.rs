@@ -3,11 +3,17 @@ use anyhow::Result;
 use super::init::home_dir;
 
 // ── mcp install ───────────────────────────────────────────────────────────────
-// NOTE: the MCP server registration key ("hivemind") and the client-config
-// detection tokens are still "hivemind" on purpose — renaming that key is
-// deferred to the "MCP tool + server integration" rename pass (it orphans
-// existing client registrations and pairs with the hivemind_session_start
-// tool rename).
+
+/// Key the MCP server is registered under in every client's config, plus the
+/// pre-rename key. `install` writes `SERVER_KEY` and tears down `LEGACY_KEY`;
+/// detection accepts either so an in-transition machine is not nagged.
+pub(crate) const SERVER_KEY: &str = "mynd";
+pub(crate) const LEGACY_KEY: &str = "hivemind";
+
+/// True if a client's `mcp list` / config text mentions either key.
+pub(crate) fn already_registered(haystack: &str) -> bool {
+    haystack.contains(SERVER_KEY) || haystack.contains(LEGACY_KEY)
+}
 
 pub(crate) fn exe_path() -> String {
     std::env::current_exe()
@@ -48,10 +54,16 @@ fn install_claude() -> Result<()> {
         .args(["mcp", "list"])
         .output()?;
     let list_str = String::from_utf8_lossy(&list_out.stdout);
-    if list_str.contains("hivemind") {
+    if list_str.contains(SERVER_KEY) {
         println!("Mynd is already registered with Claude Code.");
         println!("Open a new Claude Code session to use it.");
         return Ok(());
+    }
+    // Drop a stale pre-rename registration before adding the new one.
+    if list_str.contains(LEGACY_KEY) {
+        let _ = std::process::Command::new("claude")
+            .args(["mcp", "remove", "--scope", "user", LEGACY_KEY])
+            .status();
     }
 
     // Register as stdio using the full binary path so Claude Code can find it
@@ -60,7 +72,7 @@ fn install_claude() -> Result<()> {
     // meant to happen once per machine.
     let exe = exe_path();
     let status = std::process::Command::new("claude")
-        .args(["mcp", "add", "--scope", "user", "hivemind", "--", &exe])
+        .args(["mcp", "add", "--scope", "user", SERVER_KEY, "--", &exe])
         .status()?;
 
     if !status.success() {
@@ -87,13 +99,19 @@ fn install_opencode() -> Result<()> {
         let list_out = std::process::Command::new("opencode")
             .args(["mcp", "list"])
             .output()?;
-        if String::from_utf8_lossy(&list_out.stdout).contains("hivemind") {
+        let listed = String::from_utf8_lossy(&list_out.stdout).into_owned();
+        if listed.contains(SERVER_KEY) {
             println!("Mynd is already registered with OpenCode.");
             println!("Open a new OpenCode session to use it.");
             return Ok(());
         }
+        if listed.contains(LEGACY_KEY) {
+            let _ = std::process::Command::new("opencode")
+                .args(["mcp", "remove", LEGACY_KEY])
+                .status();
+        }
         let status = std::process::Command::new("opencode")
-            .args(["mcp", "add", "hivemind", &exe])
+            .args(["mcp", "add", SERVER_KEY, &exe])
             .status()?;
         if !status.success() {
             anyhow::bail!("opencode mcp add failed. Check `opencode mcp list`");
@@ -106,7 +124,7 @@ fn install_opencode() -> Result<()> {
         let config_path = xdg_config.join("opencode").join("opencode.json");
         upsert_json_mcp(
             &config_path,
-            "hivemind",
+            SERVER_KEY,
             serde_json::json!({
                 "type": "local",
                 "command": exe,
@@ -134,13 +152,19 @@ fn install_kimi() -> Result<()> {
         let list_out = std::process::Command::new("kimi")
             .args(["mcp", "list"])
             .output()?;
-        if String::from_utf8_lossy(&list_out.stdout).contains("hivemind") {
+        let listed = String::from_utf8_lossy(&list_out.stdout).into_owned();
+        if listed.contains(SERVER_KEY) {
             println!("Mynd is already registered with Kimi.");
             println!("Open a new Kimi session to use it.");
             return Ok(());
         }
+        if listed.contains(LEGACY_KEY) {
+            let _ = std::process::Command::new("kimi")
+                .args(["mcp", "remove", LEGACY_KEY])
+                .status();
+        }
         let status = std::process::Command::new("kimi")
-            .args(["mcp", "add", "hivemind", &exe])
+            .args(["mcp", "add", SERVER_KEY, &exe])
             .status()?;
         if !status.success() {
             anyhow::bail!("kimi mcp add failed. Check `kimi mcp list`");
@@ -149,7 +173,7 @@ fn install_kimi() -> Result<()> {
         let config_path = home_dir().join(".kimi").join("mcp.json");
         upsert_json_mcp(
             &config_path,
-            "hivemind",
+            SERVER_KEY,
             serde_json::json!({ "command": exe, "args": [] }),
         )?;
         println!("Written to {}", config_path.display());
@@ -167,22 +191,48 @@ pub(crate) fn toml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Remove a `[header]` table and its body (up to the next table header or EOF)
+/// from a TOML document. Whitespace-tolerant on the header line; leaves the
+/// rest untouched. Used to drop a stale pre-rename `[mcp_servers.hivemind]`.
+pub(crate) fn strip_toml_table(doc: &str, header: &str) -> String {
+    let mut out = String::with_capacity(doc.len());
+    let mut skipping = false;
+    for line in doc.lines() {
+        let trimmed = line.trim();
+        if trimmed == header {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if trimmed.starts_with('[') {
+                skipping = false;
+            } else {
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 fn install_codex() -> Result<()> {
     let config_path = home_dir().join(".codex").join("config.toml");
     std::fs::create_dir_all(config_path.parent().unwrap())?;
 
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    if existing.contains("[mcp_servers.hivemind]") {
+    if existing.contains("[mcp_servers.mynd]") {
         println!("Mynd is already registered with Codex CLI.");
         println!("Open a new Codex session to use it.");
         return Ok(());
     }
 
+    // Strip a stale pre-rename table, then append the current one.
+    let existing = strip_toml_table(&existing, "[mcp_servers.hivemind]");
     let block = format!(
-        "\n[mcp_servers.hivemind]\ncommand = \"{}\"\nargs = []\n",
+        "\n[mcp_servers.mynd]\ncommand = \"{}\"\nargs = []\n",
         toml_escape(&exe_path())
     );
-    let block = block.as_str();
     let new_content = format!("{}{}", existing.trim_end(), block);
     std::fs::write(&config_path, new_content)?;
     println!("Written to {}", config_path.display());
@@ -198,7 +248,7 @@ fn install_cursor() -> Result<()> {
     let config_path = home_dir().join(".cursor").join("mcp.json");
     upsert_json_mcp(
         &config_path,
-        "hivemind",
+        SERVER_KEY,
         serde_json::json!({ "command": exe_path(), "args": [] }),
     )?;
     println!("Written to {}", config_path.display());
@@ -216,7 +266,7 @@ fn install_windsurf() -> Result<()> {
         .join("mcp_config.json");
     upsert_json_mcp(
         &config_path,
-        "hivemind",
+        SERVER_KEY,
         serde_json::json!({ "command": exe_path(), "args": [] }),
     )?;
     println!("Written to {}", config_path.display());
@@ -251,13 +301,18 @@ pub(crate) fn upsert_json_mcp(
         "mcpServers"
     };
 
-    root.as_object_mut()
+    let servers = root
+        .as_object_mut()
         .unwrap()
         .entry(servers_key)
         .or_insert(serde_json::json!({}))
         .as_object_mut()
-        .unwrap()
-        .insert(name.to_string(), entry);
+        .unwrap();
+    // Drop a stale pre-rename entry, then write the current one.
+    if name != LEGACY_KEY {
+        servers.remove(LEGACY_KEY);
+    }
+    servers.insert(name.to_string(), entry);
 
     std::fs::write(path, serde_json::to_string_pretty(&root)?)?;
     Ok(())

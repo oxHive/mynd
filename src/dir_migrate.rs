@@ -93,6 +93,15 @@ pub fn run_startup_migration() {
         Ok(_) => {}
         Err(e) => eprintln!("mynd: config directory migration skipped ({e:#})"),
     }
+
+    // Rewrite the pre-rename memory block in ~/.claude/CLAUDE.md in place, for
+    // users who upgrade without re-running `mynd init`.
+    let global_claude_md = crate::cli::home_dir().join(".claude").join("CLAUDE.md");
+    match crate::cli::migrate_global_claude_block(&global_claude_md) {
+        Ok(true) => eprintln!("mynd: updated the memory block in {}", global_claude_md.display()),
+        Ok(false) => {}
+        Err(e) => eprintln!("mynd: ~/.claude/CLAUDE.md update skipped ({e:#})"),
+    }
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
