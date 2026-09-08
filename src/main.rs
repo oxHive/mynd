@@ -1,15 +1,16 @@
 use anyhow::Result;
 use clap::Parser;
-use oxhivemind::cli::{self, Cli, Command, McpAction, ServiceAction};
-use oxhivemind::{config, db, http, server, store, sync};
+use oxmynd::cli::{self, Cli, Command, McpAction, ServiceAction};
+use oxmynd::{config, db, http, server, store, sync};
 use rmcp::ServiceExt;
-use server::HiveMind;
+use server::Mynd;
 use std::sync::Arc;
 use store::SqliteStore;
 use tokio::sync::Notify;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    oxmynd::dir_migrate::run_startup_migration();
     match cli.command {
         None => run_server(),
         Some(Command::Init) => cli::cmd_init(),
@@ -58,7 +59,7 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
 }
 
 fn init_tracing() {
-    init_tracing_with_default("hivemind=info,oxhivemind=info");
+    init_tracing_with_default("mynd=info,oxmynd=info");
 }
 
 fn init_tracing_with_default(default_filter: &str) {
@@ -116,13 +117,13 @@ async fn run_server() -> Result<()> {
             trigger.clone(),
         ));
         if settings.sync.sync_on_store {
-            HiveMind::with_sync(store, trigger)
+            Mynd::with_sync(store, trigger)
         } else {
-            HiveMind::with_store(store)
+            Mynd::with_store(store)
         }
     } else {
         _db_guard = Some(database);
-        HiveMind::with_store(store)
+        Mynd::with_store(store)
     };
 
     // Org layer is entirely optional — absence of [org_sync] must never stop
@@ -157,7 +158,7 @@ async fn run_server() -> Result<()> {
         }
     }
 
-    tracing::info!("HiveMind MCP server starting on stdio");
+    tracing::info!("Mynd MCP server starting on stdio");
     let server = service
         .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await?;
@@ -238,55 +239,55 @@ async fn run_dashboard(open: bool) -> Result<()> {
 #[tokio::main]
 async fn run_matrix(debug: bool) -> Result<()> {
     if debug {
-        init_tracing_with_default("hivemind=debug,oxhivemind=debug");
+        init_tracing_with_default("mynd=debug,oxmynd=debug");
     } else {
         init_tracing();
     }
     tracing::debug!("loading matrix config");
     let settings =
         config::load_matrix_settings(&config::global_config_path())?.ok_or_else(|| {
-            anyhow::anyhow!("no [matrix] config found — run `hivemind matrix login` first")
+            anyhow::anyhow!("no [matrix] config found — run `mynd matrix login` first")
         })?;
     let server_settings = config::load_server_settings(&config::global_config_path())?;
-    let hivemind_bin = std::env::current_exe()?.to_string_lossy().into_owned();
+    let mynd_bin = std::env::current_exe()?.to_string_lossy().into_owned();
     tracing::debug!("starting matrix daemon");
-    oxhivemind::matrix::daemon::run(settings, server_settings.agent, hivemind_bin).await
+    oxmynd::matrix::daemon::run(settings, server_settings.agent, mynd_bin).await
 }
 
 #[tokio::main]
 async fn run_matrix_send(user_id: String, message: String) -> Result<()> {
-    init_tracing_with_default("hivemind=debug,oxhivemind=debug");
+    init_tracing_with_default("mynd=debug,oxmynd=debug");
     let settings =
         config::load_matrix_settings(&config::global_config_path())?.ok_or_else(|| {
-            anyhow::anyhow!("no [matrix] config found — run `hivemind matrix login` first")
+            anyhow::anyhow!("no [matrix] config found — run `mynd matrix login` first")
         })?;
-    oxhivemind::matrix::daemon::send_direct_message(&settings, &user_id, &message).await
+    oxmynd::matrix::daemon::send_direct_message(&settings, &user_id, &message).await
 }
 
 #[tokio::main]
 async fn run_discord(debug: bool) -> Result<()> {
     if debug {
-        init_tracing_with_default("hivemind=debug,oxhivemind=debug");
+        init_tracing_with_default("mynd=debug,oxmynd=debug");
     } else {
         init_tracing();
     }
     tracing::debug!("loading discord config");
     let settings =
         config::load_discord_settings(&config::global_config_path())?.ok_or_else(|| {
-            anyhow::anyhow!("no [discord] config found — run `hivemind discord login` first")
+            anyhow::anyhow!("no [discord] config found — run `mynd discord login` first")
         })?;
     let server_settings = config::load_server_settings(&config::global_config_path())?;
-    let hivemind_bin = std::env::current_exe()?.to_string_lossy().into_owned();
+    let mynd_bin = std::env::current_exe()?.to_string_lossy().into_owned();
     tracing::debug!("starting discord daemon");
-    oxhivemind::discord::daemon::run(settings, server_settings.agent, hivemind_bin).await
+    oxmynd::discord::daemon::run(settings, server_settings.agent, mynd_bin).await
 }
 
 #[tokio::main]
 async fn run_discord_send(user_id: String, message: String) -> Result<()> {
-    init_tracing_with_default("hivemind=debug,oxhivemind=debug");
+    init_tracing_with_default("mynd=debug,oxmynd=debug");
     let settings =
         config::load_discord_settings(&config::global_config_path())?.ok_or_else(|| {
-            anyhow::anyhow!("no [discord] config found — run `hivemind discord login` first")
+            anyhow::anyhow!("no [discord] config found — run `mynd discord login` first")
         })?;
-    oxhivemind::discord::daemon::send_direct_message(&settings, &user_id, &message).await
+    oxmynd::discord::daemon::send_direct_message(&settings, &user_id, &message).await
 }

@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import * as api from '../api/memories.js'
+import { readStored } from '../lib/localStore.js'
 
-const DRAFTS_KEY = 'hivemind.memories.drafts'
+const DRAFTS_KEY = 'mynd.memories.drafts'
 // Sentinel key for the in-progress "new memory" draft in the same
 // id-keyed stash used for existing memories' unsaved edits — there's no
 // real id to key it by until it's actually saved.
@@ -14,7 +15,7 @@ function isNewDraftFilled(d) {
 
 function loadStashedDrafts() {
   try {
-    const raw = localStorage.getItem(DRAFTS_KEY)
+    const raw = readStored(DRAFTS_KEY)
     return raw ? JSON.parse(raw) : {}
   } catch {
     return {}

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "hivemind-dashboard",
+      "name": "mynd-dashboard",
       "dependencies": {
         "@phosphor-icons/vue": "^2.2.1",
         "d3": "^7.9.0",

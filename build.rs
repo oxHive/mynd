@@ -17,8 +17,8 @@ fn main() {
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    println!("cargo:rustc-env=HIVEMIND_GIT_SHA={sha}");
-    println!("cargo:rustc-env=HIVEMIND_IS_TAGGED={is_tagged}");
+    println!("cargo:rustc-env=MYND_GIT_SHA={sha}");
+    println!("cargo:rustc-env=MYND_IS_TAGGED={is_tagged}");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/tags");
 }

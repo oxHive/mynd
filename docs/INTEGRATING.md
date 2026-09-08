@@ -1,8 +1,8 @@
-# Integrating with HiveMind
+# Integrating with Mynd
 
-HiveMind exposes two integration surfaces: **MCP tools** (for AI agents) and a **REST API** (for scripts, apps, and custom tooling). Both require the server to be running (`hivemind up` or the background service).
+Mynd exposes two integration surfaces: **MCP tools** (for AI agents) and a **REST API** (for scripts, apps, and custom tooling). Both require the server to be running (`mynd up` or the background service).
 
-Base URL: `http://127.0.0.1:3456` (configurable in `~/.config/hivemind/config.toml`)
+Base URL: `http://127.0.0.1:3456` (configurable in `~/.config/mynd/config.toml`)
 
 ---
 
@@ -18,9 +18,9 @@ Transport: streamable HTTP (MCP 1.x). No authentication required for local conne
 
 ### Tools
 
-#### `hivemind_session_start`
+#### `mynd_session_start`
 
-Call once at the start of every session. Loads the memories configured in `.hivemind.toml` for the current project and returns them as structured JSON within the configured token budget.
+Call once at the start of every session. Loads the memories configured in `.mynd.toml` for the current project and returns them as structured JSON within the configured token budget.
 
 **Input:**
 ```json
@@ -31,7 +31,7 @@ Call once at the start of every session. Loads the memories configured in `.hive
 
 **Output:** JSON with recalled memories, token usage, and skipped entries (if any hit the budget cap).
 
-This is the only tool that reads `.hivemind.toml`. All other tools operate on the memory store directly.
+This is the only tool that reads `.mynd.toml`. All other tools operate on the memory store directly.
 
 ---
 
@@ -49,7 +49,7 @@ Store a new memory or overwrite an existing one by ID.
 }
 ```
 
-`id` is optional — omit it and HiveMind generates one. Tags trigger automatic edge creation between memories that share a tag.
+`id` is optional — omit it and Mynd generates one. Tags trigger automatic edge creation between memories that share a tag.
 
 **Output:** `{ "id": "mem_abc123", "stored": true }`
 
@@ -143,15 +143,15 @@ Note: edges with `relationship = "shares_tag"` are created automatically by `mem
 
 ### Wiring a new AI client
 
-To give an AI agent access to HiveMind:
+To give an AI agent access to Mynd:
 
-1. Register the MCP server in the client's config (see `hivemind mcp install <client>` or the manual configs in the main README).
+1. Register the MCP server in the client's config (see `mynd mcp install <client>` or the manual configs in the main README).
 2. Add instructions to the agent's system prompt or config file so it knows when to call each tool. A minimal CLAUDE.md block:
 
 ```markdown
-## HiveMind memory
+## Mynd memory
 
-At the start of every session, call `hivemind_session_start` with the absolute path of the current project if `.hivemind.toml` exists here.
+At the start of every session, call `mynd_session_start` with the absolute path of the current project if `.mynd.toml` exists here.
 
 Store memories when the user explicitly asks ("remember this", "store that"). Never auto-store.
 Use `memory_recall` or `memory_search` any time the user asks about past context.
@@ -163,7 +163,7 @@ Use `memory_recall` or `memory_search` any time the user asks about past context
 
 ## REST API
 
-The REST API is available when the server is running (`hivemind up`). All endpoints are under `/api/v1/`. All request and response bodies are JSON.
+The REST API is available when the server is running (`mynd up`). All endpoints are under `/api/v1/`. All request and response bodies are JSON.
 
 ### Status
 
@@ -175,7 +175,7 @@ GET /api/v1/status
 {
   "version": "0.1.0",
   "memory_count": 42,
-  "db_path": "/home/user/.hivemind/memories.db",
+  "db_path": "/home/user/.mynd/memories.db",
   "sync": { "enabled": false }
 }
 ```
@@ -227,7 +227,7 @@ Response `201 Created`:
 { "id": "mem_abc123" }
 ```
 
-`token_count` is optional — omit it and HiveMind will compute it.
+`token_count` is optional — omit it and Mynd will compute it.
 
 #### Get a memory
 
@@ -425,9 +425,9 @@ if [ "$exists" = "0" ]; then
 fi
 ```
 
-**Field mapping:** HiveMind memories have three writable fields. Map your existing schema to these:
+**Field mapping:** Mynd memories have three writable fields. Map your existing schema to these:
 
-| HiveMind field | Type | Notes |
+| Mynd field | Type | Notes |
 |----------------|------|-------|
 | `title` | string | Unique label used for recall. Use a short, descriptive key. |
 | `content` | string | Full memory text. Concatenate multiple fields if needed. |

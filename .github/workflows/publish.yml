@@ -14,8 +14,8 @@ jobs:
       checks: write
     uses: oxHive/pipelines/.github/workflows/rust-release.yml@v2
     with:
-      package-name: oxhivemind
-      binary-name: hivemind
+      package-name: oxmynd
+      binary-name: mynd
       dashboard-dir: dashboard
     secrets: inherit
 

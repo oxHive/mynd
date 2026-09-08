@@ -14,7 +14,7 @@ impl Drop for PidGuard {
 }
 
 /// Records this process's PID at `crate::db::matrix_pidfile_path()` while the
-/// daemon is running, mirroring `hivemind up`'s pidfile in `http.rs` — kept
+/// daemon is running, mirroring `mynd up`'s pidfile in `http.rs` — kept
 /// as a small self-contained duplicate rather than sharing that module's
 /// private guard across modules.
 fn write_pidfile() -> Result<PidGuard> {
@@ -113,7 +113,7 @@ pub async fn restore_client(settings: &MatrixSettings) -> Result<matrix_sdk::Cli
              running and unlocked? (e.g. `systemctl --user start gnome-keyring-daemon`)"
         )
     })???
-    .ok_or_else(|| anyhow::anyhow!("no saved session — run `hivemind matrix login` first"))?;
+    .ok_or_else(|| anyhow::anyhow!("no saved session — run `mynd matrix login` first"))?;
     let session: matrix_sdk::authentication::matrix::MatrixSession =
         serde_json::from_str(&session_json)?;
     tracing::debug!("session loaded from keyring");
@@ -179,7 +179,7 @@ async fn find_or_join_dm_room(
 }
 
 /// Sends a text message to the given user's DM room, creating the DM if one
-/// doesn't already exist. Used for one-off connectivity checks (`hivemind
+/// doesn't already exist. Used for one-off connectivity checks (`mynd
 /// matrix send`) independent of the daemon's sync loop.
 pub async fn send_direct_message(
     settings: &MatrixSettings,
@@ -207,11 +207,7 @@ pub async fn send_direct_message(
     Ok(())
 }
 
-pub async fn run(
-    settings: MatrixSettings,
-    agent: AgentSettings,
-    hivemind_bin: String,
-) -> Result<()> {
+pub async fn run(settings: MatrixSettings, agent: AgentSettings, mynd_bin: String) -> Result<()> {
     use matrix_sdk::config::SyncSettings as MatrixSyncSettings;
     use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
     use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent};
@@ -251,7 +247,7 @@ pub async fn run(
     let bot_user_id = settings.user_id.clone();
     let settings = Arc::new(settings);
     let agent = Arc::new(agent);
-    let hivemind_bin = Arc::new(hivemind_bin);
+    let mynd_bin = Arc::new(mynd_bin);
 
     let invite_bot_user_id = bot_user_id.clone();
     let invite_client = client.clone();
@@ -281,7 +277,7 @@ pub async fn run(
     client.add_event_handler(move |event: OriginalSyncRoomMessageEvent, room: Room| {
         let settings = settings.clone();
         let agent = agent.clone();
-        let hivemind_bin = hivemind_bin.clone();
+        let mynd_bin = mynd_bin.clone();
         let sessions = sessions.clone();
         let bot_user_id = bot_user_id.clone();
         let status_reply = handler_status_reply.clone();
@@ -334,13 +330,13 @@ pub async fn run(
                 crate::matrix::commands::Command::Store(memory_text) => {
                     let target = crate::matrix::rooms::resolve_target(&settings, room.room_id().as_str(), is_dm);
                     tracing::debug!(room_id = %room.room_id(), "storing memory");
-                    match crate::matrix::store_direct::store_memory(&hivemind_bin, &memory_text, &target).await {
+                    match crate::matrix::store_direct::store_memory(&mynd_bin, &memory_text, &target).await {
                         Ok(()) => {
                             mark_room_active(&status_reply, room.room_id().as_str()).await;
                             let _ = room.send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain("Stored.")).await;
                         }
                         Err(e) => {
-                            let _ = room.send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(format!("hivemind matrix failed to store that: {e}"))).await;
+                            let _ = room.send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(format!("mynd matrix failed to store that: {e}"))).await;
                         }
                     }
                 }
@@ -352,7 +348,7 @@ pub async fn run(
                         Some(id) => tracing::debug!(room_id = %room.room_id(), session_id = %id, "resuming session"),
                         None => tracing::debug!(room_id = %room.room_id(), "spawning new session"),
                     }
-                    match crate::chat_bot::agent::run_turn(&agent, &hivemind_bin, &message, resume.as_deref(), Some(&system_prompt)).await {
+                    match crate::chat_bot::agent::run_turn(&agent, &mynd_bin, &message, resume.as_deref(), Some(&system_prompt)).await {
                         Ok(result) => {
                             tracing::debug!(
                                 room_id = %room.room_id(),
@@ -368,7 +364,7 @@ pub async fn run(
                             tracing::debug!(room_id = %room.room_id(), error = %e, "agent turn failed");
                             sessions.reset(room.room_id().as_str()).await;
                             mark_room_inactive(&status_reply, room.room_id().as_str()).await;
-                            let _ = room.send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(format!("hivemind matrix hit an error: {e}"))).await;
+                            let _ = room.send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(format!("mynd matrix hit an error: {e}"))).await;
                         }
                     }
                 }
@@ -398,7 +394,7 @@ mod tests {
             rooms: vec![MatrixRoomMapping {
                 room_id: "!abc:matrix.org".into(),
                 alias: None,
-                base_tags: vec!["project:hivemind".into()],
+                base_tags: vec!["project:mynd".into()],
             }],
             session_ttl_seconds: crate::config::DEFAULT_SESSION_TTL_SECONDS,
         }
