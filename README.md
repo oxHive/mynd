@@ -345,6 +345,9 @@ mynd service status          Show background service status
 mynd matrix login            Log into a Matrix account (once); session saved to OS keyring
 mynd matrix run               Run the Matrix bot daemon
 mynd matrix status            Show Matrix bot login/sync/session state
+mynd discord login           Log into a Discord bot account (once); token saved to OS keyring
+mynd discord run              Run the Discord bot daemon
+mynd discord status           Show Discord bot login/sync/session state
 mynd dashboard --open        Open the dashboard (requires server running)
 ```
 
@@ -553,6 +556,85 @@ per-invocation MCP tool allowlist, so you must pre-create a restricted agent pro
 named `mynd-bot` in your `opencode.json`, scoped to the mynd MCP tools — the
 bot spawns `opencode run --agent mynd-bot`, it doesn't configure that profile for
 you.
+
+---
+
+## Discord chat interface (optional)
+
+Capture and recall HiveMind memories from a Discord channel or DM — mention the bot in a
+channel, use the `/hm` slash command, or DM it directly. Same headless-agent mechanism as
+Matrix and the dashboard's suggest flow: no bespoke NLU, no local model.
+
+This is a separate process from `hivemind up` and doesn't depend on it being started —
+each message/command spawns a short-lived agent turn that talks to HiveMind the same way
+any other MCP client does.
+
+### Setup
+
+Create a bot application in the [Discord Developer Portal](https://discord.com/developers/applications),
+enable the **Message Content Intent** under Bot settings, and invite it to your server with
+the `bot` and `applications.commands` OAuth scopes. Then:
+
+```sh
+hivemind discord login
+```
+
+Prompts for the bot token. The token is validated against Discord once, then persisted to
+your OS keyring (Secret Service/kwallet on Linux, Keychain on macOS) — the same storage
+Matrix uses.
+
+> **Headless Linux servers:** `keyring` needs a functioning Secret Service (D-Bus). A
+> bare VPS with no login session running may not have one available; `hivemind discord
+> login` will fail with an actionable message if so. Install/start a Secret Service
+> provider (e.g. `gnome-keyring`) first.
+
+Add channel mappings and the DM allowlist to `~/.config/hivemind/config.toml`:
+
+```toml
+[discord]
+application_id = "123456789012345678"      # written automatically by `discord login`
+allowed_users = ["111111111111111111"]     # required for DMs — anyone else is ignored
+permission_gate = "manage_guild"           # optional; restricts who can invoke /hm in a guild
+
+[[discord.channels]]
+channel_id = "222222222222222222"
+alias = "hivemind-project"                 # optional, for `hivemind discord status`
+base_tags = ["project:hivemind"]
+```
+
+Channels the bot is in but not listed here still work — memories land in the `workspace`
+layer tagged `channel:<id-or-alias>` + `source:discord` instead of your configured
+`base_tags`. DMs always use the `personal` layer.
+
+> **Trust boundary:** `permission_gate` only restricts the `/hm` slash command. Freeform
+> @mention chat in a guild channel is open to any member of that guild who can see the
+> channel: it's gated by Discord's own channel permissions, not by `permission_gate` or
+> `allowed_users` (`allowed_users` only gates DMs). This mirrors Matrix's trust model,
+> where room membership is the boundary, but Discord guilds are typically much larger
+> than Matrix rooms, so make sure you're comfortable with everyone in a guild before
+> inviting the bot to it.
+
+Then run it:
+
+```sh
+hivemind discord run
+```
+
+Or install it as a background service alongside `hivemind up` — `hivemind service
+install --discord` adds a unit once `[discord]` is configured.
+
+### Using it
+
+- Mention the bot in a channel, or message it directly in a DM, for freeform chat.
+- `/hm store text:<text>` — direct write, skips the agent (fast, no interpretation).
+- `/hm reset` — starts a fresh conversation in that channel (drops continuity, not memory).
+- `/hm help` — lists these commands.
+- `hivemind discord status` — shows login state, sync status, and per-channel session
+  activity.
+
+### Agent compatibility
+
+Same as Matrix — see [Agent compatibility](#agent-compatibility) above.
 
 ---
 

@@ -150,6 +150,25 @@ struct RawMatrixRoom {
     base_tags: Vec<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RawDiscord {
+    application_id: Option<String>,
+    #[serde(default)]
+    allowed_users: Vec<String>,
+    permission_gate: Option<String>,
+    #[serde(default)]
+    channels: Vec<RawDiscordChannel>,
+    session_ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawDiscordChannel {
+    channel_id: Option<String>,
+    alias: Option<String>,
+    #[serde(default)]
+    base_tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSettings {
     pub enabled: bool,
@@ -267,6 +286,25 @@ pub struct MatrixSettings {
     pub session_ttl_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscordChannelMapping {
+    pub channel_id: String,
+    pub alias: Option<String>,
+    pub base_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscordSettings {
+    pub application_id: String,
+    pub allowed_users: Vec<String>,
+    /// One of `"manage_guild"`, `"administrator"`, `"manage_channels"`,
+    /// `"manage_messages"`, `"kick_members"`, `"ban_members"` — or `None` to
+    /// leave `/hm` open to every guild member (the default).
+    pub permission_gate: Option<String>,
+    pub channels: Vec<DiscordChannelMapping>,
+    pub session_ttl_seconds: u64,
+}
+
 pub const DEFAULT_SESSION_TTL_SECONDS: u64 = 120;
 
 #[derive(Debug, Default, Deserialize)]
@@ -287,6 +325,8 @@ struct RawGlobal {
     agent: RawAgent,
     #[serde(default)]
     matrix: RawMatrix,
+    #[serde(default)]
+    discord: RawDiscord,
     #[serde(default)]
     tags: RawTags,
 }
@@ -603,6 +643,70 @@ pub fn write_matrix_login(global_path: &Path, homeserver_url: &str, user_id: &st
     matrix_table.insert(
         "user_id".to_string(),
         toml::Value::String(user_id.to_string()),
+    );
+    if let Some(dir) = global_path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(global_path, toml::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
+pub fn load_discord_settings(global_path: &Path) -> Result<Option<DiscordSettings>> {
+    if !global_path.is_file() {
+        return Ok(None);
+    }
+    let raw: RawGlobal = toml::from_str(&std::fs::read_to_string(global_path)?)
+        .with_context(|| format!("parsing {}", global_path.display()))?;
+    let Some(application_id) = raw.discord.application_id else {
+        return Ok(None);
+    };
+    let channels = raw
+        .discord
+        .channels
+        .into_iter()
+        .filter_map(|c| {
+            c.channel_id.map(|channel_id| DiscordChannelMapping {
+                channel_id,
+                alias: c.alias,
+                base_tags: c.base_tags,
+            })
+        })
+        .collect();
+    Ok(Some(DiscordSettings {
+        application_id,
+        allowed_users: raw.discord.allowed_users,
+        permission_gate: raw.discord.permission_gate,
+        channels,
+        session_ttl_seconds: raw
+            .discord
+            .session_ttl_seconds
+            .unwrap_or(DEFAULT_SESSION_TTL_SECONDS),
+    }))
+}
+
+/// Writes `application_id` into the global config's `[discord]` table,
+/// preserving every other section and any existing `allowed_users`/
+/// `permission_gate`/`[[discord.channels]]`. Used by `hivemind discord login`
+/// after a successful token validation.
+pub fn write_discord_login(global_path: &Path, application_id: &str) -> Result<()> {
+    let mut doc: toml::Value = if global_path.is_file() {
+        toml::from_str(&std::fs::read_to_string(global_path)?)
+            .with_context(|| format!("parsing {}", global_path.display()))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("global config root is not a table"))?;
+    let discord = table
+        .entry("discord")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let discord_table = discord
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[discord] is not a table"))?;
+    discord_table.insert(
+        "application_id".to_string(),
+        toml::Value::String(application_id.to_string()),
     );
     if let Some(dir) = global_path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -1128,5 +1232,102 @@ mod tests {
             raw.contains("max_inject_tokens"),
             "unrelated [defaults] section survives"
         );
+    }
+
+    #[test]
+    fn discord_settings_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load_discord_settings(&tmp.path().join("no-global.toml")).unwrap();
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn discord_settings_parses_full_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[discord]\n\
+             application_id=\"123456789012345678\"\n\
+             allowed_users=[\"111111111111111111\"]\n\
+             permission_gate=\"manage_guild\"\n\
+             \n\
+             [[discord.channels]]\n\
+             channel_id=\"222222222222222222\"\n\
+             alias=\"hivemind-project\"\n\
+             base_tags=[\"project:hivemind\"]\n",
+        );
+        let s = load_discord_settings(&tmp.path().join("config.toml"))
+            .unwrap()
+            .expect("discord settings should be present");
+        assert_eq!(s.application_id, "123456789012345678");
+        assert_eq!(s.allowed_users, vec!["111111111111111111".to_string()]);
+        assert_eq!(s.permission_gate, Some("manage_guild".to_string()));
+        assert_eq!(s.channels.len(), 1);
+        assert_eq!(s.channels[0].channel_id, "222222222222222222");
+        assert_eq!(s.channels[0].alias, Some("hivemind-project".to_string()));
+    }
+
+    #[test]
+    fn discord_settings_defaults_allowed_users_permission_gate_and_channels() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[discord]\napplication_id=\"123456789012345678\"\n",
+        );
+        let s = load_discord_settings(&tmp.path().join("config.toml"))
+            .unwrap()
+            .unwrap();
+        assert!(s.allowed_users.is_empty());
+        assert_eq!(s.permission_gate, None);
+        assert!(s.channels.is_empty());
+        assert_eq!(s.session_ttl_seconds, DEFAULT_SESSION_TTL_SECONDS);
+    }
+
+    #[test]
+    fn discord_settings_honors_configured_session_ttl() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[discord]\napplication_id=\"123456789012345678\"\nsession_ttl_seconds=60\n",
+        );
+        let s = load_discord_settings(&tmp.path().join("config.toml"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.session_ttl_seconds, 60);
+    }
+
+    #[test]
+    fn write_discord_login_creates_new_discord_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        write_discord_login(&path, "123456789012345678").unwrap();
+        let s = load_discord_settings(&path).unwrap().unwrap();
+        assert_eq!(s.application_id, "123456789012345678");
+    }
+
+    #[test]
+    fn write_discord_login_preserves_other_sections_and_channel_mappings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        write(
+            tmp.path(),
+            "config.toml",
+            "[server]\nport=3456\n\
+             [discord]\napplication_id=\"000000000000000000\"\n\
+             allowed_users=[\"111111111111111111\"]\n\
+             [[discord.channels]]\nchannel_id=\"222222222222222222\"\nbase_tags=[\"project:hivemind\"]\n",
+        );
+        write_discord_login(&path, "999999999999999999").unwrap();
+        let s = load_discord_settings(&path).unwrap().unwrap();
+        assert_eq!(s.application_id, "999999999999999999");
+        assert_eq!(s.allowed_users, vec!["111111111111111111".to_string()]);
+        assert_eq!(s.channels.len(), 1);
+        assert_eq!(s.channels[0].channel_id, "222222222222222222");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("[server]"));
+        assert!(raw.contains("port = 3456"));
     }
 }

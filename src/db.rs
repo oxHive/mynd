@@ -51,6 +51,12 @@ pub fn db_path_override() -> Option<String> {
         .ok()
 }
 
+/// PID file written by `hivemind discord run` while its daemon is running:
+/// $XDG_DATA_HOME/hivemind/hivemind-discord.pid
+pub fn discord_pidfile_path() -> std::path::PathBuf {
+    xdg_data_dir().join("hivemind-discord.pid")
+}
+
 pub fn resolve_db_path() -> String {
     if let Some(p) = db_path_override() {
         return p;
@@ -463,8 +469,8 @@ mod tests {
 
     #[test]
     fn org_db_path_sits_next_to_primary_db_path() {
-        // SAFETY: test-only env var mutation, no other test in this module reads
-        // XDG_DATA_HOME concurrently — matches the existing pattern in this file.
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only env var mutation; serialised by ENV_MUTEX.
         unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/hivemind-test-xdg") };
         let primary = resolve_db_path();
         let org = resolve_org_db_path();

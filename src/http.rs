@@ -582,4 +582,50 @@ mod tests {
             "window.MYND_API = \"http://127.0.0.1:3456\";"
         );
     }
+
+    #[test]
+    fn write_pidfile_writes_this_processs_pid_and_removes_it_on_drop() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-only env var mutation; serialised by ENV_MUTEX.
+        unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
+        let path = crate::db::up_pidfile_path();
+
+        let guard = write_pidfile().unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, std::process::id().to_string());
+
+        drop(guard);
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        assert!(
+            !path.exists(),
+            "pidfile should be removed when the guard drops"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_with_retry_succeeds_immediately_on_a_free_port() {
+        let listener = bind_with_retry("127.0.0.1", 0).await.unwrap();
+        assert!(listener.local_addr().unwrap().port() > 0);
+    }
+
+    #[tokio::test]
+    async fn bind_with_retry_retries_and_succeeds_once_the_port_frees_up() {
+        // Get an OS-assigned free port, then hold it occupied on a background
+        // task for well under bind_with_retry's ~2s total retry budget (10
+        // attempts x 200ms) before releasing it — this genuinely exercises
+        // the AddrInUse retry branch rather than just the happy path, with a
+        // wide enough margin (50ms hold vs. 2s budget) to not be flaky.
+        let probe = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = probe.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(probe);
+        });
+
+        let listener = bind_with_retry("127.0.0.1", port).await.unwrap();
+        assert_eq!(listener.local_addr().unwrap().port(), port);
+    }
 }
