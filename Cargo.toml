@@ -22,7 +22,7 @@ name = "oxmynd"
 path = "src/lib.rs"
 
 [dependencies]
-rmcp = { version = "2", features = ["server", "macros", "transport-streamable-http-server", "transport-child-process", "client"] }
+rmcp = { version = "3", features = ["server", "macros", "transport-streamable-http-server", "transport-child-process", "client"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["cors"] }
 libsql = { version = "0.9", features = ["core", "replication"] }
