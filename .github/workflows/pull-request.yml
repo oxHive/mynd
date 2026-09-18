@@ -9,7 +9,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: oxHive/pipelines/.github/actions/rust-check@v2
+      # Pinned to a commit rather than the floating v2 tag so a change in the
+      # shared pipelines repo cannot alter this check without a PR here.
+      # Bump with: git ls-remote --tags https://github.com/oxHive/pipelines v2
+      - uses: oxHive/pipelines/.github/actions/rust-check@09ce514638bf4934fc1a9239618cfe08aa06d62d # v2
         with:
           upload-coverage: true
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
