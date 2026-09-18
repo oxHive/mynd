@@ -52,11 +52,33 @@ enum Token {
     Tag(String),
 }
 
+/// Upper bound on the length of a tag expression. Expressions arrive from
+/// unauthenticated HTTP query strings (`GET /api/v1/search?q=`), so the
+/// parser must have a hard ceiling on the work it does.
+pub const MAX_EXPR_LEN: usize = 1024;
+
+/// Upper bound on nesting depth (`!` prefixes and parentheses). The parser
+/// is recursive descent; without this cap a long run of `!` overflows the
+/// stack and aborts the whole process, which is a one-request denial of
+/// service against the HTTP server. Real expressions nest two or three
+/// levels deep.
+pub const MAX_EXPR_DEPTH: usize = 32;
+
 pub fn parse(s: &str) -> Result<TagExpr> {
+    if s.len() > MAX_EXPR_LEN {
+        bail!(
+            "tag expression is {} bytes, exceeds the {MAX_EXPR_LEN}-byte limit",
+            s.len()
+        );
+    }
     let tokens = tokenize(s)?;
-    let mut pos = 0;
-    let expr = parse_or(&tokens, &mut pos)?;
-    if pos != tokens.len() {
+    let mut parser = Parser {
+        tokens: &tokens,
+        pos: 0,
+        depth: 0,
+    };
+    let expr = parser.parse_or()?;
+    if parser.pos != tokens.len() {
         bail!("unexpected trailing input in tag expression: {s:?}");
     }
     Ok(expr)
@@ -112,53 +134,78 @@ fn tokenize(s: &str) -> Result<Vec<Token>> {
     Ok(tokens)
 }
 
-fn parse_or(tokens: &[Token], pos: &mut usize) -> Result<TagExpr> {
-    let mut expr = parse_and(tokens, pos)?;
-    while matches!(tokens.get(*pos), Some(Token::Or)) {
-        *pos += 1;
-        let rhs = parse_and(tokens, pos)?;
-        expr = TagExpr::Or(Box::new(expr), Box::new(rhs));
-    }
-    Ok(expr)
+struct Parser<'a> {
+    tokens: &'a [Token],
+    pos: usize,
+    /// Current recursion depth; see `MAX_EXPR_DEPTH`.
+    depth: usize,
 }
 
-fn parse_and(tokens: &[Token], pos: &mut usize) -> Result<TagExpr> {
-    let mut expr = parse_not(tokens, pos)?;
-    while matches!(tokens.get(*pos), Some(Token::And)) {
-        *pos += 1;
-        let rhs = parse_not(tokens, pos)?;
-        expr = TagExpr::And(Box::new(expr), Box::new(rhs));
+impl Parser<'_> {
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
     }
-    Ok(expr)
-}
 
-fn parse_not(tokens: &[Token], pos: &mut usize) -> Result<TagExpr> {
-    if matches!(tokens.get(*pos), Some(Token::Not)) {
-        *pos += 1;
-        let inner = parse_not(tokens, pos)?;
-        return Ok(TagExpr::Not(Box::new(inner)));
-    }
-    parse_atom(tokens, pos)
-}
-
-fn parse_atom(tokens: &[Token], pos: &mut usize) -> Result<TagExpr> {
-    match tokens.get(*pos) {
-        Some(Token::Tag(t)) => {
-            *pos += 1;
-            Ok(TagExpr::Tag(t.clone()))
+    /// Runs `f` one level deeper, refusing past `MAX_EXPR_DEPTH`.
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_EXPR_DEPTH {
+            bail!("tag expression nests deeper than {MAX_EXPR_DEPTH} levels");
         }
-        Some(Token::LParen) => {
-            *pos += 1;
-            let expr = parse_or(tokens, pos)?;
-            match tokens.get(*pos) {
-                Some(Token::RParen) => {
-                    *pos += 1;
-                    Ok(expr)
-                }
-                _ => bail!("missing closing paren in tag expression"),
+        self.depth += 1;
+        let out = f(self);
+        self.depth -= 1;
+        out
+    }
+
+    fn parse_or(&mut self) -> Result<TagExpr> {
+        let mut expr = self.parse_and()?;
+        while matches!(self.peek(), Some(Token::Or)) {
+            self.pos += 1;
+            let rhs = self.parse_and()?;
+            expr = TagExpr::Or(Box::new(expr), Box::new(rhs));
+        }
+        Ok(expr)
+    }
+
+    fn parse_and(&mut self) -> Result<TagExpr> {
+        let mut expr = self.parse_not()?;
+        while matches!(self.peek(), Some(Token::And)) {
+            self.pos += 1;
+            let rhs = self.parse_not()?;
+            expr = TagExpr::And(Box::new(expr), Box::new(rhs));
+        }
+        Ok(expr)
+    }
+
+    fn parse_not(&mut self) -> Result<TagExpr> {
+        if matches!(self.peek(), Some(Token::Not)) {
+            self.pos += 1;
+            let inner = self.nested(|p| p.parse_not())?;
+            return Ok(TagExpr::Not(Box::new(inner)));
+        }
+        self.parse_atom()
+    }
+
+    fn parse_atom(&mut self) -> Result<TagExpr> {
+        match self.peek() {
+            Some(Token::Tag(t)) => {
+                let t = t.clone();
+                self.pos += 1;
+                Ok(TagExpr::Tag(t))
             }
+            Some(Token::LParen) => {
+                self.pos += 1;
+                let expr = self.nested(|p| p.parse_or())?;
+                match self.peek() {
+                    Some(Token::RParen) => {
+                        self.pos += 1;
+                        Ok(expr)
+                    }
+                    _ => bail!("missing closing paren in tag expression"),
+                }
+            }
+            other => bail!("expected tag atom or '(', found {other:?}"),
         }
-        other => bail!("expected tag atom or '(', found {other:?}"),
     }
 }
 
@@ -244,6 +291,53 @@ mod tests {
     #[test]
     fn empty_tag_value_is_an_error() {
         assert!(parse("tag:").is_err());
+    }
+
+    #[test]
+    fn deeply_nested_not_is_rejected_instead_of_overflowing_the_stack() {
+        // Regression: 60k `!` used to abort the process (stack overflow on a
+        // 2 MiB tokio worker stack) from an unauthenticated GET. Run on a
+        // 2 MiB thread so the test would also crash if the cap regressed.
+        let q = format!("{}tag:a", "!".repeat(MAX_EXPR_LEN - 5));
+        let handle = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || parse(&q).is_err())
+            .unwrap();
+        assert!(handle.join().unwrap(), "over-deep expression must error");
+    }
+
+    #[test]
+    fn deeply_nested_parens_are_rejected() {
+        let q = format!(
+            "{}tag:a{}",
+            "(".repeat(MAX_EXPR_DEPTH + 1),
+            ")".repeat(MAX_EXPR_DEPTH + 1)
+        );
+        assert!(parse(&q).is_err());
+        // Right at the limit is still fine.
+        let q = format!(
+            "{}tag:a{}",
+            "(".repeat(MAX_EXPR_DEPTH),
+            ")".repeat(MAX_EXPR_DEPTH)
+        );
+        assert!(parse(&q).is_ok());
+    }
+
+    #[test]
+    fn over_long_expression_is_rejected_before_tokenizing() {
+        let q = format!("tag:{}", "a".repeat(MAX_EXPR_LEN));
+        let err = parse(&q).unwrap_err().to_string();
+        assert!(err.contains("exceeds"), "got: {err}");
+    }
+
+    #[test]
+    fn realistic_nesting_still_parses() {
+        // !(a & !(b | !c)): true unless a is present and neither b nor "not c" holds.
+        let expr = parse("!(tag:a & !(tag:b | !tag:c))").unwrap();
+        assert!(matches!(expr, TagExpr::Not(_)));
+        assert!(expr.eval(&["b".to_string()]));
+        assert!(!expr.eval(&["a".to_string(), "c".to_string()]));
+        assert!(expr.eval(&["a".to_string(), "b".to_string(), "c".to_string()]));
     }
 
     #[test]
