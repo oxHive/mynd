@@ -191,9 +191,25 @@ pub fn router(
 
 async fn sse_events(
     Extension(events): Extension<Events>,
+    shutdown: Option<Extension<crate::http::ShutdownSignal>>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let stream = BroadcastStream::new(events.subscribe())
-        .filter_map(|msg| msg.ok().map(|v| Ok(Event::default().data(v.to_string()))));
+    // `None` marks "server is shutting down"; the merged stream ends at the
+    // first one so graceful shutdown can drain this connection. Without a
+    // shutdown signal (embedders, tests) the stop stream ends immediately
+    // and the event stream runs as before.
+    let stop_rx = shutdown
+        .map(|Extension(rx)| rx)
+        .unwrap_or_else(|| tokio::sync::watch::channel(false).1);
+    let stop = tokio_stream::wrappers::WatchStream::new(stop_rx)
+        .filter(|stopping| *stopping)
+        .map(|_| None);
+    let live = BroadcastStream::new(events.subscribe())
+        .filter_map(|msg| msg.ok())
+        .map(Some);
+    let stream = live
+        .merge(stop)
+        .take_while(|item| item.is_some())
+        .filter_map(|item| item.map(|v| Ok(Event::default().data(v.to_string()))));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 

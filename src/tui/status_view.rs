@@ -163,6 +163,15 @@ fn kill_server() -> String {
         let _ = std::fs::remove_file(&path);
         return "server was already stopped; removed stale pidfile".to_string();
     }
+    if !process_is_mynd(pid) {
+        // The pidfile outlived the server (crash, SIGKILL, reboot) and the
+        // PID now belongs to something else. Signalling it would kill an
+        // unrelated process.
+        let _ = std::fs::remove_file(&path);
+        return format!(
+            "pid {pid} in the pidfile is not a mynd process (stale pidfile); removed it, nothing signalled"
+        );
+    }
     let sent = std::process::Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
@@ -186,6 +195,40 @@ fn kill_server() -> String {
     } else {
         format!("stopped server (pid {pid})")
     }
+}
+
+/// True if `name` (an executable's file name) is this program. After an
+/// in-place self-update the running binary's original inode is unlinked
+/// and Linux reports it as `mynd (deleted)`, which is still ours.
+fn exe_name_is_mynd(name: &str) -> bool {
+    name == "mynd" || name.starts_with("mynd ")
+}
+
+/// Best-effort check that `pid` is a `mynd` process before we signal it:
+/// `/proc/<pid>/exe` on Linux, `ps -o comm=` elsewhere. Unknown (neither
+/// source answers) counts as "not ours" — refusing to signal is the safe
+/// failure.
+fn process_is_mynd(pid: u32) -> bool {
+    let from_proc = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let name = from_proc.or_else(|| {
+        std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                std::path::Path::new(&s)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(s)
+            })
+    });
+    name.is_some_and(|n| exe_name_is_mynd(&n))
 }
 
 /// `kill -0` (and `-TERM` above) inherit stdio by default, so an unsilenced
@@ -355,6 +398,28 @@ fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exe_name_matching_accepts_mynd_and_deleted_suffix_only() {
+        assert!(exe_name_is_mynd("mynd"));
+        assert!(exe_name_is_mynd("mynd (deleted)"));
+        assert!(!exe_name_is_mynd("myndx"));
+        assert!(!exe_name_is_mynd("bash"));
+        assert!(!exe_name_is_mynd(""));
+    }
+
+    #[test]
+    fn process_identity_check_refuses_other_processes() {
+        // This test binary is not named `mynd`, and no process has this pid.
+        assert!(!process_is_mynd(std::process::id()) || exe_name_is_mynd(
+            &std::env::current_exe()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        ));
+        assert!(!process_is_mynd(u32::MAX));
+    }
     use ratatui::{Terminal, backend::TestBackend};
 
     fn sample_data() -> StatusData {
