@@ -411,13 +411,16 @@ mod tests {
     #[test]
     fn process_identity_check_refuses_other_processes() {
         // This test binary is not named `mynd`, and no process has this pid.
-        assert!(!process_is_mynd(std::process::id()) || exe_name_is_mynd(
-            &std::env::current_exe()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-        ));
+        assert!(
+            !process_is_mynd(std::process::id())
+                || exe_name_is_mynd(
+                    &std::env::current_exe()
+                        .unwrap()
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                )
+        );
         assert!(!process_is_mynd(u32::MAX));
     }
     use ratatui::{Terminal, backend::TestBackend};

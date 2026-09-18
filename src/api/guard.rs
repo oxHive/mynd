@@ -229,7 +229,10 @@ mod tests {
 
     #[test]
     fn origin_host_strips_scheme_port_and_path() {
-        assert_eq!(origin_host("http://Localhost:3457/x").as_deref(), Some("localhost"));
+        assert_eq!(
+            origin_host("http://Localhost:3457/x").as_deref(),
+            Some("localhost")
+        );
         assert_eq!(origin_host("127.0.0.1:3456").as_deref(), Some("127.0.0.1"));
         assert_eq!(origin_host("[::1]:3456").as_deref(), Some("[::1]"));
         assert_eq!(origin_host("[::1]").as_deref(), Some("[::1]"));
@@ -251,7 +254,10 @@ mod tests {
         ] {
             assert!(host_allowed(&c, Some(h)), "{h} should be allowed");
         }
-        assert!(host_allowed(&c, None), "no Host header = non-browser client");
+        assert!(
+            host_allowed(&c, None),
+            "no Host header = non-browser client"
+        );
     }
 
     #[test]

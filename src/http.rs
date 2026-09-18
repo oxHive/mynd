@@ -716,10 +716,26 @@ mod tests {
     #[tokio::test]
     async fn guard_rejects_dns_rebound_host_on_rest_and_mcp() {
         let (app, _dir) = guarded_app().await;
-        let s = send(app.clone(), "GET", "/api/v1/status", &[("host", "evil.example")]).await;
+        let s = send(
+            app.clone(),
+            "GET",
+            "/api/v1/status",
+            &[("host", "evil.example")],
+        )
+        .await;
         assert_eq!(s, StatusCode::FORBIDDEN);
-        let s = send(app.clone(), "POST", "/mcp", &[("host", "evil.example:3456")]).await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "the MCP endpoint must be guarded too");
+        let s = send(
+            app.clone(),
+            "POST",
+            "/mcp",
+            &[("host", "evil.example:3456")],
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::FORBIDDEN,
+            "the MCP endpoint must be guarded too"
+        );
         let s = send(app, "GET", "/api/v1/status", &[("host", "localhost:3456")]).await;
         assert_eq!(s, StatusCode::OK);
     }
@@ -732,7 +748,10 @@ mod tests {
             app.clone(),
             "POST",
             "/api/v1/suggest-sessions",
-            &[("host", "127.0.0.1:3456"), ("origin", "https://evil.example")],
+            &[
+                ("host", "127.0.0.1:3456"),
+                ("origin", "https://evil.example"),
+            ],
         )
         .await;
         assert_eq!(s, StatusCode::FORBIDDEN);
@@ -749,7 +768,10 @@ mod tests {
             app.clone(),
             "GET",
             "/api/v1/status",
-            &[("host", "127.0.0.1:3456"), ("origin", "https://evil.example")],
+            &[
+                ("host", "127.0.0.1:3456"),
+                ("origin", "https://evil.example"),
+            ],
         )
         .await;
         assert_eq!(s, StatusCode::OK);
@@ -759,7 +781,10 @@ mod tests {
             app.clone(),
             "DELETE",
             "/api/v1/suggest-sessions/current",
-            &[("host", "127.0.0.1:3456"), ("origin", "http://localhost:3457")],
+            &[
+                ("host", "127.0.0.1:3456"),
+                ("origin", "http://localhost:3457"),
+            ],
         )
         .await;
         assert_eq!(s, StatusCode::OK);
