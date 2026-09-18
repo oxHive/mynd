@@ -236,7 +236,7 @@ mod status;
 mod suggest;
 #[cfg(test)]
 mod tests;
-mod transfer;
+pub(crate) mod transfer;
 mod update;
 
 use edges::*;

@@ -95,6 +95,10 @@ pub(super) async fn create_memory(
     } else {
         &store
     };
+    target_store
+        .check_content_size(&b.title, &b.content)
+        .await
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     let id = format!("mem_{}", uuid::Uuid::new_v4().simple());
     target_store
         .store(&crate::store::NewMemoryRow {
@@ -150,6 +154,10 @@ pub(super) async fn patch_memory(
     let title = b.title.as_deref().unwrap_or(&current.title);
     let content = b.content.as_deref().unwrap_or(&current.content);
     let tags = b.tags.as_deref().unwrap_or(&current.tags);
+    owning
+        .check_content_size(title, content)
+        .await
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     let updated = owning.update(&id, title, content, tags).await?;
     if !updated {
         return Err(not_found(format!("no memory {id}")));

@@ -879,6 +879,78 @@ async fn get_memory_returns_404_for_missing_id() {
 }
 
 #[tokio::test]
+async fn rest_create_and_patch_enforce_max_content_tokens() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store.set_meta("max_content_tokens", "5").await.unwrap();
+    let long = "word ".repeat(50);
+    let (status, body) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "t", "content": long })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("max_content_tokens")
+    );
+    assert_eq!(store.count().await.unwrap(), 0, "nothing stored");
+
+    let (status, body) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "t", "content": "ok" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["id"].as_str().unwrap().to_string();
+    let (status, _) = req(
+        app,
+        "PATCH",
+        &format!("/api/v1/memories/{id}"),
+        Some(json!({ "content": "word ".repeat(50) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        store.recall_by_id(&id).await.unwrap().unwrap().content,
+        "ok",
+        "patch must not have applied"
+    );
+}
+
+#[tokio::test]
+async fn import_rejects_invalid_entries_without_writing_anything() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_good", "title": "a", "content": "b" },
+            { "id": "mem_bad", "title": "a", "content": "b", "layer": "galactic" },
+            { "id": "mem_bad2", "title": "a", "content": "b", "memory_type": "rumour" },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let err = body["error"].as_str().unwrap();
+    assert!(
+        err.contains("mem_bad:") && err.contains("mem_bad2:"),
+        "got: {err}"
+    );
+    assert_eq!(
+        store.count().await.unwrap(),
+        0,
+        "valid entries must not be written either"
+    );
+}
+
+#[tokio::test]
 async fn create_memory_rejects_invalid_memory_type() {
     let (app, _dir) = test_router().await;
     let (status, body) = req(

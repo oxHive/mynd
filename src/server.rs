@@ -242,20 +242,10 @@ impl Mynd {
         title: &str,
         content: &str,
     ) -> Result<(), ErrorData> {
-        let tokens = crate::budget::count_entry_tokens(title, content) as i64;
-        let limit = store.max_content_tokens().await;
-        if tokens > limit {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "content is {tokens} tokens, exceeds max_content_tokens ({limit}). \
-                     Split into an index memory plus child memories, linked via \
-                     [phrase](child:mem_xxx) — store each child first, then reference \
-                     their real returned ids from the index's content."
-                ),
-                None,
-            ));
-        }
-        Ok(())
+        store
+            .check_content_size(title, content)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))
     }
 
     /// Tries the primary store first, then the org store if configured.

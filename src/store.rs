@@ -395,9 +395,30 @@ impl SqliteStore {
             .await?)
     }
 
+    /// Rejects a title+content pair whose token count exceeds the
+    /// `max_content_tokens` guardrail. Called by `store`/`update` so no
+    /// entry point (MCP, REST, CLI, import) can bypass it; callers that
+    /// want a nicer status code can call it first themselves.
+    pub async fn check_content_size(&self, title: &str, content: &str) -> Result<()> {
+        let tokens = crate::budget::count_entry_tokens(title, content) as i64;
+        let limit = self.max_content_tokens().await;
+        if tokens > limit {
+            return Err(anyhow!(
+                "content is {tokens} tokens, exceeds max_content_tokens ({limit}). \
+                 Split into an index memory plus child memories, linked via \
+                 [phrase](child:mem_xxx) — store each child first, then reference \
+                 their real returned ids from the index's content."
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        m.layer.parse::<crate::model::Layer>()?;
+        m.memory_type.parse::<crate::model::MemoryType>()?;
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
+        self.check_content_size(m.title, m.content).await?;
         let now = chrono_now();
         let token_count = m
             .token_count
@@ -518,6 +539,7 @@ impl SqliteStore {
     ) -> Result<bool> {
         validate_tag_format(tags)?;
         validate_tags_against_registry(self, tags).await?;
+        self.check_content_size(title, content).await?;
         let now = chrono_now();
         let token_count = crate::budget::count_entry_tokens(title, content) as i64;
         let _w = self.write().await;
