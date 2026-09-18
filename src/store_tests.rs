@@ -1318,3 +1318,36 @@ async fn concurrent_writers_never_collide_on_the_shared_connection() {
         assert_eq!(e.content, "c2");
     }
 }
+
+/// `list_memories`/`search` batch their tag lookup 500 ids at a time; cross
+/// the batch boundary and check the result matches the per-id path exactly.
+#[tokio::test]
+async fn batched_tag_loading_matches_per_memory_recall_across_batches() {
+    let (s, _dir) = make_store().await;
+    for i in 0..503u32 {
+        let tags: Vec<String> = match i % 3 {
+            0 => vec![],
+            1 => vec![format!("topic:t{i}")],
+            _ => vec![
+                format!("topic:t{i}"),
+                "lang:rust".to_string(),
+                "kind:pattern".to_string(),
+            ],
+        };
+        s.store(&test_row(&format!("mem_{i:032x}"), "t", "c", &tags))
+            .await
+            .unwrap();
+    }
+    let listed = s.list_memories(1000, 0).await.unwrap();
+    assert_eq!(listed.len(), 503);
+    for e in &listed {
+        let single = s.recall_by_id(&e.id).await.unwrap().unwrap();
+        assert_eq!(e.tags, single.tags, "tags for {}", e.id);
+    }
+    let hits = s.search("c", 50).await.unwrap();
+    assert!(!hits.is_empty());
+    for e in &hits {
+        let single = s.recall_by_id(&e.id).await.unwrap().unwrap();
+        assert_eq!(e.tags, single.tags);
+    }
+}

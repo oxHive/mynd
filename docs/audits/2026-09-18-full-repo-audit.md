@@ -270,6 +270,27 @@ Items 1 through 4 are a single afternoon and remove every remote and every crash
 
 ---
 
+## Remediation status (2026-09-18, same branch)
+
+All ten items on the prioritized list were implemented on this branch after the audit, one commit each, with the full Rust suite, `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, and the dashboard vitest suite green after every step.
+
+| # | Item | Status | Commit | Notes |
+|---|------|--------|--------|-------|
+| 1 | Matrix authorization (C1) | Done | `fix(matrix): require allowed_users for room messages and invites` | `allowed_users` now gates DMs, room mentions, `!hm store`, and invites. Three new tests. |
+| 2 | Parser depth/length cap (M2) | Done | `fix(tag_query): cap expression depth and length` | 1024 bytes, 32 levels; regression test runs the parser on a 2 MiB thread. |
+| 3 | Host/Origin guard (M1) | Done | `fix(http): reject DNS-rebound and cross-site browser requests` | New `api::guard` middleware over REST and `/mcp`. Missing headers (CLI, MCP clients) still pass; the CORS list and the guard share one origin list. |
+| 4 | Graceful shutdown + pid identity (M6) | Done | `fix(http): graceful shutdown on SIGTERM/SIGINT; verify pid before kill` | 5 s drain cap; SSE streams end on shutdown; TUI returns an exit reason instead of `process::exit`; `k` checks `/proc/<pid>/exe`. |
+| 5 | Serialize writers (M3) | Done | `fix(store): serialise writers on the shared libsql connection` | Write mutex plus `BEGIN IMMEDIATE`. The new multi-threaded test failed 3/3 before the fix ("cannot start a transaction within a transaction") and passes 3/3 after. |
+| 6 | Self-update hardening (M4) | Partial | `fix(update): require explicit confirmation to apply, add timeout and opt-out` | JSON `{"confirm": true}` body (forces preflight), `[update] allow_apply_from_api`, 15 s request timeout. **Not done:** binstall signature verification, which needs `.sig` assets from the release pipeline in `oxHive/pipelines`. |
+| 7 | Config file permissions (M5) | Done | `fix(config): create config.toml owner-only; allow sync keys from env` | `0600` on create and rewrite; startup warning if readable by others; `MYND_SYNC_API_KEY` / `MYND_ORG_SYNC_API_KEY`. |
+| 8 | Validation in the store (m1, m2) | Done | `fix(store): enforce size and enum validation inside the store` | REST returns 422 for oversized bodies; import validates everything before writing. Empty title/content and id format are still unchecked (nitpicks). |
+| 9 | CI hardening (m19) | Done | `ci: pin shared pipelines to a commit, scope release secrets, add JS dependabot` | Pinned to `09ce514` (what `v2` resolved to); ten explicit secrets instead of `inherit`; bun + npm Dependabot entries. Reading the pipelines repo also confirmed CI runs `cargo fmt --check`, `clippy -D warnings`, and tarpaulin at 60 % coverage, but not the dashboard tests or `cargo audit`. |
+| 10 | N+1 tag loading (m5) | Done | `perf(store): batch tag loading` | One query per 500 ids for list/search/export/tag-expression paths. Tag-expression evaluation is still a full scan filtered in Rust. |
+
+Still open from the Minor and Nitpick lists: m3, m4, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17, m18, m20, m21, and the nitpicks. m11 (unescaped memory content in agent prompts) is the one most worth doing next, since item 1 closed the remote path but stored content still reaches three prompts unmarked.
+
+---
+
 ## Test suite run
 
 Run in a clean Linux container against the audited commit, Rust 1.94.1, bun 1.x.

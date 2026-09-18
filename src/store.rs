@@ -504,6 +504,45 @@ impl SqliteStore {
         }
     }
 
+    /// Loads tags for many entries in one query per `TAG_BATCH` ids rather
+    /// than one query per entry: `list_memories` with the default limit
+    /// used to issue 201 statements, and `find_by_tag_expr`/export one per
+    /// row in the table.
+    async fn attach_tags(&self, mut entries: Vec<MemoryEntry>) -> Result<Vec<MemoryEntry>> {
+        const TAG_BATCH: usize = 500;
+        if entries.is_empty() {
+            return Ok(entries);
+        }
+        let mut by_id: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for chunk in entries.chunks(TAG_BATCH) {
+            let placeholders = (1..=chunk.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT memory_id, tag FROM memory_tags WHERE memory_id IN ({placeholders}) \
+                 ORDER BY memory_id, tag"
+            );
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|e| libsql::Value::Text(e.id.clone()))
+                .collect();
+            let mut rows = self.conn.query(&sql, params).await?;
+            while let Some(row) = rows.next().await? {
+                let id: String = row.get(0)?;
+                let tag: String = row.get(1)?;
+                by_id.entry(id).or_default().push(tag);
+            }
+        }
+        for e in &mut entries {
+            if let Some(tags) = by_id.remove(&e.id) {
+                e.tags = tags;
+            }
+        }
+        Ok(entries)
+    }
+
     pub async fn search(&self, query: &str, limit: i64) -> Result<Vec<MemoryEntry>> {
         let quoted = fts_quote(query);
         if quoted.is_empty() {
@@ -523,11 +562,9 @@ impl SqliteStore {
             .await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            let entry = self.row_to_entry(&row)?;
-            let tags = self.fetch_tags(&entry.id).await?;
-            results.push(MemoryEntry { tags, ..entry });
+            results.push(self.row_to_entry(&row)?);
         }
-        Ok(results)
+        self.attach_tags(results).await
     }
 
     pub async fn update(
@@ -788,18 +825,15 @@ impl SqliteStore {
             .await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            let entry = self.row_to_entry(&row)?;
-            let tags = self.fetch_tags(&entry.id).await?;
-            results.push(MemoryEntry { tags, ..entry });
+            results.push(self.row_to_entry(&row)?);
         }
-        Ok(results)
+        self.attach_tags(results).await
     }
 
-    /// Evaluates a tag boolean expression against every stored memory. Reuses
-    /// `list_memories`'s per-row tag fetch (same N+1 pattern already used by
-    /// `list_memories`/`search`) rather than a bulk-query optimization — fine
-    /// at this tool's realistic memory counts (see `export()`'s identical
-    /// `list_memories(100_000, 0)` full-table convention).
+    /// Evaluates a tag boolean expression against every stored memory. Loads
+    /// the whole table (tags batched via `attach_tags`) and filters in Rust;
+    /// pushing the expression into SQL is the next step if tables grow past
+    /// what a single scan handles comfortably.
     pub async fn find_by_tag_expr(
         &self,
         expr: &crate::tag_query::TagExpr,
