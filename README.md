@@ -468,6 +468,12 @@ api_key = ""           # gateway-issued key, or sqld auth token
 interval_seconds = 300
 sync_on_store = true
 sync_on_startup = true
+
+[update]
+enabled = true                 # check GitHub releases for a newer version
+check_interval_seconds = 600
+allow_apply_from_api = true    # let the dashboard's Update button run `cargo binstall` + restart;
+                               # set false to require `mynd update apply` on the CLI
 ```
 
 `$XDG_CONFIG_HOME/mynd/config.toml` is used instead if `XDG_CONFIG_HOME` is set.

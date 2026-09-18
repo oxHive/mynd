@@ -86,6 +86,25 @@ async fn test_router_with_guard(guard_predefined_namespaces: bool) -> (Router, T
     (r, dir)
 }
 
+async fn test_router_with_update_state(update_state: SharedUpdateState) -> (Router, TempDir) {
+    let (store, dir) = test_store().await;
+    let (events, _) = broadcast::channel(16);
+    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let r = router(
+        store,
+        None,
+        SyncSettings::default(),
+        None,
+        "http://127.0.0.1:3457",
+        events,
+        suggest,
+        update_state,
+        test_agent_settings(),
+        true,
+    );
+    (r, dir)
+}
+
 async fn test_router_with_events() -> (Router, broadcast::Receiver<Value>, TempDir) {
     let (store, dir) = test_store().await;
     let (events, rx) = broadcast::channel(16);
@@ -1819,9 +1838,61 @@ async fn search_includes_org_entries_when_configured() {
     assert_eq!(json["results"][0]["title"], "orgsearchable");
 }
 
-// Only GET /api/v1/update is exercised here — POST /api/v1/update/apply
-// spawns a real `cargo binstall` + process-replacing restart on success
-// (see update::do_update), which must never run inside a test.
+// POST /api/v1/update/apply spawns a real `cargo binstall` + process-replacing
+// restart on success (see update::do_update), which must never run inside a
+// test — only its refusal paths are exercised here.
+#[tokio::test]
+async fn apply_update_refuses_without_explicit_confirmation() {
+    let (app, _dir) = test_router().await;
+    // No body at all: the Json extractor rejects it before the handler runs.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/update/apply")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_client_error(),
+        "bodyless apply must fail, got {}",
+        resp.status()
+    );
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/update/apply",
+        Some(json!({ "confirm": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("confirm"));
+}
+
+#[tokio::test]
+async fn apply_update_refuses_when_disabled_in_config() {
+    let update_state = test_update_state();
+    update_state.write().await.apply_enabled = false;
+    let (app, _dir) = test_router_with_update_state(update_state).await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/update/apply",
+        Some(json!({ "confirm": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("allow_apply_from_api")
+    );
+}
+
 #[tokio::test]
 async fn get_update_state_reports_idle_by_default() {
     let (app, _dir) = test_router().await;

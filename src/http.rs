@@ -276,9 +276,11 @@ pub async fn run_up(
         events_tx.clone(),
         std::time::Duration::from_secs(2),
     );
-    let update_state: SharedUpdateState = Arc::new(tokio::sync::RwLock::new(
-        crate::update::UpdateState::new_idle(),
-    ));
+    let update_state: SharedUpdateState = Arc::new(tokio::sync::RwLock::new({
+        let mut s = crate::update::UpdateState::new_idle();
+        s.apply_enabled = settings.update.allow_apply_from_api;
+        s
+    }));
     if settings.update.enabled {
         tokio::spawn(crate::update::run_update_check_loop(
             update_state.clone(),

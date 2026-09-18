@@ -117,6 +117,7 @@ struct RawSync {
 struct RawUpdate {
     enabled: Option<bool>,
     check_interval_seconds: Option<u64>,
+    allow_apply_from_api: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -177,6 +178,10 @@ impl Default for SyncSettings {
 pub struct UpdateSettings {
     pub enabled: bool,
     pub check_interval_seconds: u64,
+    /// Whether the dashboard (`POST /api/v1/update/apply`) may trigger a
+    /// self-update and restart. `mynd update apply` on the CLI is always
+    /// available.
+    pub allow_apply_from_api: bool,
 }
 
 impl Default for UpdateSettings {
@@ -184,6 +189,7 @@ impl Default for UpdateSettings {
         UpdateSettings {
             enabled: true,
             check_interval_seconds: 600,
+            allow_apply_from_api: true,
         }
     }
 }
@@ -510,6 +516,7 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
     let update = UpdateSettings {
         enabled: raw.update.enabled.unwrap_or(true),
         check_interval_seconds: raw.update.check_interval_seconds.unwrap_or(600),
+        allow_apply_from_api: raw.update.allow_apply_from_api.unwrap_or(true),
     };
     let agent_command = raw.agent.command.unwrap_or_else(|| "claude".into());
     let agent_kind = match raw.agent.kind {
