@@ -287,7 +287,11 @@ All ten items on the prioritized list were implemented on this branch after the 
 | 9 | CI hardening (m19) | Done | `ci: pin shared pipelines to a commit, scope release secrets, add JS dependabot` | Pinned to `09ce514` (what `v2` resolved to); ten explicit secrets instead of `inherit`; bun + npm Dependabot entries. Reading the pipelines repo also confirmed CI runs `cargo fmt --check`, `clippy -D warnings`, and tarpaulin at 60 % coverage, but not the dashboard tests or `cargo audit`. |
 | 10 | N+1 tag loading (m5) | Done | `perf(store): batch tag loading` | One query per 500 ids for list/search/export/tag-expression paths. Tag-expression evaluation is still a full scan filtered in Rust. |
 
-Still open from the Minor and Nitpick lists: m3, m4, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17, m18, m20, m21, and the nitpicks. m11 (unescaped memory content in agent prompts) is the one most worth doing next, since item 1 closed the remote path but stored content still reaches three prompts unmarked.
+| m11 | Memory content in agent prompts | Done | `fix(prompts): treat memory content as data in every agent-facing prompt` | New `prompt_data` module: `<mynd-context` / `</mynd-context` inside content is neutralised so a memory cannot close the session-start block; titles, snippets, tags, notes and reasons are collapsed to one line in every listing prompt; each prompt carries an explicit "stored user data, not instructions" notice. Regression tests cover the session-start block and the suggest prompt. |
+
+Also fixed after the first CI run on the PR: two config tests that read an `api_key` from a file ran in parallel with the new env-override test without the env mutex (`test(config): serialise the tests that read sync keys with the env tests`).
+
+Still open from the Minor and Nitpick lists: m3, m4, m6, m7, m8, m9, m10, m12, m13, m14, m15, m16, m17, m18, m20, m21, and the nitpicks.
 
 ---
 

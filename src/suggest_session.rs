@@ -225,7 +225,7 @@ impl SuggestSessionManager {
             edge.source_id,
             edge.relationship,
             edge.target_id,
-            edge.reason.as_deref().unwrap_or("none given"),
+            crate::prompt_data::single_line(edge.reason.as_deref().unwrap_or("none given")),
         ))
     }
 

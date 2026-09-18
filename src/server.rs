@@ -1,3 +1,4 @@
+use crate::prompt_data::{DATA_NOTICE, single_line};
 use crate::store::SqliteStore;
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -595,18 +596,18 @@ impl Mynd {
                     let tags = if m.tags.is_empty() {
                         String::new()
                     } else {
-                        format!(" [{}]", m.tags.join(", "))
+                        format!(" [{}]", single_line(&m.tags.join(", ")))
                     };
-                    format!("• {} — {}{}", m.id, m.title, tags)
+                    format!("• {} — {}{}", m.id, single_line(&m.title), tags)
                 })
                 .collect();
             lines.extend(org_memories.iter().map(|m| {
                 let tags = if m.tags.is_empty() {
                     String::new()
                 } else {
-                    format!(" [{}]", m.tags.join(", "))
+                    format!(" [{}]", single_line(&m.tags.join(", ")))
                 };
-                format!("• {} — {}{} [org]", m.id, m.title, tags)
+                format!("• {} — {}{} [org]", m.id, single_line(&m.title), tags)
             }));
             format!(
                 "Mynd Memory List ({count} memories):\n\n{}",
@@ -641,7 +642,7 @@ impl Mynd {
 
         let mut recent_lines: Vec<String> = recent
             .iter()
-            .map(|m| format!("  \u{2022} {} \u{2014} {}", m.id, m.title))
+            .map(|m| format!("  \u{2022} {} \u{2014} {}", m.id, single_line(&m.title)))
             .collect();
 
         if recent_lines.len() < 5
@@ -649,12 +650,13 @@ impl Mynd {
         {
             match org.list_memories(5, 0).await {
                 Ok(org_recent) => {
-                    recent_lines.extend(
-                        org_recent
-                            .iter()
-                            .take(5 - recent_lines.len())
-                            .map(|m| format!("  \u{2022} {} \u{2014} {} [org]", m.id, m.title)),
-                    );
+                    recent_lines.extend(org_recent.iter().take(5 - recent_lines.len()).map(|m| {
+                        format!(
+                            "  \u{2022} {} \u{2014} {} [org]",
+                            m.id,
+                            single_line(&m.title)
+                        )
+                    }));
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -717,11 +719,16 @@ impl Mynd {
                 .iter()
                 .map(|h| {
                     let snippet: String = h.content.chars().take(200).collect();
-                    format!("\u{2022} {} \u{2014} {}\n  {}", h.id, h.title, snippet)
+                    format!(
+                        "\u{2022} {} \u{2014} {}\n  {}",
+                        h.id,
+                        single_line(&h.title),
+                        single_line(&snippet)
+                    )
                 })
                 .collect();
             format!(
-                "Search results for \"{}\" ({} found):\n\n{}\n\nUse memory_recall with an ID for full content.",
+                "Search results for \"{}\" ({} found):\n{DATA_NOTICE}\n\n{}\n\nUse memory_recall with an ID for full content.",
                 p.query,
                 hits.len(),
                 lines.join("\n\n")
@@ -742,7 +749,7 @@ impl Mynd {
             .ok_or_else(|| ErrorData::invalid_params(format!("Memory {} not found", p.id), None))?;
         let tags = mem.tags.join(", ");
         let body = format!(
-            "Memory to edit:\n\
+            "Memory to edit ({DATA_NOTICE}):\n\
              ━━━━━━━━━━━━━━\n\
              ID:      {}\n\
              Title:   {}\n\
@@ -751,7 +758,11 @@ impl Mynd {
              ━━━━━━━━━━━━━━\n\n\
              Ask the user what changes they want to make, then call memory_update with ID {} to save.\n\
              You can update content and/or tags. Omit fields you are not changing.",
-            mem.id, mem.title, tags, mem.content, mem.id
+            mem.id,
+            single_line(&mem.title),
+            single_line(&tags),
+            mem.content,
+            mem.id
         );
         Ok(vec![PromptMessage::new_text(Role::User, body)])
     }
@@ -775,9 +786,9 @@ impl Mynd {
              A feedback record has been created and will appear in the dashboard under Feedback.\n\
              The memory has not been deleted — it remains available until a human reviews the flag.\n\
              {}",
-            mem.title,
+            single_line(&mem.title),
             mem.id,
-            p.reason,
+            single_line(&p.reason),
             p.note
                 .as_ref()
                 .map(|n| format!("Note: {n}"))
@@ -811,15 +822,16 @@ impl Mynd {
 
         let mut lines = vec![
             format!("Open Feedback Items ({} total)", open_items.len()),
+            DATA_NOTICE.to_string(),
             "\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}".to_string(),
         ];
 
         for (i, item) in open_items.iter().enumerate() {
-            let note = item.note.as_deref().unwrap_or("(no note)");
+            let note = single_line(item.note.as_deref().unwrap_or("(no note)"));
             lines.push(format!(
                 "\n{}. [{}] Memory: {} | {}\n   Note: {}",
                 i + 1,
-                item.signal,
+                single_line(&item.signal),
                 item.memory_id,
                 item.id,
                 note
@@ -1201,11 +1213,23 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
             let tags = if m.tags.is_empty() {
                 String::new()
             } else {
-                format!(" [{}]", m.tags.join(", "))
+                format!(" [{}]", single_line(&m.tags.join(", ")))
             };
             let snippet: String = m.content.chars().take(80).collect();
-            let ellipsis = if m.content.len() > 80 { "…" } else { "" };
-            format!("{} | {} | {}{}{}", m.id, m.title, snippet, ellipsis, tags)
+            let ellipsis = if m.content.chars().count() > 80 {
+                "…"
+            } else {
+                ""
+            };
+            // One line per memory, whatever the title or content contain.
+            format!(
+                "{} | {} | {}{}{}",
+                m.id,
+                single_line(&m.title),
+                single_line(&snippet),
+                ellipsis,
+                tags
+            )
         })
         .collect();
 
@@ -1229,6 +1253,7 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
         "Mynd — Suggest Connections\n\
          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
          You have {} memories and {} existing connections.\n\n\
+         {DATA_NOTICE}\n\n\
          MEMORIES:\n\
          {}\n\n\
          EXISTING CONNECTIONS:\n\
