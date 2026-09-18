@@ -3,7 +3,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 use super::init::{
-    GLOBAL_CONFIG, detect_registered_clients, home_dir, with_spinner, write_if_absent,
+    GLOBAL_CONFIG, detect_registered_clients, home_dir, with_spinner, write_private_if_absent,
 };
 
 /// Create the global config file with defaults on first run if it doesn't exist yet.
@@ -13,7 +13,7 @@ pub fn ensure_global_config() {
     if config_path.exists() {
         return;
     }
-    match write_if_absent(&config_path, GLOBAL_CONFIG) {
+    match write_private_if_absent(&config_path, GLOBAL_CONFIG) {
         Ok(_) => {
             eprintln!("note: created default config at {}", config_path.display());
         }

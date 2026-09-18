@@ -465,6 +465,66 @@ pub struct ServerSettings {
     pub guard_predefined_namespaces: bool,
 }
 
+/// Env vars that override the `api_key` fields in the global config, so the
+/// sync credentials never have to be written to disk at all.
+pub const SYNC_API_KEY_ENV: &str = "MYND_SYNC_API_KEY";
+pub const ORG_SYNC_API_KEY_ENV: &str = "MYND_ORG_SYNC_API_KEY";
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// Writes `contents` to `path` atomically with mode 0600 (owner-only), for
+/// files that may hold credentials: the global config carries the sync
+/// `api_key`. Same temp-file-then-rename pattern as `cli::write_atomic`.
+pub fn write_private_file(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+    let tmp = parent.join(format!(".{file_name}.mynd-tmp"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&tmp)?;
+    f.write_all(contents.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    {
+        // The rename keeps the temp file's mode, but tighten an existing
+        // destination that was created 0644 by an older build too.
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// True if `path` is readable by group or others. Only meaningful on Unix;
+/// elsewhere always false.
+pub fn is_readable_by_others(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o077 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<ServerSettings> {
     let raw: RawGlobal = if global_path.is_file() {
         toml::from_str(&std::fs::read_to_string(global_path)?)
@@ -472,6 +532,20 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
     } else {
         RawGlobal::default()
     };
+    let file_has_key = raw.sync.api_key.as_deref().is_some_and(|k| !k.is_empty())
+        || raw
+            .org_sync
+            .api_key
+            .as_deref()
+            .is_some_and(|k| !k.is_empty());
+    if file_has_key && is_readable_by_others(global_path) {
+        tracing::warn!(
+            "{} holds a sync api_key but is readable by other users; run `chmod 600 {}` \
+             or move the key to the {SYNC_API_KEY_ENV} / {ORG_SYNC_API_KEY_ENV} env vars",
+            global_path.display(),
+            global_path.display()
+        );
+    }
     let host = raw.server.host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = raw.server.port.unwrap_or(3456);
     let dashboard_port = raw.dashboard.port.unwrap_or(3457);
@@ -492,7 +566,8 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
     let sync = SyncSettings {
         enabled: raw.sync.enabled.unwrap_or(false),
         remote_url: raw.sync.remote_url.unwrap_or_default(),
-        api_key: raw.sync.api_key.unwrap_or_default(),
+        api_key: env_non_empty(SYNC_API_KEY_ENV)
+            .unwrap_or_else(|| raw.sync.api_key.unwrap_or_default()),
         interval_seconds: raw.sync.interval_seconds.unwrap_or(300),
         sync_on_store: raw.sync.sync_on_store.unwrap_or(true),
         sync_on_startup: raw.sync.sync_on_startup.unwrap_or(true),
@@ -504,7 +579,8 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
             Some(SyncSettings {
                 enabled: true,
                 remote_url,
-                api_key: raw.org_sync.api_key.unwrap_or_default(),
+                api_key: env_non_empty(ORG_SYNC_API_KEY_ENV)
+                    .unwrap_or_else(|| raw.org_sync.api_key.unwrap_or_default()),
                 interval_seconds: raw.org_sync.interval_seconds.unwrap_or(300),
                 sync_on_store: raw.org_sync.sync_on_store.unwrap_or(true),
                 sync_on_startup: raw.org_sync.sync_on_startup.unwrap_or(true),
@@ -611,10 +687,7 @@ pub fn write_matrix_login(global_path: &Path, homeserver_url: &str, user_id: &st
         "user_id".to_string(),
         toml::Value::String(user_id.to_string()),
     );
-    if let Some(dir) = global_path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(global_path, toml::to_string_pretty(&doc)?)?;
+    write_private_file(global_path, &toml::to_string_pretty(&doc)?)?;
     Ok(())
 }
 
@@ -622,6 +695,62 @@ pub fn write_matrix_login(global_path: &Path, homeserver_url: &str, user_id: &st
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_file_is_owner_only_and_tightens_existing_files() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(is_readable_by_others(&path));
+        write_private_file(&path, "[sync]\napi_key = \"secret\"\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[sync]\napi_key = \"secret\"\n"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!is_readable_by_others(&path));
+        assert!(!tmp.path().join(".config.toml.mynd-tmp").exists());
+    }
+
+    #[test]
+    fn sync_api_keys_can_come_from_the_environment() {
+        let _lock = crate::test_env_lock::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(
+            &path,
+            "[sync]\nenabled = true\nremote_url = \"http://s\"\napi_key = \"from-file\"\n\
+             [org_sync]\nenabled = true\nremote_url = \"http://o\"\napi_key = \"org-file\"\n",
+        )
+        .unwrap();
+        // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+        unsafe {
+            std::env::set_var(SYNC_API_KEY_ENV, "from-env");
+            std::env::set_var(ORG_SYNC_API_KEY_ENV, "   ");
+        }
+        let settings = load_server_settings(&path).unwrap();
+        unsafe {
+            std::env::remove_var(SYNC_API_KEY_ENV);
+            std::env::remove_var(ORG_SYNC_API_KEY_ENV);
+        }
+        assert_eq!(
+            settings.sync.api_key, "from-env",
+            "env var wins over the file"
+        );
+        assert_eq!(
+            settings.org_sync.unwrap().api_key,
+            "org-file",
+            "a blank env var does not blank out the file value"
+        );
+    }
 
     fn write(dir: &std::path::Path, name: &str, body: &str) {
         fs::write(dir.join(name), body).unwrap();

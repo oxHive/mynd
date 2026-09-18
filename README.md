@@ -483,6 +483,8 @@ allow_apply_from_api = true    # let the dashboard's Update button run `cargo bi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MYND_DB_PATH` | `~/.local/share/mynd/memories.db` (or `$XDG_DATA_HOME/mynd/memories.db`) | Path to the SQLite database |
+| `MYND_SYNC_API_KEY` | – | Overrides `[sync] api_key`, so the token never has to be written to `config.toml` |
+| `MYND_ORG_SYNC_API_KEY` | – | Overrides `[org_sync] api_key` |
 
 Databases from versions before 0.3.x lived at `~/.hivemind/memories.db`; run `mynd migrate` to move them.
 
@@ -508,6 +510,8 @@ Two `remote_url` targets are supported:
 |-------|------------------------|-----------|
 | **Self-hosted** | Your own [sqld](https://github.com/tursodatabase/libsql/tree/main/libsql-server) server | sqld auth token; leave empty if sqld has no auth configured |
 | **Oxhive hosted** *(coming soon)* | `https://sync.oxhive.dev` | Your Oxhive account key |
+
+`api_key` is a credential: `mynd init` creates `config.toml` owner-only (`0600`), and `mynd` warns at startup if the file holds a key but is readable by other users. On shared machines prefer the `MYND_SYNC_API_KEY` / `MYND_ORG_SYNC_API_KEY` environment variables and leave `api_key` empty.
 
 `api_key` is never sent to Claude or the dashboard. It is only used during replication.
 
