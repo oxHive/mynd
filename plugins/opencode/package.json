@@ -1,6 +1,6 @@
 {
   "name": "@oxhive/opencode-mynd",
-  "version": "0.14.3",
+  "version": "0.15.1",
   "description": "Mynd persistent memory plugin for OpenCode. Auto-registers MCP server and provides memory skills.",
   "keywords": [
     "opencode",
