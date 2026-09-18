@@ -36,6 +36,7 @@ pub fn app_router(
     mcp_url: String,
     update_state: SharedUpdateState,
     guard_predefined_namespaces: bool,
+    request_guard: api::guard::GuardConfig,
 ) -> Router {
     // Fires whenever a memory or edge is created/updated/deleted, either via
     // an MCP tool call (below) or the REST API (api::router) — the dashboard
@@ -75,6 +76,12 @@ pub fn app_router(
         guard_predefined_namespaces,
     )
     .nest_service("/mcp", mcp)
+    // Outermost: rejects DNS-rebound and cross-site browser requests before
+    // they reach either the REST routes or the MCP service. See api::guard.
+    .layer(axum::middleware::from_fn_with_state(
+        request_guard,
+        api::guard::guard,
+    ))
 }
 
 pub fn dashboard_router(api_url: &str) -> Router {
@@ -247,6 +254,7 @@ pub async fn run_up(
         mcp_url.clone(),
         update_state,
         settings.guard_predefined_namespaces,
+        api::guard::GuardConfig::from_settings(settings),
     );
 
     if !matches!(settings.host.as_str(), "127.0.0.1" | "localhost" | "::1") {
@@ -484,6 +492,7 @@ mod tests {
                 crate::update::UpdateState::new_idle(),
             )),
             true,
+            api::guard::GuardConfig::loopback_only(),
         );
         let resp = app
             .oneshot(
@@ -495,6 +504,99 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Full app router with the request guard, as `mynd up` builds it.
+    async fn guarded_app() -> (Router, TempDir) {
+        let (store, dir) = test_store().await;
+        let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        let agent = crate::config::AgentSettings {
+            command: write_stub_agent(dir.path()),
+            args: vec![],
+            kind: crate::config::AgentKind::Claude,
+        };
+        let app = app_router(
+            store,
+            None,
+            crate::config::SyncSettings::default(),
+            None,
+            None,
+            "http://127.0.0.1:3457",
+            events_tx,
+            agent,
+            "http://127.0.0.1:3456/mcp".into(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::update::UpdateState::new_idle(),
+            )),
+            true,
+            api::guard::GuardConfig::loopback_only(),
+        );
+        (app, dir)
+    }
+
+    async fn send(app: Router, method: &str, uri: &str, headers: &[(&str, &str)]) -> StatusCode {
+        let mut b = Request::builder().method(method).uri(uri);
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        app.oneshot(b.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn guard_rejects_dns_rebound_host_on_rest_and_mcp() {
+        let (app, _dir) = guarded_app().await;
+        let s = send(app.clone(), "GET", "/api/v1/status", &[("host", "evil.example")]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        let s = send(app.clone(), "POST", "/mcp", &[("host", "evil.example:3456")]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "the MCP endpoint must be guarded too");
+        let s = send(app, "GET", "/api/v1/status", &[("host", "localhost:3456")]).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn guard_rejects_cross_site_post_but_allows_dashboard_and_cli() {
+        let (app, _dir) = guarded_app().await;
+        // Bodyless POST from a hostile page: the CSRF case.
+        let s = send(
+            app.clone(),
+            "POST",
+            "/api/v1/suggest-sessions",
+            &[("host", "127.0.0.1:3456"), ("origin", "https://evil.example")],
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        let s = send(
+            app.clone(),
+            "POST",
+            "/api/v1/update/apply",
+            &[("host", "127.0.0.1:3456"), ("origin", "null")],
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        // Reads are not CSRF-relevant; CORS + the Host check cover them.
+        let s = send(
+            app.clone(),
+            "GET",
+            "/api/v1/status",
+            &[("host", "127.0.0.1:3456"), ("origin", "https://evil.example")],
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        // The dashboard's own origin, and a CLI/MCP client with no Origin,
+        // both get through to the handler (which here 202s and runs the stub).
+        let s = send(
+            app.clone(),
+            "DELETE",
+            "/api/v1/suggest-sessions/current",
+            &[("host", "127.0.0.1:3456"), ("origin", "http://localhost:3457")],
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let s = send(app, "DELETE", "/api/v1/suggest-sessions/current", &[]).await;
+        assert_eq!(s, StatusCode::OK);
     }
 
     #[tokio::test]

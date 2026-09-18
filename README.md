@@ -705,7 +705,7 @@ No. Memories stored with `layer = "personal"` follow you, not the repo. Only `la
 
 **Is the MCP connection authenticated?**
 
-The MCP endpoint (`/mcp`) and the REST API (`/api/v1/*`) are unauthenticated and bind to `127.0.0.1` by default, so only processes on your local machine can reach them. The `api_key` under `[sync]` is your auth token for the remote sync target (sqld token for self-hosted, account key for Oxhive hosted); it is used only during replication and has nothing to do with Claude's connection to Mynd.
+The MCP endpoint (`/mcp`) and the REST API (`/api/v1/*`) are unauthenticated and bind to `127.0.0.1` by default, so only processes on your local machine can reach them. To keep web pages from riding along on that trust, the server also rejects requests whose `Host` header is not loopback (or your configured `[server] host` / `[dashboard] api_url`), which blocks DNS-rebinding attacks, and rejects state-changing requests whose `Origin` is not the dashboard's (or another loopback origin), which blocks cross-site request forgery. Non-browser clients (the CLI, curl, MCP clients) send neither header and are unaffected. The `api_key` under `[sync]` is your auth token for the remote sync target (sqld token for self-hosted, account key for Oxhive hosted); it is used only during replication and has nothing to do with Claude's connection to Mynd.
 
 **Can I use Mynd with agents other than Claude Code?**
 
