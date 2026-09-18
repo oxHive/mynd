@@ -221,13 +221,18 @@ async function removeTrusted(id) {
           <span class="rounded-full" style="width:8px; height:8px; flex-shrink:0"
             :style="{ background: peer.online ? 'var(--hm-success)' : 'var(--hm-text-tertiary)' }"
             :title="peer.online ? 'Online' : 'Offline'"></span>
-          <span class="flex-1" style="font-size:13px; color:var(--hm-text-primary)">{{ peer.name }}</span>
-          <span style="font-size:11px; color:var(--hm-text-tertiary); width:80px; text-align:right">
-            {{ relativeTime(peer.last_synced_at) }}
+          <span class="flex-1" style="font-size:13px; color:var(--hm-text-primary)">
+            {{ peer.name }}
+            <span v-if="peer.is_self" style="font-size:11px; color:var(--hm-text-tertiary)">(this device)</span>
           </span>
-          <button v-if="peer.status !== 'revoked'" class="hm-btn hm-btn-ghost hm-btn-sm"
+          <span style="font-size:11px; color:var(--hm-text-tertiary); width:80px; text-align:right">
+            {{ peer.is_self ? '' : relativeTime(peer.last_synced_at) }}
+          </span>
+          <!-- A device can't revoke itself (the API refuses it too): that
+               would lock it out of its own hive with no way back. -->
+          <button v-if="peer.status !== 'revoked' && !peer.is_self" class="hm-btn hm-btn-ghost hm-btn-sm"
             style="color:var(--hm-danger)" @click="askRevoke(peer)">Revoke</button>
-          <span v-else style="font-size:11px; color:var(--hm-text-tertiary)">Revoked</span>
+          <span v-else-if="peer.status === 'revoked'" style="font-size:11px; color:var(--hm-text-tertiary)">Revoked</span>
         </div>
         <p v-if="!hive.roster.length" class="mb-5" style="font-size:12px; color:var(--hm-text-tertiary)">
           No other devices in this hive yet.

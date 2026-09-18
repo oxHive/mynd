@@ -35,10 +35,13 @@ impl PairingCodeStore {
 
     pub fn issue(&self, now: i64) -> PairingCode {
         let pairing = generate_pairing_code(now);
-        self.outstanding
-            .lock()
-            .unwrap()
-            .insert(pairing.code.clone(), pairing.expires_at);
+        let mut outstanding = self.outstanding.lock().unwrap();
+        // Expired codes are only ever removed when redeemed; a code that was
+        // issued and never used would otherwise sit in this map for the life
+        // of the process. Sweep them on each issue so the map stays bounded
+        // by the number of codes still actually valid.
+        outstanding.retain(|_, expires_at| *expires_at > now);
+        outstanding.insert(pairing.code.clone(), pairing.expires_at);
         PairingCode {
             code: pairing.code,
             expires_at: pairing.expires_at,
@@ -94,6 +97,21 @@ mod tests {
         let pairing = store.issue(1000);
         let past_expiry = pairing.expires_at + 1;
         assert!(!store.validate_and_consume(&pairing.code, past_expiry));
+    }
+
+    #[test]
+    fn issuing_a_new_code_sweeps_expired_ones() {
+        let store = PairingCodeStore::new();
+        let stale = store.issue(1000);
+        // Issue a fresh code well past the first one's expiry.
+        let fresh = store.issue(stale.expires_at + 1);
+        assert_eq!(
+            store.outstanding.lock().unwrap().len(),
+            1,
+            "the expired code must have been swept"
+        );
+        assert!(!store.validate_and_consume(&stale.code, stale.expires_at + 2));
+        assert!(store.validate_and_consume(&fresh.code, stale.expires_at + 2));
     }
 
     #[test]

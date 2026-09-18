@@ -42,9 +42,10 @@ pub struct PeerStatus {
 }
 
 /// Peers this device currently believes are reachable, for the push-on-change
-/// path (Task 11) to target. Addresses are resolved by mDNS discovery
-/// (Plan 1's `HiveDiscovery`), keyed by device_id -- wiring that address
-/// resolution into this table is a later task's step, not left elsewhere.
+/// path to target. `address` comes from the mDNS discovery table
+/// (`resolve_address`); every push helper skips a peer without one, so
+/// leaving it `None` here (as an earlier revision did) silently turned the
+/// whole push-on-change feature into a no-op.
 pub async fn online_peers(store: &SqliteStore) -> anyhow::Result<Vec<PeerStatus>> {
     let roster = store.hive_list_roster().await?;
     let mut out = Vec::new();
@@ -56,9 +57,9 @@ pub async fn online_peers(store: &SqliteStore) -> anyhow::Result<Vec<PeerStatus>
             && status.online
         {
             out.push(PeerStatus {
+                address: resolve_address(&entry.device_id),
                 device_id: entry.device_id,
                 public_key: entry.public_key,
-                address: None, // filled by a later task's mDNS-address table lookup
                 online: true,
                 last_synced_at: status.last_synced_at,
             });
@@ -88,7 +89,10 @@ pub async fn run_ping_loop(
             .flatten()
             .map(|(_, ping_s, _)| ping_s)
             .unwrap_or(interval_seconds_default);
-        tokio::time::sleep(Duration::from_secs(interval_seconds)).await;
+        tokio::time::sleep(Duration::from_secs(crate::hive::clamp_interval(
+            interval_seconds,
+        )))
+        .await;
         ping_once(&store, &identity, &events).await;
 
         // `ping_once` above already re-merged every reachable peer's roster
@@ -139,14 +143,16 @@ async fn ping_once(
                 else {
                     continue;
                 };
-                let now = crate::store::chrono_now();
                 match client
                     .get(&format!("https://{address}/api/v1/hive/roster"))
                     .await
                 {
                     Ok(resp) if resp.status().is_success() => {
+                        // Liveness only: `last_synced_at` is left as-is
+                        // (`None` preserves the stored value) -- the sync
+                        // loop stamps it when a real pull round completes.
                         let _ = store
-                            .hive_upsert_peer_status(&peer.device_id, true, Some(now))
+                            .hive_upsert_peer_status(&peer.device_id, true, None)
                             .await;
                         // Re-merge this peer's roster view, continuing Plan 1's
                         // gossip propagation (including revocations) on the same
@@ -157,13 +163,12 @@ async fn ping_once(
                                 serde_json::from_value::<Vec<crate::hive::roster::RosterEntry>>(
                                     serde_json::Value::Array(remote_roster_json.clone()),
                                 )
+                            && let Err(e) = store.hive_merge_roster(remote_roster).await
                         {
-                            let local_roster = store.hive_list_roster().await.unwrap_or_default();
-                            let merged =
-                                crate::hive::gossip::merge_roster(local_roster, remote_roster);
-                            for entry in &merged {
-                                let _ = store.hive_upsert_roster_entry(entry).await;
-                            }
+                            tracing::warn!(
+                                "failed to merge roster gossiped by {}: {e:#}",
+                                peer.device_id
+                            );
                         }
                         true
                     }

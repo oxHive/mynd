@@ -1,5 +1,9 @@
 use crate::hive::identity::DeviceIdentity;
 use anyhow::{Context, Result};
+use std::time::Duration;
+
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// An outbound HTTP client for hive-to-hive requests, authenticated with
 /// this device's identity (via a client cert wrapping its Ed25519 key) and
@@ -50,8 +54,15 @@ impl HiveClient {
         )
         .context("building client-auth TLS config")?;
 
+        // reqwest has no default timeout. Every hive call runs inside a
+        // sequential loop over peers (ping, sync, push-on-change), so a peer
+        // that accepts the TCP connection and then never answers would
+        // otherwise wedge that whole loop -- and, for the ping loop, the
+        // roster-verifier hot-reload that revocations depend on -- forever.
         let inner = reqwest::Client::builder()
             .use_preconfigured_tls(tls_config)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .context("building reqwest client with pinned mTLS config")?;
 

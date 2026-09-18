@@ -1141,17 +1141,62 @@ async fn revise_validates_session_and_edge() {
 #[tokio::test]
 async fn hive_pair_rejects_unknown_code() {
     let (app, _codes, _dir) = test_pairing_router().await;
+    // A genuinely valid join record, so the only thing wrong with this
+    // request is the code: the signature is checked first (it's stateless),
+    // then the single-use code is consumed.
+    let identity = crate::hive::identity::generate();
+    let join_record = crate::hive::roster::create_join_record(&identity, "x", 1000);
     let (status, _) = req(
         app,
         "POST",
         "/api/v1/hive/pair",
         Some(json!({
             "code": "NOTAREALCODE",
-            "join_record": { "device_id": "hive_x", "public_key": "00", "name": "x", "joined_at": 0, "signature": "00" }
+            "join_record": {
+                "device_id": join_record.device_id, "public_key": join_record.public_key,
+                "name": join_record.name, "joined_at": join_record.joined_at,
+                "signature": join_record.signature,
+            }
         })),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn hive_pair_does_not_burn_the_code_on_a_bad_join_record() {
+    let (app, code) = test_router_with_pairing_code(std::path::Path::new(".")).await;
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/hive/pair",
+        Some(json!({
+            "code": code,
+            "join_record": { "device_id": "hive_x", "public_key": "00", "name": "x", "joined_at": 0, "signature": "00" }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // The same code still redeems with a proper record -- the malformed
+    // attempt must not have consumed it.
+    let identity = crate::hive::identity::generate();
+    let join_record = crate::hive::roster::create_join_record(&identity, "x", 1000);
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/hive/pair",
+        Some(json!({
+            "code": code,
+            "join_record": {
+                "device_id": join_record.device_id, "public_key": join_record.public_key,
+                "name": join_record.name, "joined_at": join_record.joined_at,
+                "signature": join_record.signature,
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1682,7 +1727,10 @@ async fn hive_push_tombstone_deletes_a_staler_local_copy() {
         })
         .await
         .unwrap();
-    let far_future = chrono::Utc::now().timestamp() + 10_000;
+    // Newer than the local row, but inside the clock-skew tolerance -- a
+    // deletion further in the future than that is rejected (see
+    // `hive_push_rejects_tombstone_with_implausible_future_timestamp`).
+    let slightly_ahead = chrono::Utc::now().timestamp() + 100;
 
     let (status, body) = req(
         app,
@@ -1691,7 +1739,7 @@ async fn hive_push_tombstone_deletes_a_staler_local_copy() {
         Some(json!({
             "kind": "tombstone",
             "memory_id": "mem_tombtest0000000000000000001",
-            "deleted_at": far_future,
+            "deleted_at": slightly_ahead,
         })),
     )
     .await;
@@ -1704,11 +1752,21 @@ async fn hive_push_tombstone_deletes_a_staler_local_copy() {
             .unwrap()
             .is_none()
     );
+    // The peer's deletion time is what gets recorded, not "when we heard".
+    assert_eq!(
+        store
+            .hive_tombstone_for("mem_tombtest0000000000000000001")
+            .await
+            .unwrap(),
+        Some(slightly_ahead)
+    );
 }
 
 #[tokio::test]
-async fn hive_push_tombstone_for_unknown_id_is_a_noop() {
-    let (app, _codes, _dir) = test_hive_router().await;
+async fn hive_push_tombstone_for_unknown_id_records_the_tombstone() {
+    // Nothing to delete, but the tombstone is still recorded so a later push
+    // of that memory from a peer that hasn't caught up can't resurrect it.
+    let (app, store, _dir) = test_hive_router_with_store().await;
     let (status, body) = req(
         app,
         "POST",
@@ -1722,6 +1780,104 @@ async fn hive_push_tombstone_for_unknown_id_is_a_noop() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["outcome"], "tombstone_processed");
+    assert_eq!(
+        store
+            .hive_tombstone_for("mem_doesnotexist00000000000002")
+            .await
+            .unwrap(),
+        Some(9999)
+    );
+}
+
+#[tokio::test]
+async fn hive_push_rejects_tombstone_with_implausible_future_timestamp() {
+    let (app, store, _dir) = test_hive_router_with_store().await;
+    let far_future = chrono::Utc::now().timestamp() + 10_000;
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/hive/push",
+        Some(json!({
+            "kind": "tombstone",
+            "memory_id": "mem_futuretomb000000000000001",
+            "deleted_at": far_future,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        store
+            .hive_tombstone_for("mem_futuretomb000000000000001")
+            .await
+            .unwrap()
+            .is_none(),
+        "a far-future tombstone must not be recorded -- it would block every later re-creation"
+    );
+}
+
+#[tokio::test]
+async fn hive_push_rejects_settings_with_implausible_timestamp_or_interval() {
+    let (app, store, _dir) = test_hive_router_with_store().await;
+    let far_future = chrono::Utc::now().timestamp() + 10_000;
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/hive/push",
+        Some(json!({
+            "kind": "settings", "sync_interval_seconds": 90, "ping_interval_seconds": 15,
+            "updated_at": far_future,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A zero interval would turn the sync/ping loops into a busy-spin; an
+    // enormous ping interval would freeze the roster-verifier hot-reload
+    // (and so revocations) on every device that accepted it.
+    for (sync_s, ping_s) in [(0, 60), (300, 0), (300, 10_000_000)] {
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/v1/hive/push",
+            Some(json!({
+                "kind": "settings", "sync_interval_seconds": sync_s,
+                "ping_interval_seconds": ping_s, "updated_at": 5000,
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "intervals ({sync_s}, {ping_s}) must be rejected"
+        );
+    }
+    assert_eq!(store.hive_settings_override().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn hive_push_rejects_malformed_tag_namespaces() {
+    let (app, store, _dir) = test_hive_router_with_store().await;
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/hive/push",
+        Some(json!({
+            "kind": "tag_namespaces",
+            // `values` must be an array of strings; this would previously
+            // have been persisted verbatim.
+            "namespaces": { "project": { "color": "#000", "values": "not-an-array" } },
+            "updated_at": 5000,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        store
+            .get_meta("tag_namespaces_updated_at")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -1918,4 +2074,192 @@ async fn hive_join_reports_bad_gateway_when_peer_unreachable() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn pairing_code_endpoint_rejects_non_loopback_peer() {
+    // Issuing a code returns everything needed to pair an attacker-owned
+    // device into the hive (the code AND this device's public key) and opens
+    // the pairing listener -- so on a non-loopback bind it must be as
+    // unreachable to LAN callers as `hive_join`/revoke/enabled are.
+    let identity = crate::hive::identity::generate();
+    let (app, _store, _dir) = test_router_with_hive_identity(identity).await;
+    let non_loopback =
+        axum::extract::ConnectInfo(std::net::SocketAddr::from(([192, 168, 1, 50], 54321)));
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/hive/pairing-code")
+        .extension(non_loopback)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(request).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn require_loopback_accepts_ipv4_mapped_ipv6_loopback() {
+    // A 127.0.0.1 client arriving on a server bound to `::` shows up as
+    // `::ffff:127.0.0.1`; the local dashboard must not be locked out of its
+    // own hive controls by a dual-stack bind.
+    let (app, _store, _dir) = test_router_with_store().await;
+    let mapped = axum::extract::ConnectInfo(std::net::SocketAddr::from((
+        std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped(),
+        54321,
+    )));
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/hive/trusted-networks")
+        .extension(mapped)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(request).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn revoke_device_refuses_to_revoke_self() {
+    let identity = crate::hive::identity::generate();
+    let (app, store, _dir) = test_router_with_hive_identity(identity.clone()).await;
+    let self_join = crate::hive::roster::create_join_record(&identity, "self", 1000);
+    store
+        .hive_upsert_roster_entry(&crate::hive::roster::RosterEntry {
+            device_id: identity.device_id.clone(),
+            public_key: crate::hive::identity::public_key_hex(&identity),
+            name: "self".to_string(),
+            status: crate::hive::roster::RosterStatus::Active,
+            joined_at: 1000,
+            revoked_at: None,
+            revoked_by: None,
+            join_record: self_join,
+            revocation_record: None,
+        })
+        .await
+        .unwrap();
+
+    let (status, _) = req(
+        app,
+        "POST",
+        &format!("/api/v1/hive/roster/{}/revoke", identity.device_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let roster = store.hive_list_roster().await.unwrap();
+    assert_eq!(roster[0].status, crate::hive::roster::RosterStatus::Active);
+}
+
+#[tokio::test]
+async fn hive_status_marks_this_devices_own_roster_entry() {
+    let identity = crate::hive::identity::generate();
+    let other = crate::hive::identity::generate();
+    let (app, store, _dir) = test_router_with_hive_identity(identity.clone()).await;
+    for (who, name) in [(&identity, "self"), (&other, "other")] {
+        store
+            .hive_upsert_roster_entry(&crate::hive::roster::RosterEntry {
+                device_id: who.device_id.clone(),
+                public_key: crate::hive::identity::public_key_hex(who),
+                name: name.to_string(),
+                status: crate::hive::roster::RosterStatus::Active,
+                joined_at: 1000,
+                revoked_at: None,
+                revoked_by: None,
+                join_record: crate::hive::roster::create_join_record(who, name, 1000),
+                revocation_record: None,
+            })
+            .await
+            .unwrap();
+    }
+    let (status, body) = req(app, "GET", "/api/v1/hive/status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let roster = body["roster"].as_array().unwrap();
+    let flag_for = |id: &str| {
+        roster.iter().find(|e| e["device_id"] == id).unwrap()["is_self"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(flag_for(&identity.device_id));
+    assert!(!flag_for(&other.device_id));
+}
+
+#[tokio::test]
+async fn set_hive_enabled_refuses_when_cloud_sync_is_enabled() {
+    // config.toml already refuses [sync] + [hive]; the DB override must not
+    // be a way around that.
+    let (store, dir) = test_store().await;
+    let (events, _) = broadcast::channel(16);
+    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let app = router(
+        Arc::clone(&store),
+        SyncSettings {
+            enabled: true,
+            ..SyncSettings::default()
+        },
+        "http://127.0.0.1:3457",
+        events,
+        suggest,
+        test_update_state(),
+        test_agent_settings(),
+        true,
+        false,
+        None,
+        Arc::new(crate::hive::pairing::PairingCodeStore::new()),
+        None,
+        crate::api::HiveSyncPort(0),
+    )
+    .layer(axum::extract::Extension(Arc::new(
+        tokio::sync::Notify::new(),
+    )));
+
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/hive/enabled",
+        Some(json!({ "enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(store.hive_enabled_override().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn hive_pair_refuses_a_revoked_device_and_keeps_it_revoked() {
+    let (store, _dir) = test_store().await;
+    let pairing_codes = Arc::new(crate::hive::pairing::PairingCodeStore::new());
+    let issued = pairing_codes.issue(chrono::Utc::now().timestamp());
+    let app = hive_pairing_router(Arc::clone(&store), pairing_codes);
+
+    let revoked = crate::hive::identity::generate();
+    let join_record = crate::hive::roster::create_join_record(&revoked, "revoked-laptop", 1000);
+    store
+        .hive_upsert_roster_entry(&crate::hive::roster::RosterEntry {
+            device_id: revoked.device_id.clone(),
+            public_key: crate::hive::identity::public_key_hex(&revoked),
+            name: "revoked-laptop".to_string(),
+            status: crate::hive::roster::RosterStatus::Revoked,
+            joined_at: 1000,
+            revoked_at: Some(2000),
+            revoked_by: Some("hive_someoneelse".to_string()),
+            join_record: join_record.clone(),
+            revocation_record: None,
+        })
+        .await
+        .unwrap();
+
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/hive/pair",
+        Some(json!({
+            "code": issued.code,
+            "join_record": {
+                "device_id": join_record.device_id, "public_key": join_record.public_key,
+                "name": join_record.name, "joined_at": join_record.joined_at,
+                "signature": join_record.signature,
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let roster = store.hive_list_roster().await.unwrap();
+    assert_eq!(roster[0].status, crate::hive::roster::RosterStatus::Revoked);
 }

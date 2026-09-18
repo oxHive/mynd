@@ -46,6 +46,23 @@ pub fn merge_roster(local: Vec<RosterEntry>, incoming: Vec<RosterEntry>) -> Vec<
         if !verify_join_record(&candidate.join_record) {
             continue;
         }
+        // Only `join_record` is signature-checked, but it's the *outer*
+        // `device_id`/`public_key` that get persisted, that the sync
+        // listener's client-cert verifier accepts, and that the
+        // revoker-trust snapshot above keys on. Bind the two together:
+        // an entry whose outer identity disagrees with its own verified
+        // join record is dropped outright. Otherwise any Active peer could
+        // gossip `{device_id: <victim's id>, public_key: <attacker key>,
+        // join_record: <attacker's own valid record>}` and, on a device
+        // that hasn't met the victim yet, squat the victim's id with an
+        // attacker-controlled key -- the victim's real entry would then be
+        // ignored forever (first-seen wins), and a revocation aimed at the
+        // victim's id would hit the wrong key.
+        if candidate.device_id != candidate.join_record.device_id
+            || candidate.public_key != candidate.join_record.public_key
+        {
+            continue;
+        }
 
         match merged
             .iter()
@@ -54,8 +71,12 @@ pub fn merge_roster(local: Vec<RosterEntry>, incoming: Vec<RosterEntry>) -> Vec<
             None => {
                 // Rule 2: first-seen entries are always added Active,
                 // regardless of whatever status/revocation fields the
-                // incoming struct happens to carry.
+                // incoming struct happens to carry. Name and join time are
+                // likewise taken from the signed join record, not the
+                // unsigned outer fields.
                 merged.push(RosterEntry {
+                    name: candidate.join_record.name.clone(),
+                    joined_at: candidate.join_record.joined_at,
                     status: RosterStatus::Active,
                     revoked_at: None,
                     revoked_by: None,
@@ -292,6 +313,52 @@ mod tests {
         assert!(c_entry.revoked_by.is_none());
         assert!(c_entry.revoked_at.is_none());
         assert!(c_entry.revocation_record.is_none());
+    }
+
+    // Identity squatting: an otherwise-valid join record (the attacker's
+    // own) wrapped in an entry whose outer public_key is a different key.
+    // Without the outer/inner cross-check the entry would be persisted
+    // under the outer key, which is what the TLS gate trusts.
+    #[test]
+    fn rejects_entry_whose_outer_public_key_disagrees_with_join_record() {
+        let attacker = identity::generate();
+        let other_key = identity::generate();
+        let mut entry = entry_for(&attacker, "attacker", 1000);
+        entry.public_key = identity::public_key_hex(&other_key);
+
+        let merged = merge_roster(vec![], vec![entry]);
+        assert!(
+            merged.is_empty(),
+            "an entry whose outer public_key isn't the one its join record was signed with must be dropped"
+        );
+    }
+
+    #[test]
+    fn rejects_entry_whose_outer_device_id_disagrees_with_join_record() {
+        let attacker = identity::generate();
+        let victim = identity::generate();
+        // Valid join record for `attacker`, relabelled with the victim's id.
+        let mut entry = entry_for(&attacker, "attacker", 1000);
+        entry.device_id = victim.device_id.clone();
+
+        let merged = merge_roster(vec![], vec![entry]);
+        assert!(
+            merged.is_empty(),
+            "an entry squatting another device_id over a foreign join record must be dropped"
+        );
+    }
+
+    #[test]
+    fn new_entry_takes_name_and_joined_at_from_the_signed_join_record() {
+        let device = identity::generate();
+        let mut entry = entry_for(&device, "real-name", 1000);
+        entry.name = "unsigned-outer-name".to_string();
+        entry.joined_at = 999_999;
+
+        let merged = merge_roster(vec![], vec![entry]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "real-name");
+        assert_eq!(merged[0].joined_at, 1000);
     }
 
     // Gap 1: self-revocation, where revoked_by == the target's own

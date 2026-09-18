@@ -88,7 +88,12 @@ async fn require_loopback(
     req: axum::extract::Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if addr.ip().is_loopback() {
+    // `to_canonical()` folds an IPv4-mapped IPv6 peer (`::ffff:127.0.0.1`,
+    // which is how a 127.0.0.1 client shows up when the server bound `::`)
+    // back to plain IPv4, so a dual-stack bind doesn't lock the local
+    // dashboard out of its own hive controls. It fails closed for
+    // everything else.
+    if addr.ip().to_canonical().is_loopback() {
         Ok(next.run(req).await)
     } else {
         Err(ApiError(
@@ -209,14 +214,8 @@ pub fn router(
             "/api/v1/suggest-sessions/current/revise",
             post(revise_suggest_session),
         )
-        // Local, dashboard-triggered "invite a device now" action — it lives
-        // on the plaintext app router (never a hive TLS port) because only the
-        // local user issues codes, never a remote peer. Issuing a code opens
-        // the time-limited pairing-window listener (see PairingWindow).
-        .route("/api/v1/hive/pairing-code", post(hive_issue_pairing_code))
         .with_state(store.clone())
-        .layer(Extension(sync))
-        .layer(Extension(pairing_codes))
+        .layer(Extension(sync.clone()))
         .layer(Extension(events))
         .layer(Extension(suggest))
         .layer(Extension(update_state))
@@ -228,15 +227,6 @@ pub fn router(
         .layer(Extension(hive_sync_port));
     let router = if let Some(identity) = identity_extension.clone() {
         router.layer(Extension(identity))
-    } else {
-        router
-    };
-    // The pairing-code issue handler needs the window coordinator; it's only
-    // present when hive is enabled (built in `http::run_up`). When absent, the
-    // route still exists but returns 500 if hit — acceptable, since issuing a
-    // pairing code is meaningless with hive disabled.
-    let router = if let Some(pairing_window) = pairing_window {
-        router.layer(Extension(pairing_window))
     } else {
         router
     };
@@ -273,6 +263,15 @@ pub fn router(
         // routes on this sub-router; see issue #27 and the security review
         // that flagged this route being left off this gate).
         .route("/api/v1/hive/join", post(hive_join))
+        // Loopback-gated: issuing a code both opens the pairing listener and
+        // returns the code *and* this device's public key -- everything a
+        // caller needs to pair a device of their own into the hive and pull
+        // every memory from every member. On a non-loopback bind this must
+        // not be reachable by whoever can reach the plaintext API (the same
+        // reasoning as `hive_join`/revoke/enabled above); only the local
+        // user's dashboard issues invites. Issuing a code opens the
+        // time-limited pairing-window listener (see PairingWindow).
+        .route("/api/v1/hive/pairing-code", post(hive_issue_pairing_code))
         .route(
             "/api/v1/hive/trusted-networks",
             get(hive_get_trusted_networks).post(hive_add_trusted_network),
@@ -301,12 +300,25 @@ pub fn router(
         // `hive_status` needs the hive push-config (for its identity/enabled
         // state) and the sync port; the main router's `.layer(...)` extensions
         // don't propagate across `merge` into this separately-built sub-router,
-        // so they're re-supplied here.
+        // so they're re-supplied here. Likewise `hive_set_enabled` needs the
+        // cloud-sync settings (to refuse enabling hive alongside [sync]) and
+        // `hive_issue_pairing_code` needs the code store.
         .layer(Extension(hive_push_config))
         .layer(Extension(hive_sync_port))
+        .layer(Extension(sync))
+        .layer(Extension(pairing_codes))
         .with_state(store);
     let trusted_networks_router = if let Some(identity) = identity_extension_for_trusted_networks {
         trusted_networks_router.layer(Extension(identity))
+    } else {
+        trusted_networks_router
+    };
+    // The pairing-code issue handler needs the window coordinator; it's only
+    // present when hive is enabled (built in `http::run_up`). When absent, the
+    // route still exists but returns 500 if hit — acceptable, since issuing a
+    // pairing code is meaningless with hive disabled.
+    let trusted_networks_router = if let Some(pairing_window) = pairing_window {
+        trusted_networks_router.layer(Extension(pairing_window))
     } else {
         trusted_networks_router
     };
@@ -415,6 +427,10 @@ use feedback::*;
 use hive::*;
 use memories::*;
 use settings::*;
+// Shared with the hive receive paths (`hive_push`, `sync_loop::pull_from_peer`)
+// so a peer-supplied tag-namespace registry is held to the same rules as a
+// dashboard save.
+pub(crate) use settings::validate_tag_namespaces;
 use status::*;
 use suggest::*;
 use transfer::*;

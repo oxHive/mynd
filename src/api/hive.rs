@@ -1,5 +1,4 @@
 use super::*;
-use crate::hive::gossip::merge_roster;
 use crate::hive::pairing::PairingCodeStore;
 use crate::hive::roster::{JoinRecord, RosterEntry, RosterStatus, verify_join_record};
 use std::sync::Arc;
@@ -15,6 +14,15 @@ pub(super) async fn hive_pair(
     Extension(pairing_codes): Extension<Arc<PairingCodeStore>>,
     Json(body): Json<PairRequestBody>,
 ) -> Result<Json<Value>, ApiError> {
+    // Check the (stateless) signature before consuming the (single-use)
+    // code, so a well-meaning joiner that sent a malformed record doesn't
+    // burn the code and force the inviter to issue a fresh one.
+    if !verify_join_record(&body.join_record) {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "join record signature invalid".to_string(),
+        ));
+    }
     let now = chrono::Utc::now().timestamp();
     if !pairing_codes.validate_and_consume(&body.code, now) {
         return Err(ApiError(
@@ -22,14 +30,7 @@ pub(super) async fn hive_pair(
             "invalid or expired pairing code".to_string(),
         ));
     }
-    if !verify_join_record(&body.join_record) {
-        return Err(ApiError(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "join record signature invalid".to_string(),
-        ));
-    }
 
-    let local_roster = store.hive_list_roster().await?;
     let new_entry = RosterEntry {
         device_id: body.join_record.device_id.clone(),
         public_key: body.join_record.public_key.clone(),
@@ -41,9 +42,19 @@ pub(super) async fn hive_pair(
         join_record: body.join_record.clone(),
         revocation_record: None,
     };
-    let merged = merge_roster(local_roster, vec![new_entry]);
-    for entry in &merged {
-        store.hive_upsert_roster_entry(entry).await?;
+    let merged = store.hive_merge_roster(vec![new_entry]).await?;
+
+    // `merge_roster` never un-revokes: a previously revoked device that
+    // somehow obtained a fresh pairing code stays Revoked. Tell it so,
+    // rather than handing back a roster that reads as a successful join.
+    let joined_active = merged
+        .iter()
+        .any(|e| e.device_id == body.join_record.device_id && e.status == RosterStatus::Active);
+    if !joined_active {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "this device has been revoked from the hive and cannot re-pair".to_string(),
+        ));
     }
 
     Ok(Json(json!({ "roster": merged })))
@@ -110,6 +121,8 @@ pub(super) async fn hive_join(
     .with_no_client_auth();
     let pinned_client = reqwest::Client::builder()
         .use_preconfigured_tls(tls_config)
+        .connect_timeout(crate::hive::client::CONNECT_TIMEOUT)
+        .timeout(crate::hive::client::REQUEST_TIMEOUT)
         .build()
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let resp = pinned_client
@@ -141,11 +154,7 @@ pub(super) async fn hive_join(
             )
         })?;
 
-    let local_roster = store.hive_list_roster().await?;
-    let merged = crate::hive::gossip::merge_roster(local_roster, remote_roster);
-    for entry in &merged {
-        store.hive_upsert_roster_entry(entry).await?;
-    }
+    let merged = store.hive_merge_roster(remote_roster).await?;
 
     // Eager first-sync against every newly-known Active peer, rather than
     // waiting up to sync_interval_seconds for the next timer tick.
@@ -284,6 +293,7 @@ pub(super) async fn hive_status(
             "public_key": crate::hive::identity::public_key_hex(identity),
         })
     });
+    let self_device_id = hive.identity.as_ref().map(|i| i.device_id.as_str());
     let roster = store.hive_list_roster().await?;
     let mut roster_json = Vec::with_capacity(roster.len());
     for entry in &roster {
@@ -291,6 +301,9 @@ pub(super) async fn hive_status(
         roster_json.push(json!({
             "device_id": entry.device_id,
             "name": entry.name,
+            // Lets the dashboard mark this device's own roster entry and
+            // hide the Revoke action for it (the API rejects self-revoke).
+            "is_self": Some(entry.device_id.as_str()) == self_device_id,
             "status": match entry.status {
                 crate::hive::roster::RosterStatus::Active => "active",
                 crate::hive::roster::RosterStatus::Revoked => "revoked",
@@ -315,6 +328,16 @@ pub(super) async fn hive_revoke_device(
     Extension(identity): Extension<Arc<crate::hive::identity::DeviceIdentity>>,
     Path(device_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    // A self-revocation verifies against this device's own key and is
+    // sticky, so it would lock this device out of its own hive permanently
+    // with no way back from this device. The dashboard hides the action for
+    // the self entry; refuse it here too so nothing else can trip it.
+    if device_id == identity.device_id {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "a device cannot revoke itself; revoke it from another hive member".to_string(),
+        ));
+    }
     let local_roster = store.hive_list_roster().await?;
     let Some(target) = local_roster.iter().find(|e| e.device_id == device_id) else {
         return Err(ApiError(
@@ -336,10 +359,7 @@ pub(super) async fn hive_revoke_device(
     );
     let mut revoked_entry = target.clone();
     revoked_entry.revocation_record = Some(revocation);
-    let merged = crate::hive::gossip::merge_roster(local_roster, vec![revoked_entry]);
-    for entry in &merged {
-        store.hive_upsert_roster_entry(entry).await?;
-    }
+    let merged = store.hive_merge_roster(vec![revoked_entry]).await?;
 
     // `merge_roster` only actually flips the target to Revoked if the local
     // device is itself a trusted (Active, pre-merge) roster member -- a
@@ -377,8 +397,19 @@ pub(super) struct SetHiveEnabledBody {
 pub(super) async fn hive_set_enabled(
     State(store): State<Store>,
     Extension(restart_notify): Extension<Arc<tokio::sync::Notify>>,
+    Extension(sync): Extension<crate::config::SyncSettings>,
     Json(body): Json<SetHiveEnabledBody>,
 ) -> Result<Json<Value>, ApiError> {
+    // config.toml refuses `[sync] enabled` + `[hive] enabled` at load time;
+    // the DB override must not be a way around that. (`run_up` also refuses
+    // to start the hive stack in that state, so accepting this would just
+    // trigger a restart into "hive still off".)
+    if body.enabled && sync.enabled {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Hive Mode cannot be enabled while [sync] cloud sync is enabled; disable [sync] in config.toml first".to_string(),
+        ));
+    }
     store.set_hive_enabled_override(body.enabled).await?;
     // `run_up`'s tail races this Notify against its normal serve-awaits and
     // performs the same abort-listeners+re-exec sequence the TUI's detach
@@ -423,6 +454,10 @@ pub(super) enum HivePushBody {
         layer: String,
         memory_type: String,
         updated_at: i64,
+        /// Accepted for wire compatibility (peers send it alongside the
+        /// manifest hash) but never trusted: `apply_incoming_memory`
+        /// recomputes the hash from the content it actually received.
+        #[allow(dead_code)]
         hive_content_hash: String,
     },
     Tombstone {
@@ -456,7 +491,9 @@ pub(super) async fn hive_push(
             layer,
             memory_type,
             updated_at,
-            hive_content_hash,
+            // Sent by peers for symmetry with the manifest, but not trusted:
+            // `apply_incoming_memory` recomputes the hash from the content.
+            hive_content_hash: _,
         } => {
             let incoming = crate::store::MemoryEntry {
                 id,
@@ -469,20 +506,19 @@ pub(super) async fn hive_push(
                 layer,
                 memory_type,
             };
-            let outcome = store
-                .apply_incoming_memory(&incoming, &hive_content_hash, None)
-                .await?;
+            let outcome = store.apply_incoming_memory(&incoming, None).await?;
             Ok(Json(json!({ "outcome": format!("{outcome:?}") })))
         }
         HivePushBody::Tombstone {
             memory_id,
             deleted_at,
         } => {
-            if let Some(local) = store.recall_by_id(&memory_id).await?
-                && local.updated_at < deleted_at
-            {
-                store.delete(&memory_id).await?;
+            if !crate::store::hive_timestamp_is_plausible(deleted_at) {
+                return Err(implausible_timestamp("deleted_at"));
             }
+            store
+                .apply_incoming_tombstone(&memory_id, deleted_at)
+                .await?;
             Ok(Json(json!({ "outcome": "tombstone_processed" })))
         }
         HivePushBody::Settings {
@@ -490,6 +526,21 @@ pub(super) async fn hive_push(
             ping_interval_seconds,
             updated_at,
         } => {
+            if !crate::store::hive_timestamp_is_plausible(updated_at) {
+                return Err(implausible_timestamp("updated_at"));
+            }
+            if !crate::hive::interval_in_range(sync_interval_seconds)
+                || !crate::hive::interval_in_range(ping_interval_seconds)
+            {
+                return Err(ApiError(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!(
+                        "sync/ping intervals must be between {} and {} seconds",
+                        crate::hive::MIN_INTERVAL_SECONDS,
+                        crate::hive::MAX_INTERVAL_SECONDS
+                    ),
+                ));
+            }
             let current = store.hive_settings_override().await?;
             let should_apply = current
                 .map(|(_, _, cur_updated_at)| updated_at > cur_updated_at)
@@ -511,6 +562,13 @@ pub(super) async fn hive_push(
             namespaces,
             updated_at,
         } => {
+            if !crate::store::hive_timestamp_is_plausible(updated_at) {
+                return Err(implausible_timestamp("updated_at"));
+            }
+            // Same rules as the dashboard's own save: a malformed registry
+            // must not be persisted verbatim on a peer's say-so.
+            crate::api::validate_tag_namespaces(&namespaces)
+                .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
             let current_updated_at: i64 = store
                 .get_meta("tag_namespaces_updated_at")
                 .await?
@@ -529,12 +587,21 @@ pub(super) async fn hive_push(
             ))
         }
         HivePushBody::Roster { roster } => {
-            let local_roster = store.hive_list_roster().await?;
-            let merged = crate::hive::gossip::merge_roster(local_roster, roster);
-            for entry in &merged {
-                store.hive_upsert_roster_entry(entry).await?;
-            }
+            store.hive_merge_roster(roster).await?;
             Ok(Json(json!({ "outcome": "merged" })))
         }
     }
+}
+
+/// A peer-supplied last-write-wins timestamp further in the future than the
+/// clock-skew tolerance. Accepting it would let that one record win every
+/// comparison against every legitimate later write from every device.
+fn implausible_timestamp(field: &str) -> ApiError {
+    ApiError(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!(
+            "{field} is more than {}s in the future",
+            crate::store::HIVE_CLOCK_SKEW_TOLERANCE_SECONDS
+        ),
+    )
 }

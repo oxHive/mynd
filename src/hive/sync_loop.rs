@@ -40,10 +40,7 @@ async fn diff_and_apply(
         let Some(remote_entry) = remote.recall_by_id(id).await? else {
             continue;
         };
-        match local
-            .apply_incoming_memory(&remote_entry, remote_hash, None)
-            .await?
-        {
+        match local.apply_incoming_memory(&remote_entry, None).await? {
             crate::store::ApplyOutcome::Applied => summary.memories_pulled += 1,
             crate::store::ApplyOutcome::Conflicted => summary.conflicts += 1,
             crate::store::ApplyOutcome::KeptLocal => {}
@@ -51,10 +48,10 @@ async fn diff_and_apply(
     }
 
     for (id, remote_deleted_at) in &remote_manifest.tombstones {
-        if let Some(local_entry) = local.recall_by_id(id).await?
-            && local_entry.updated_at < *remote_deleted_at
+        if local
+            .apply_incoming_tombstone(id, *remote_deleted_at)
+            .await?
         {
-            local.delete(id).await?;
             summary.tombstones_applied += 1;
         }
     }
@@ -127,7 +124,7 @@ pub async fn pull_from_peer(
                 .to_string(),
         };
         match local
-            .apply_incoming_memory(&remote_entry, remote_hash, Some(source_device_id))
+            .apply_incoming_memory(&remote_entry, Some(source_device_id))
             .await?
         {
             crate::store::ApplyOutcome::Applied => summary.memories_pulled += 1,
@@ -141,11 +138,18 @@ pub async fn pull_from_peer(
         .cloned()
         .unwrap_or_default();
     for (id, deleted_at) in &remote_tombstones {
-        let deleted_at = deleted_at.as_i64().unwrap_or_default();
-        if let Some(local_entry) = local.recall_by_id(id).await?
-            && local_entry.updated_at < deleted_at
-        {
-            local.delete(id).await?;
+        let Some(deleted_at) = deleted_at.as_i64() else {
+            continue;
+        };
+        // A far-future deleted_at would block every later re-creation of
+        // this id from every device; a peer's clock can't be that far off.
+        if !crate::store::hive_timestamp_is_plausible(deleted_at) {
+            tracing::warn!(
+                "hive peer {source_device_id} advertised an implausible deleted_at for {id}; ignoring"
+            );
+            continue;
+        }
+        if local.apply_incoming_tombstone(id, deleted_at).await? {
             summary.tombstones_applied += 1;
         }
     }
@@ -153,11 +157,13 @@ pub async fn pull_from_peer(
     // Finding I3: pull the peer's hive settings override if theirs is newer.
     // The manifest already advertises a hash + updated_at for it; a full fetch
     // + last-write-wins-by-timestamp closes the gap that made this dead code.
+    // The same plausibility/range checks as the push path (`hive_push`)
+    // apply: an implausible timestamp or an out-of-range interval is skipped
+    // rather than adopted.
     let remote_settings = &manifest_json["settings"];
-    if let (Some(remote_hash), Some(remote_updated_at)) = (
-        remote_settings["hash"].as_str(),
-        remote_settings["updated_at"].as_i64(),
-    ) {
+    if let Some(remote_updated_at) = remote_settings["updated_at"].as_i64()
+        && crate::store::hive_timestamp_is_plausible(remote_updated_at)
+    {
         let local_settings_updated_at = local
             .hive_settings_override()
             .await
@@ -176,21 +182,26 @@ pub async fn pull_from_peer(
                 body["ping_interval_seconds"].as_u64(),
             )
         {
-            let _ = local
-                .set_hive_settings_override(sync_s, ping_s, remote_updated_at)
-                .await;
+            if crate::hive::interval_in_range(sync_s) && crate::hive::interval_in_range(ping_s) {
+                let _ = local
+                    .set_hive_settings_override(sync_s, ping_s, remote_updated_at)
+                    .await;
+            } else {
+                tracing::warn!(
+                    "hive peer {source_device_id} advertised out-of-range sync/ping intervals ({sync_s}s/{ping_s}s); ignoring"
+                );
+            }
         }
-        let _ = remote_hash; // only the timestamp drives whether to fetch; a
-        // full fetch + LWW-by-timestamp already happens above, so the hash
-        // isn't separately needed here.
     }
 
     // Finding I3: pull the peer's tag-namespace registry if theirs is newer.
+    // Validated with the same rules the dashboard's own save goes through --
+    // a malformed registry from a peer would otherwise be persisted verbatim
+    // and silently reset the registry to defaults on the next read.
     let remote_tag_namespaces = &manifest_json["tag_namespaces"];
-    if let (Some(_remote_hash), Some(remote_updated_at)) = (
-        remote_tag_namespaces["hash"].as_str(),
-        remote_tag_namespaces["updated_at"].as_i64(),
-    ) {
+    if let Some(remote_updated_at) = remote_tag_namespaces["updated_at"].as_i64()
+        && crate::store::hive_timestamp_is_plausible(remote_updated_at)
+    {
         let local_tag_namespaces_updated_at: i64 = local
             .get_meta("tag_namespaces_updated_at")
             .await
@@ -205,12 +216,19 @@ pub async fn pull_from_peer(
             && resp.status().is_success()
             && let Ok(body) = resp.json::<serde_json::Value>().await
         {
-            let _ = local
-                .set_meta("tag_namespaces", &body["namespaces"].to_string())
-                .await;
-            let _ = local
-                .set_meta("tag_namespaces_updated_at", &remote_updated_at.to_string())
-                .await;
+            match crate::api::validate_tag_namespaces(&body["namespaces"]) {
+                Ok(()) => {
+                    let _ = local
+                        .set_meta("tag_namespaces", &body["namespaces"].to_string())
+                        .await;
+                    let _ = local
+                        .set_meta("tag_namespaces_updated_at", &remote_updated_at.to_string())
+                        .await;
+                }
+                Err(e) => tracing::warn!(
+                    "hive peer {source_device_id} served an invalid tag-namespace registry ({e}); ignoring"
+                ),
+            }
         }
     }
 
@@ -234,7 +252,10 @@ pub async fn run_sync_loop(
             .flatten()
             .map(|(sync_s, _, _)| sync_s)
             .unwrap_or(interval_seconds_default);
-        tokio::time::sleep(Duration::from_secs(interval_seconds)).await;
+        tokio::time::sleep(Duration::from_secs(crate::hive::clamp_interval(
+            interval_seconds,
+        )))
+        .await;
         sync_once(&store, &identity).await;
     }
 }
@@ -255,6 +276,17 @@ async fn sync_once(store: &Arc<SqliteStore>, identity: &DeviceIdentity) {
         let base_url = format!("https://{address}");
         match pull_from_peer(&client, &base_url, store, &peer.device_id).await {
             Ok(summary) => {
+                // This is the only place a real sync round completes, so it
+                // is what `last_synced_at` (surfaced per peer in the
+                // dashboard) should reflect -- not the ping loop's liveness
+                // check, which never moves any data.
+                let _ = store
+                    .hive_upsert_peer_status(
+                        &peer.device_id,
+                        true,
+                        Some(crate::store::chrono_now()),
+                    )
+                    .await;
                 if summary.conflicts > 0 {
                     tracing::warn!(
                         "{} hive sync conflict(s) with {}; review in the dashboard",

@@ -266,6 +266,20 @@ pub async fn run_up(
         .hive_enabled_override()
         .await?
         .unwrap_or(settings.hive.enabled);
+    // config.toml refuses [sync] + [hive] together at load time, but the DB
+    // override is applied after that check. Don't let it become a bypass:
+    // keep hive off (loudly) rather than running both sync modes at once --
+    // and don't bail, or a stray override would turn into a restart loop.
+    let hive_enabled = if hive_enabled && settings.sync.enabled {
+        tracing::error!(
+            "Hive Mode is enabled (dashboard override) but [sync] cloud sync is also enabled; \
+             they are mutually exclusive, so Hive Mode stays OFF until [sync] is disabled"
+        );
+        false
+    } else {
+        hive_enabled
+    };
+    let (hive_sync_port, hive_pairing_port) = crate::hive::hive_ports(settings.port)?;
     // Bootstrapped up-front (rather than only inside the `hive_enabled`
     // block further down) so the REST/MCP write handlers wired into `app_router`
     // below can spawn push-on-change attempts (Plan 2 Task 11) using this same
@@ -286,7 +300,7 @@ pub async fn run_up(
             let pairing_router = api::hive_pairing_router(store.clone(), pairing_codes.clone());
             Some(Arc::new(crate::hive::pairing_window::PairingWindow::new(
                 settings.host.clone(),
-                settings.port + 2,
+                hive_pairing_port,
                 identity,
                 pairing_router,
             )))
@@ -307,7 +321,7 @@ pub async fn run_up(
         hive_identity.clone(),
         pairing_codes.clone(),
         pairing_window.clone(),
-        if hive_enabled { settings.port + 1 } else { 0 },
+        if hive_enabled { hive_sync_port } else { 0 },
         restart_notify.clone(),
     );
 
@@ -327,8 +341,8 @@ pub async fn run_up(
                  pairing window and join this device's roster, so only run Hive Mode on a \
                  network you trust",
                 settings.host,
-                settings.port + 1,
-                settings.port + 2
+                hive_sync_port,
+                hive_pairing_port
             );
         }
     }

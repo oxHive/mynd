@@ -406,9 +406,24 @@ impl SqliteStore {
     }
 
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        self.store_with_timestamp(m, chrono_now()).await
+    }
+
+    /// Like `store`, but stamps `updated_at` (and `created_at` for a brand-new
+    /// row) with `updated_at` instead of the wall clock. Used by the hive
+    /// apply path so a memory pulled from a peer keeps the *peer's* timestamp:
+    /// last-write-wins only converges across the hive if every device compares
+    /// the same timestamp for the same version of a memory. Stamping `now`
+    /// instead made the pulled copy look newer than the original, so an edit
+    /// the origin made in between was permanently judged "older" and lost.
+    pub(crate) async fn store_with_timestamp(
+        &self,
+        m: &NewMemoryRow<'_>,
+        updated_at: i64,
+    ) -> Result<()> {
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
-        let now = chrono_now();
+        let now = updated_at;
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
@@ -444,6 +459,16 @@ impl SqliteStore {
             )
             .await?;
         }
+
+        // A (re)written memory is alive again: drop any tombstone for its id
+        // so the manifest doesn't advertise both a live row and a deletion,
+        // and so `apply_incoming_memory`'s no-resurrect check doesn't keep
+        // blocking newer versions of it from peers.
+        tx.execute(
+            "DELETE FROM hive_tombstones WHERE memory_id = ?1",
+            params![m.id],
+        )
+        .await?;
 
         sync_relationship_edges(&tx, m.id, m.content, now).await?;
 
@@ -1453,8 +1478,30 @@ impl SqliteStore {
     }
 
     pub async fn hive_list_roster(&self) -> Result<Vec<RosterEntry>> {
-        let mut rows = self
-            .conn
+        Self::list_roster_on(&self.conn).await
+    }
+
+    /// Merges a gossiped roster into the persisted one as a single
+    /// read-merge-write transaction and returns the merged result. Every
+    /// caller that used to do `hive_list_roster` → `merge_roster` → N ×
+    /// `hive_upsert_roster_entry` had a window between the read and the
+    /// writes in which a concurrent revoke (the dashboard's revoke handler
+    /// racing the ping loop's gossip refresh) could land and then be
+    /// overwritten by the stale Active snapshot -- silently un-revoking the
+    /// device. Doing all three steps inside one transaction closes that.
+    pub async fn hive_merge_roster(&self, incoming: Vec<RosterEntry>) -> Result<Vec<RosterEntry>> {
+        let tx = self.conn.transaction().await?;
+        let local = Self::list_roster_on(&tx).await?;
+        let merged = crate::hive::gossip::merge_roster(local, incoming);
+        for entry in &merged {
+            Self::upsert_roster_entry_on(&tx, entry).await?;
+        }
+        tx.commit().await?;
+        Ok(merged)
+    }
+
+    async fn list_roster_on(conn: &Connection) -> Result<Vec<RosterEntry>> {
+        let mut rows = conn
             .query(
                 "SELECT device_id, public_key, name, status, joined_at, revoked_at, revoked_by, \
                  join_record, revocation_record FROM hive_devices",
@@ -1488,6 +1535,10 @@ impl SqliteStore {
     }
 
     pub async fn hive_upsert_roster_entry(&self, entry: &RosterEntry) -> Result<()> {
+        Self::upsert_roster_entry_on(&self.conn, entry).await
+    }
+
+    async fn upsert_roster_entry_on(conn: &Connection, entry: &RosterEntry) -> Result<()> {
         let status_str = match entry.status {
             RosterStatus::Active => "active",
             RosterStatus::Revoked => "revoked",
@@ -1498,7 +1549,7 @@ impl SqliteStore {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
-        self.conn
+        conn
             .execute(
                 "INSERT INTO hive_devices \
                  (device_id, public_key, name, status, joined_at, revoked_at, revoked_by, join_record, revocation_record) \
@@ -1787,27 +1838,108 @@ pub enum ApplyOutcome {
     Conflicted,
 }
 
-const HIVE_CLOCK_SKEW_TOLERANCE_SECONDS: i64 = 300;
+pub(crate) const HIVE_CLOCK_SKEW_TOLERANCE_SECONDS: i64 = 300;
+
+/// Whether a peer-supplied timestamp is plausible: not further in the future
+/// than the clock-skew tolerance. A far-future `updated_at`/`deleted_at` on
+/// anything last-write-wins (settings, tag namespaces, tombstones) would
+/// otherwise win every comparison forever, wedging that record against all
+/// legitimate later edits from every device in the hive.
+pub(crate) fn hive_timestamp_is_plausible(ts: i64) -> bool {
+    ts <= chrono_now() + HIVE_CLOCK_SKEW_TOLERANCE_SECONDS
+}
 
 impl SqliteStore {
+    /// The recorded deletion time for `id`, if this device (or a peer whose
+    /// tombstone was merged in) has deleted it.
+    pub async fn hive_tombstone_for(&self, id: &str) -> Result<Option<i64>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT deleted_at FROM hive_tombstones WHERE memory_id = ?1",
+                params![id],
+            )
+            .await?;
+        Ok(match rows.next().await? {
+            Some(row) => Some(row.get(0)?),
+            None => None,
+        })
+    }
+
+    /// Applies a peer's tombstone. The local copy is deleted only if it is
+    /// strictly older than the deletion (an edit or re-creation made after
+    /// the delete wins). Whether or not a row existed, the tombstone is
+    /// recorded locally at the peer's `deleted_at` (keeping the later of the
+    /// two if one already exists) -- so this device won't resurrect the
+    /// memory from a third peer that hasn't caught up yet, and re-advertises
+    /// the deletion with its real time rather than "when I heard about it".
+    /// Returns whether a local row was actually deleted.
+    pub async fn apply_incoming_tombstone(&self, id: &str, deleted_at: i64) -> Result<bool> {
+        if let Some(local) = self.recall_by_id(id).await?
+            && local.updated_at >= deleted_at
+        {
+            return Ok(false);
+        }
+        let tx = self.conn.transaction().await?;
+        let changed = tx
+            .execute("DELETE FROM memories WHERE id = ?1", params![id])
+            .await?;
+        tx.execute(
+            "INSERT INTO hive_tombstones (memory_id, deleted_at) VALUES (?1, ?2)
+             ON CONFLICT(memory_id) DO UPDATE SET
+               deleted_at = MAX(hive_tombstones.deleted_at, excluded.deleted_at)",
+            params![id, deleted_at],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(changed > 0)
+    }
+
+    /// Applies a memory received from a peer (push or pull) under
+    /// last-write-wins with a conflict row for ties and implausible clocks.
+    /// The content hash is recomputed here from the incoming fields rather
+    /// than trusted from the peer's manifest/push body: a peer whose
+    /// advertised hash didn't match its content would otherwise be
+    /// re-fetched and re-applied on every single sync round.
     pub async fn apply_incoming_memory(
         &self,
         incoming: &MemoryEntry,
-        incoming_hash: &str,
         source_device_id: Option<&str>,
     ) -> Result<ApplyOutcome> {
+        // A memory already deleted here (or deleted on a peer whose
+        // tombstone was merged in) must not come back just because some
+        // other peer hasn't processed the deletion yet: the tombstone wins
+        // unless the incoming version is strictly newer than the deletion.
+        if let Some(deleted_at) = self.hive_tombstone_for(&incoming.id).await?
+            && incoming.updated_at <= deleted_at
+        {
+            return Ok(ApplyOutcome::KeptLocal);
+        }
+
+        let now = chrono_now();
         let Some(local) = self.recall_by_id(&incoming.id).await? else {
             // Not present locally at all -- no conflict is possible, this is
-            // a plain new-to-us memory. Apply directly.
-            self.store(&NewMemoryRow {
-                id: &incoming.id,
-                title: &incoming.title,
-                content: &incoming.content,
-                tags: &incoming.tags,
-                token_count: incoming.token_count,
-                layer: &incoming.layer,
-                memory_type: &incoming.memory_type,
-            })
+            // a plain new-to-us memory. Apply directly, keeping the peer's
+            // timestamp (clamped to "now" if the peer's clock is implausibly
+            // ahead, so a bad clock can't mint a version nobody can ever
+            // overwrite).
+            let updated_at = if incoming.updated_at > now + HIVE_CLOCK_SKEW_TOLERANCE_SECONDS {
+                now
+            } else {
+                incoming.updated_at
+            };
+            self.store_with_timestamp(
+                &NewMemoryRow {
+                    id: &incoming.id,
+                    title: &incoming.title,
+                    content: &incoming.content,
+                    tags: &incoming.tags,
+                    token_count: incoming.token_count,
+                    layer: &incoming.layer,
+                    memory_type: &incoming.memory_type,
+                },
+                updated_at,
+            )
             .await?;
             return Ok(ApplyOutcome::Applied);
         };
@@ -1819,11 +1951,17 @@ impl SqliteStore {
             &local.layer,
             &local.memory_type,
         );
+        let incoming_hash = compute_hive_content_hash(
+            &incoming.title,
+            &incoming.content,
+            &incoming.tags,
+            &incoming.layer,
+            &incoming.memory_type,
+        );
         if local_hash == incoming_hash {
             return Ok(ApplyOutcome::KeptLocal); // identical, nothing to do
         }
 
-        let now = chrono_now();
         if incoming.updated_at > now + HIVE_CLOCK_SKEW_TOLERANCE_SECONDS {
             self.write_conflict(
                 &incoming.id,
@@ -1838,15 +1976,18 @@ impl SqliteStore {
         }
 
         if incoming.updated_at > local.updated_at {
-            self.store(&NewMemoryRow {
-                id: &incoming.id,
-                title: &incoming.title,
-                content: &incoming.content,
-                tags: &incoming.tags,
-                token_count: incoming.token_count,
-                layer: &incoming.layer,
-                memory_type: &incoming.memory_type,
-            })
+            self.store_with_timestamp(
+                &NewMemoryRow {
+                    id: &incoming.id,
+                    title: &incoming.title,
+                    content: &incoming.content,
+                    tags: &incoming.tags,
+                    token_count: incoming.token_count,
+                    layer: &incoming.layer,
+                    memory_type: &incoming.memory_type,
+                },
+                incoming.updated_at,
+            )
             .await?;
             Ok(ApplyOutcome::Applied)
         } else if incoming.updated_at < local.updated_at {

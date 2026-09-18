@@ -165,7 +165,6 @@ pub async fn spawn_hive_stack(
         &identity.device_id,
         chrono::Utc::now().timestamp(),
     );
-    let local_roster = store.hive_list_roster().await?;
     let self_entry = crate::hive::roster::RosterEntry {
         device_id: self_join.device_id.clone(),
         public_key: self_join.public_key.clone(),
@@ -177,11 +176,9 @@ pub async fn spawn_hive_stack(
         join_record: self_join,
         revocation_record: None,
     };
-    let merged = crate::hive::gossip::merge_roster(local_roster, vec![self_entry]);
-    for entry in &merged {
-        store.hive_upsert_roster_entry(entry).await?;
-    }
+    store.hive_merge_roster(vec![self_entry]).await?;
 
+    let (sync_port, _) = crate::hive::hive_ports(port)?;
     let certified = crate::hive::cert::self_signed_cert(&identity)?;
     let build_sync_server_config = {
         let certified_cert_der = certified.cert.der().clone();
@@ -209,7 +206,7 @@ pub async fn spawn_hive_stack(
         axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(sync_server_config));
     let sync_tls_config_for_reload = sync_tls_config.clone();
     let sync_only_app = crate::api::hive_sync_router(store.clone());
-    let sync_addr: std::net::SocketAddr = format!("{host}:{}", port + 1).parse()?;
+    let sync_addr: std::net::SocketAddr = format!("{host}:{sync_port}").parse()?;
     let sync_listener = tokio::spawn(async move {
         if let Err(e) = axum_server::bind_rustls(sync_addr, sync_tls_config)
             .serve(sync_only_app.into_make_service())
@@ -218,10 +215,10 @@ pub async fn spawn_hive_stack(
             tracing::error!("hive sync TLS listener failed to bind/serve: {e:#}");
         }
     });
-    tracing::info!("Hive sync (mTLS): https://{host}:{}", port + 1);
+    tracing::info!("Hive sync (mTLS): https://{host}:{sync_port}");
 
     let discovery = crate::hive::discovery::HiveDiscovery::new()?;
-    discovery.advertise(&identity.device_id, &identity.device_id, port + 1)?;
+    discovery.advertise(&identity.device_id, &identity.device_id, sync_port)?;
     tracing::info!("Hive mDNS: advertising as {}", identity.device_id);
     let discovery_for_browse = discovery.clone();
     let discovery_browse = tokio::spawn(async move {
@@ -232,9 +229,20 @@ pub async fn spawn_hive_stack(
                         tracing::info!("hive peer discovered: {}", info.get_fullname());
                         let fullname = info.get_fullname();
                         if let Some(device_id) = fullname.strip_suffix("._hivemind._tcp.local.") {
-                            let addresses = info.get_addresses();
-                            if let Some(addr) = addresses.iter().next() {
-                                let hive_addr = format!("{addr}:{}", info.get_port());
+                            // Prefer an IPv4 address; fall back to the first
+                            // IPv6 one, bracketed so it forms a valid URL
+                            // authority (a bare `fe80::1:3457` never parses).
+                            let ip = info
+                                .get_addresses_v4()
+                                .into_iter()
+                                .next()
+                                .map(|v4| v4.to_string())
+                                .or_else(|| {
+                                    info.get_addresses().iter().next().map(|a| a.to_string())
+                                });
+                            if let Some(ip) = ip {
+                                let hive_addr =
+                                    crate::hive::format_peer_authority(&ip, info.get_port());
                                 crate::hive::peer_status::record_discovered_address(
                                     device_id, hive_addr,
                                 );

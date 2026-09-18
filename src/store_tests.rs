@@ -1746,17 +1746,7 @@ async fn apply_incoming_memory_applies_when_remote_is_newer() {
     incoming.title = "new".to_string();
     incoming.content = "new content".to_string();
     incoming.updated_at += 100;
-    let hash = crate::store::compute_hive_content_hash(
-        &incoming.title,
-        &incoming.content,
-        &incoming.tags,
-        &incoming.layer,
-        &incoming.memory_type,
-    );
-    let outcome = store
-        .apply_incoming_memory(&incoming, &hash, None)
-        .await
-        .unwrap();
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
     assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
     let after = store
         .recall_by_id("mem_applytest0000000000000000001")
@@ -1789,17 +1779,7 @@ async fn apply_incoming_memory_keeps_local_when_local_is_newer() {
     let mut incoming = local.clone();
     incoming.title = "stale remote".to_string();
     incoming.updated_at -= 100;
-    let hash = crate::store::compute_hive_content_hash(
-        &incoming.title,
-        &incoming.content,
-        &incoming.tags,
-        &incoming.layer,
-        &incoming.memory_type,
-    );
-    let outcome = store
-        .apply_incoming_memory(&incoming, &hash, None)
-        .await
-        .unwrap();
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
     assert!(matches!(outcome, crate::store::ApplyOutcome::KeptLocal));
     let after = store
         .recall_by_id("mem_applytest0000000000000000002")
@@ -1832,17 +1812,7 @@ async fn apply_incoming_memory_conflicts_on_equal_timestamps() {
     let mut incoming = local.clone();
     incoming.title = "conflicting remote".to_string();
     // same updated_at as local -- ambiguous, must conflict rather than pick a winner
-    let hash = crate::store::compute_hive_content_hash(
-        &incoming.title,
-        &incoming.content,
-        &incoming.tags,
-        &incoming.layer,
-        &incoming.memory_type,
-    );
-    let outcome = store
-        .apply_incoming_memory(&incoming, &hash, None)
-        .await
-        .unwrap();
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
     assert!(matches!(outcome, crate::store::ApplyOutcome::Conflicted));
     assert_eq!(store.pending_conflict_count().await.unwrap(), 1);
 }
@@ -1870,17 +1840,7 @@ async fn apply_incoming_memory_conflicts_on_implausible_future_skew() {
     let mut incoming = local.clone();
     incoming.title = "clock-skewed remote".to_string();
     incoming.updated_at = crate::store::chrono_now() + 301; // just past the 300s skew threshold
-    let hash = crate::store::compute_hive_content_hash(
-        &incoming.title,
-        &incoming.content,
-        &incoming.tags,
-        &incoming.layer,
-        &incoming.memory_type,
-    );
-    let outcome = store
-        .apply_incoming_memory(&incoming, &hash, None)
-        .await
-        .unwrap();
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
     assert!(matches!(outcome, crate::store::ApplyOutcome::Conflicted));
 }
 
@@ -1976,4 +1936,245 @@ async fn hive_push_payload_for_includes_current_hash() {
         .unwrap();
     assert_eq!(payload["kind"], "memory");
     assert!(!payload["hive_content_hash"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_preserves_the_remote_timestamp() {
+    // LWW only converges if every device compares the same timestamp for
+    // the same version; stamping "now" on a pulled copy made it look newer
+    // than the origin, so the origin's next edit could be judged stale.
+    let (store, _dir) = make_store().await;
+    let remote_ts = crate::store::chrono_now() - 1000;
+    let incoming = crate::store::MemoryEntry {
+        id: "mem_tsapply00000000000000000001".to_string(),
+        title: "from peer".to_string(),
+        content: "c".to_string(),
+        tags: vec![],
+        created_at: remote_ts,
+        updated_at: remote_ts,
+        token_count: None,
+        layer: "workspace".to_string(),
+        memory_type: "project".to_string(),
+    };
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
+    let stored = store
+        .recall_by_id("mem_tsapply00000000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.updated_at, remote_ts);
+    assert_eq!(stored.created_at, remote_ts);
+
+    // Overwriting an existing, older local copy keeps the remote timestamp too.
+    let mut newer = incoming.clone();
+    newer.title = "edited on peer".to_string();
+    newer.updated_at = remote_ts + 10;
+    let outcome = store.apply_incoming_memory(&newer, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
+    let stored = store
+        .recall_by_id("mem_tsapply00000000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.updated_at, remote_ts + 10);
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_does_not_resurrect_a_tombstoned_memory() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_noresurrect0000000000000001",
+            title: "t",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let original = store
+        .recall_by_id("mem_noresurrect0000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .delete("mem_noresurrect0000000000000001")
+            .await
+            .unwrap()
+    );
+    let deleted_at = store
+        .hive_tombstone_for("mem_noresurrect0000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // A peer that hasn't processed the tombstone still advertises the old
+    // version: it must stay deleted here.
+    let stale = crate::store::MemoryEntry {
+        updated_at: original.updated_at.min(deleted_at),
+        ..original.clone()
+    };
+    let outcome = store.apply_incoming_memory(&stale, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::KeptLocal));
+    assert!(
+        store
+            .recall_by_id("mem_noresurrect0000000000000001")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A genuinely newer version (edited after the deletion) does come back,
+    // and clears the tombstone so it isn't advertised alongside a live row.
+    let revived = crate::store::MemoryEntry {
+        title: "recreated".to_string(),
+        updated_at: deleted_at + 1,
+        ..original
+    };
+    let outcome = store.apply_incoming_memory(&revived, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
+    assert!(
+        store
+            .hive_tombstone_for("mem_noresurrect0000000000000001")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn apply_incoming_tombstone_records_deletion_and_respects_newer_local_edit() {
+    let (store, _dir) = make_store().await;
+    // Unknown id: nothing to delete, but the tombstone is recorded at the
+    // peer's time so a third peer's stale copy can't resurrect it later.
+    assert!(
+        !store
+            .apply_incoming_tombstone("mem_tombrec00000000000000000001", 5000)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .hive_tombstone_for("mem_tombrec00000000000000000001")
+            .await
+            .unwrap(),
+        Some(5000)
+    );
+    // A later deletion time wins; an earlier one doesn't regress it.
+    store
+        .apply_incoming_tombstone("mem_tombrec00000000000000000001", 6000)
+        .await
+        .unwrap();
+    store
+        .apply_incoming_tombstone("mem_tombrec00000000000000000001", 4000)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .hive_tombstone_for("mem_tombrec00000000000000000001")
+            .await
+            .unwrap(),
+        Some(6000)
+    );
+
+    // A local copy edited at or after the deletion time survives it.
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_tombrec00000000000000000002",
+            title: "edited later",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let local = store
+        .recall_by_id("mem_tombrec00000000000000000002")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !store
+            .apply_incoming_tombstone("mem_tombrec00000000000000000002", local.updated_at - 1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .recall_by_id("mem_tombrec00000000000000000002")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .hive_tombstone_for("mem_tombrec00000000000000000002")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn hive_merge_roster_persists_merge_and_keeps_revocations_sticky() {
+    let (store, _dir) = make_store().await;
+    let a = crate::hive::identity::generate();
+    let b = crate::hive::identity::generate();
+    let entry_for = |who: &crate::hive::identity::DeviceIdentity, name: &str| {
+        crate::hive::roster::RosterEntry {
+            device_id: who.device_id.clone(),
+            public_key: crate::hive::identity::public_key_hex(who),
+            name: name.to_string(),
+            status: crate::hive::roster::RosterStatus::Active,
+            joined_at: 1000,
+            revoked_at: None,
+            revoked_by: None,
+            join_record: crate::hive::roster::create_join_record(who, name, 1000),
+            revocation_record: None,
+        }
+    };
+
+    let merged = store
+        .hive_merge_roster(vec![entry_for(&a, "a"), entry_for(&b, "b")])
+        .await
+        .unwrap();
+    assert_eq!(merged.len(), 2);
+    assert_eq!(store.hive_list_roster().await.unwrap().len(), 2);
+
+    // A revokes B; the merged result is what's persisted.
+    let mut b_revoked = entry_for(&b, "b");
+    b_revoked.revocation_record = Some(crate::hive::roster::create_revocation_record(
+        &a,
+        &b.device_id,
+        2000,
+    ));
+    store.hive_merge_roster(vec![b_revoked]).await.unwrap();
+    let b_row = store
+        .hive_list_roster()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.device_id == b.device_id)
+        .unwrap();
+    assert_eq!(b_row.status, crate::hive::roster::RosterStatus::Revoked);
+
+    // A later gossip of B's plain Active entry must not un-revoke it.
+    store
+        .hive_merge_roster(vec![entry_for(&b, "b")])
+        .await
+        .unwrap();
+    let b_row = store
+        .hive_list_roster()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.device_id == b.device_id)
+        .unwrap();
+    assert_eq!(b_row.status, crate::hive::roster::RosterStatus::Revoked);
 }
