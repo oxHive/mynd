@@ -51,7 +51,7 @@ pub enum Command {
         #[command(subcommand)]
         action: MatrixAction,
     },
-    /// Discord chat interface: capture/recall HiveMind memories from a channel or DM
+    /// Discord chat interface: capture/recall Mynd memories from a channel or DM
     Discord {
         #[command(subcommand)]
         action: DiscordAction,
@@ -63,6 +63,63 @@ pub enum Command {
         /// Emit machine-readable JSON instead of tagged text
         #[arg(long)]
         json: bool,
+    },
+    /// Manage memories (list, search, create, edit, delete, tag)
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+    /// Manage the memory relationship graph (edges between memories)
+    Edge {
+        #[command(subcommand)]
+        action: EdgeAction,
+    },
+    /// Review and triage flagged-memory feedback
+    Feedback {
+        #[command(subcommand)]
+        action: FeedbackAction,
+    },
+    /// Review and resolve sync conflicts
+    Conflict {
+        #[command(subcommand)]
+        action: ConflictAction,
+    },
+    /// Manage the tag namespace registry (colors, values, descriptions)
+    Tags {
+        #[command(subcommand)]
+        action: TagsAction,
+    },
+    /// Manage the max-content-tokens guardrail
+    Limits {
+        #[command(subcommand)]
+        action: LimitsAction,
+    },
+    /// Export/import memories, or wipe all local data
+    Data {
+        #[command(subcommand)]
+        action: DataAction,
+    },
+    /// AI-assisted graph suggestions (requires `mynd up` to be running)
+    Suggest {
+        #[command(subcommand)]
+        action: SuggestAction,
+    },
+    /// Check for and apply Mynd updates
+    Update {
+        #[command(subcommand)]
+        action: UpdateAction,
+    },
+    /// Show analytics: tag/type/project counts, activity by day, and recall session logs
+    Analytics {
+        /// Emit machine-readable JSON instead of a text summary
+        #[arg(long)]
+        json: bool,
+        /// How many days of activity-by-day history to include
+        #[arg(long, default_value_t = 90)]
+        days: i64,
+        /// How many recent recall sessions to show
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
     },
 }
 
@@ -137,18 +194,37 @@ pub enum McpAction {
     },
 }
 
+mod analytics;
+pub(crate) mod common;
+mod data;
 mod discord_cmds;
+mod edge;
+mod feedback;
 mod init;
+mod limits;
 mod matrix_cmds;
 mod mcp_install;
+mod memory;
+mod self_update;
 mod service;
 mod status;
+mod suggest;
+mod tags;
 #[cfg(test)]
 mod tests;
 
+pub use analytics::*;
+pub use data::*;
 pub use discord_cmds::*;
+pub use edge::*;
+pub use feedback::*;
 pub use init::*;
+pub use limits::*;
 pub use matrix_cmds::*;
 pub use mcp_install::*;
+pub use memory::*;
+pub use self_update::*;
 pub use service::*;
 pub use status::*;
+pub use suggest::*;
+pub use tags::*;

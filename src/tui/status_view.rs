@@ -439,8 +439,7 @@ mod tests {
         data.sync_enabled = true;
         data.sync_remote_url = "https://sync.example.com".to_string();
         let content = render(&data, None, None);
-        assert!(content.contains("enabled"));
-        assert!(content.contains("https://sync.example.com"));
+        assert!(content.contains("enabled -> https://sync.example.com"));
     }
 
     #[test]
@@ -464,6 +463,29 @@ mod tests {
         let data = sample_data();
         let content = render(&data, None, None);
         assert!(content.contains("none registered"));
+    }
+
+    #[test]
+    fn draw_shows_not_running_and_missing_project_notice() {
+        let mut data = sample_data();
+        data.server_up = false;
+        data.registered_clients = vec!["claude".to_string()];
+        let content = render(&data, None, None);
+        assert!(content.contains("not running"));
+        assert!(!content.contains("none registered")); // has one client
+        assert!(content.contains("No .mynd.toml found in this directory tree."));
+        assert!(content.contains("q quit"));
+        assert!(!content.contains("k kill server"));
+    }
+
+    #[test]
+    fn draw_shows_running_server_and_kill_hint() {
+        let mut data = sample_data();
+        data.server_up = true;
+        data.registered_clients = vec![];
+        let content = render(&data, None, None);
+        assert!(content.contains("running at http://127.0.0.1:3456"));
+        assert!(content.contains("k kill server"));
     }
 
     #[test]
@@ -495,6 +517,25 @@ mod tests {
         let content = render(&data, None, None);
         assert!(content.contains("@bot:matrix.org"));
         assert!(content.contains("synced"));
+        assert!(content.contains("3 room(s)"));
+        assert!(content.contains("1 active session(s)"));
+    }
+
+    #[test]
+    fn draw_shows_matrix_not_running_and_running_states() {
+        let mut data = sample_data();
+        data.matrix = MatrixStatusLine::NotRunning;
+        let content = render(&data, None, None);
+        assert!(content.contains("Matrix     configured, not running"));
+
+        data.matrix = MatrixStatusLine::Running {
+            user_id: "@bot:example.com".to_string(),
+            sync_state: "synced".to_string(),
+            room_count: 3,
+            active_sessions: 1,
+        };
+        let content = render(&data, None, None);
+        assert!(content.contains("@bot:example.com"));
         assert!(content.contains("3 room(s)"));
         assert!(content.contains("1 active session(s)"));
     }
@@ -571,6 +612,14 @@ mod tests {
     }
 
     #[test]
+    fn draw_prioritizes_error_notice_over_message() {
+        let data = sample_data();
+        let content = render(&data, Some("boom"), Some("all good"));
+        assert!(content.contains("refresh failed: boom"));
+        assert!(!content.contains("all good"));
+    }
+
+    #[test]
     fn draw_shows_kill_shortcut_when_server_up() {
         let data = sample_data();
         let content = render(&data, None, None);
@@ -606,5 +655,14 @@ mod tests {
                 cell.symbol()
             );
         }
+    }
+
+    #[test]
+    fn draw_widens_box_for_long_storage_path() {
+        let mut data = sample_data();
+        data.db_path =
+            "/a/very/long/path/that/should/widen/the/overview/box/memories.db".to_string();
+        let content = render(&data, None, None);
+        assert!(content.contains(&data.db_path));
     }
 }

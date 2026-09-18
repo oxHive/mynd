@@ -554,6 +554,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bind_with_retry_binds_an_ephemeral_port() {
+        let listener = bind_with_retry("127.0.0.1", 0).await.unwrap();
+        assert!(listener.local_addr().unwrap().port() > 0);
+    }
+
+    #[test]
+    fn write_pidfile_writes_pid_and_guard_removes_it_on_drop() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+        }
+        let path = crate::db::up_pidfile_path();
+        let guard = write_pidfile().unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, std::process::id().to_string());
+        drop(guard);
+        assert!(!path.exists(), "PidGuard's Drop must remove the pidfile");
+        // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+        unsafe {
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+    }
+
+    #[tokio::test]
     async fn dashboard_router_serves_html_and_config_js() {
         let dash = dashboard_router("http://127.0.0.1:3456");
         let resp = dash

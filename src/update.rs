@@ -206,7 +206,7 @@ pub async fn run_update(state: SharedUpdateState, events: Events) {
     }
 }
 
-async fn do_update() -> Result<()> {
+pub(crate) async fn do_update() -> Result<()> {
     // Resolved before run_binstall(), not after: cargo-binstall replaces this
     // binary's path via an atomic rename, which unlinks the running
     // process's original inode. Post-replace, /proc/self/exe (what
@@ -220,7 +220,7 @@ async fn do_update() -> Result<()> {
     restart(&exe)
 }
 
-async fn ensure_binstall_available() -> Result<()> {
+pub(crate) async fn ensure_binstall_available() -> Result<()> {
     let ok = tokio::process::Command::new("cargo")
         .args(["binstall", "-V"])
         .output()
@@ -236,7 +236,7 @@ async fn ensure_binstall_available() -> Result<()> {
     Ok(())
 }
 
-async fn run_binstall() -> Result<()> {
+pub(crate) async fn run_binstall() -> Result<()> {
     let output = tokio::process::Command::new("cargo")
         .args(["binstall", "oxmynd", "--no-confirm", "--force"])
         .kill_on_drop(true)

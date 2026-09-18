@@ -43,6 +43,16 @@ fn main() -> Result<()> {
         },
         Some(Command::Migrate) => cli::cmd_migrate(),
         Some(Command::SessionStart { json }) => cli::cmd_session_start(json),
+        Some(Command::Memory { action }) => cli::cmd_memory(action),
+        Some(Command::Edge { action }) => cli::cmd_edge(action),
+        Some(Command::Feedback { action }) => cli::cmd_feedback(action),
+        Some(Command::Conflict { action }) => cli::cmd_conflict(action),
+        Some(Command::Tags { action }) => cli::cmd_tags(action),
+        Some(Command::Limits { action }) => cli::cmd_limits(action),
+        Some(Command::Data { action }) => cli::cmd_data(action),
+        Some(Command::Suggest { action }) => cli::cmd_suggest(action),
+        Some(Command::Update { action }) => cli::cmd_update(action),
+        Some(Command::Analytics { json, days, limit }) => cli::cmd_analytics(json, days, limit),
     }
 }
 

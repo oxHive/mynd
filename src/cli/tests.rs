@@ -1,6 +1,8 @@
+use super::common;
 use super::*;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 #[test]
 fn status_plain_flag_parses() {
@@ -1293,4 +1295,1211 @@ fn global_config_template_parses_with_org_sync_disabled_by_default() {
         crate::cli::init::GLOBAL_CONFIG.contains("[org_sync]"),
         "template should document the org_sync block, even commented out"
     );
+}
+
+// ── dashboard-parity command parsing ─────────────────────────────────────
+
+#[test]
+fn parses_memory_list_with_tag_and_json() {
+    let cli = Cli::parse_from(["mynd", "memory", "list", "--tag", "tag:topic:x", "--json"]);
+    match cli.command {
+        Some(Command::Memory {
+            action: MemoryAction::List { tag, json, .. },
+        }) => {
+            assert_eq!(tag.as_deref(), Some("tag:topic:x"));
+            assert!(json);
+        }
+        _ => panic!("expected Memory List command"),
+    }
+}
+
+#[test]
+fn parses_memory_add_with_repeated_tags() {
+    let cli = Cli::parse_from([
+        "mynd",
+        "memory",
+        "add",
+        "--title",
+        "T",
+        "--content",
+        "C",
+        "--tag",
+        "a",
+        "--tag",
+        "b",
+    ]);
+    match cli.command {
+        Some(Command::Memory {
+            action:
+                MemoryAction::Add {
+                    title,
+                    content,
+                    tags,
+                    ..
+                },
+        }) => {
+            assert_eq!(title, "T");
+            assert_eq!(content, "C");
+            assert_eq!(tags, vec!["a".to_string(), "b".to_string()]);
+        }
+        _ => panic!("expected Memory Add command"),
+    }
+}
+
+#[test]
+fn parses_memory_edit_without_tags_leaves_none() {
+    let cli = Cli::parse_from(["mynd", "memory", "edit", "mem_x", "--title", "New"]);
+    match cli.command {
+        Some(Command::Memory {
+            action: MemoryAction::Edit {
+                id, title, tags, ..
+            },
+        }) => {
+            assert_eq!(id, "mem_x");
+            assert_eq!(title.as_deref(), Some("New"));
+            assert!(tags.is_none());
+        }
+        _ => panic!("expected Memory Edit command"),
+    }
+}
+
+#[test]
+fn parses_edge_add_subcommand() {
+    let cli = Cli::parse_from(["mynd", "edge", "add", "mem_a", "mem_b", "sibling"]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Edge {
+            action: EdgeAction::Add { .. }
+        })
+    ));
+}
+
+#[test]
+fn parses_edge_approve_subcommand() {
+    let cli = Cli::parse_from(["mynd", "edge", "approve", "edge_x"]);
+    match cli.command {
+        Some(Command::Edge {
+            action: EdgeAction::Approve { id },
+        }) => assert_eq!(id, "edge_x"),
+        _ => panic!("expected Edge Approve command"),
+    }
+}
+
+#[test]
+fn parses_feedback_add_subcommand() {
+    let cli = Cli::parse_from(["mynd", "feedback", "add", "mem_x", "outdated"]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Feedback {
+            action: FeedbackAction::Add { .. }
+        })
+    ));
+}
+
+#[test]
+fn parses_conflict_resolve_subcommand() {
+    let cli = Cli::parse_from(["mynd", "conflict", "resolve", "conflict_x", "keep-local"]);
+    match cli.command {
+        Some(Command::Conflict {
+            action: ConflictAction::Resolve { id, resolution },
+        }) => {
+            assert_eq!(id, "conflict_x");
+            assert_eq!(resolution, "keep-local");
+        }
+        _ => panic!("expected Conflict Resolve command"),
+    }
+}
+
+#[test]
+fn parses_tags_add_subcommand_with_defaults() {
+    let cli = Cli::parse_from(["mynd", "tags", "add", "myns"]);
+    match cli.command {
+        Some(Command::Tags {
+            action:
+                TagsAction::Add {
+                    name,
+                    color,
+                    values_mode,
+                    single_value,
+                    ..
+                },
+        }) => {
+            assert_eq!(name, "myns");
+            assert_eq!(color, "#4a9eff");
+            assert_eq!(values_mode, "suggestion");
+            assert!(!single_value);
+        }
+        _ => panic!("expected Tags Add command"),
+    }
+}
+
+#[test]
+fn parses_limits_set_subcommand() {
+    let cli = Cli::parse_from(["mynd", "limits", "set", "2000"]);
+    match cli.command {
+        Some(Command::Limits {
+            action: LimitsAction::Set { tokens },
+        }) => assert_eq!(tokens, 2000),
+        _ => panic!("expected Limits Set command"),
+    }
+}
+
+#[test]
+fn parses_data_wipe_with_yes_flag() {
+    let cli = Cli::parse_from(["mynd", "data", "wipe", "--yes"]);
+    match cli.command {
+        Some(Command::Data {
+            action: DataAction::Wipe { yes },
+        }) => assert!(yes),
+        _ => panic!("expected Data Wipe command"),
+    }
+}
+
+#[test]
+fn parses_suggest_revise_subcommand() {
+    let cli = Cli::parse_from(["mynd", "suggest", "revise", "edge_x", "make it a parent"]);
+    match cli.command {
+        Some(Command::Suggest {
+            action: SuggestAction::Revise { edge_id, feedback },
+        }) => {
+            assert_eq!(edge_id, "edge_x");
+            assert_eq!(feedback, "make it a parent");
+        }
+        _ => panic!("expected Suggest Revise command"),
+    }
+}
+
+#[test]
+fn parses_analytics_with_defaults() {
+    let cli = Cli::parse_from(["mynd", "analytics"]);
+    match cli.command {
+        Some(Command::Analytics { json, days, limit }) => {
+            assert!(!json);
+            assert_eq!(days, 90);
+            assert_eq!(limit, 50);
+        }
+        _ => panic!("expected Analytics command"),
+    }
+}
+
+#[test]
+fn parses_analytics_with_overrides() {
+    let cli = Cli::parse_from([
+        "mynd",
+        "analytics",
+        "--json",
+        "--days",
+        "30",
+        "--limit",
+        "10",
+    ]);
+    match cli.command {
+        Some(Command::Analytics { json, days, limit }) => {
+            assert!(json);
+            assert_eq!(days, 30);
+            assert_eq!(limit, 10);
+        }
+        _ => panic!("expected Analytics command"),
+    }
+}
+
+#[test]
+fn parses_update_apply_with_yes_flag() {
+    let cli = Cli::parse_from(["mynd", "update", "apply", "--yes"]);
+    match cli.command {
+        Some(Command::Update {
+            action: UpdateAction::Apply { yes },
+        }) => assert!(yes),
+        _ => panic!("expected Update Apply command"),
+    }
+}
+
+// ── dashboard-parity command execution ───────────────────────────────────
+//
+// The tests below exercise the actual `cmd_*` bodies (not just clap parsing)
+// against a real, isolated SQLite store — same store/config wiring the CLI
+// uses in production (`common::open_store`/`open_org_store`), just pointed
+// at a throwaway temp db and an empty temp config dir so a test run never
+// touches the host's real HiveMind data.
+
+/// Isolates `HIVEMIND_DB_PATH` and `XDG_CONFIG_HOME` for the duration of
+/// `f`, so `common::open_store`/`open_org_store` resolve to a fresh temp
+/// database and default (no-file) config instead of the host's real ones.
+fn with_isolated_cli_env<T>(f: impl FnOnce() -> T) -> T {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let db_dir = tempfile::tempdir().unwrap();
+    let cfg_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("test.db");
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::set_var("HIVEMIND_DB_PATH", &db_path);
+        std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path());
+    }
+    let result = f();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::remove_var("HIVEMIND_DB_PATH");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+    result
+}
+
+/// Like `with_isolated_cli_env`, but also writes a global config with
+/// `[dashboard] api_url = "<api_url>"` — needed for `mynd suggest`,
+/// which reads the REST API base URL from the global config rather than
+/// an env var.
+fn with_isolated_cli_env_and_dashboard_api_url<T>(api_url: &str, f: impl FnOnce() -> T) -> T {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let db_dir = tempfile::tempdir().unwrap();
+    let cfg_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("test.db");
+    let mynd_cfg_dir = cfg_dir.path().join("mynd");
+    fs::create_dir_all(&mynd_cfg_dir).unwrap();
+    fs::write(
+        mynd_cfg_dir.join("config.toml"),
+        format!("[dashboard]\napi_url = \"{api_url}\"\n"),
+    )
+    .unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::set_var("HIVEMIND_DB_PATH", &db_path);
+        std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path());
+    }
+    let result = f();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::remove_var("HIVEMIND_DB_PATH");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+    result
+}
+
+fn add_memory(title: &str, content: &str, tags: &[&str]) {
+    cmd_memory(MemoryAction::Add {
+        title: title.to_string(),
+        content: content.to_string(),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        layer: "workspace".to_string(),
+        memory_type: "project".to_string(),
+    })
+    .unwrap();
+}
+
+fn all_memory_ids_sorted_by_title() -> Vec<String> {
+    common::block_on(async {
+        let store = common::open_store().await?;
+        let mut all = store.list_memories(1000, 0).await?;
+        all.sort_by(|a, b| a.title.cmp(&b.title));
+        Ok::<_, anyhow::Error>(all.into_iter().map(|e| e.id).collect())
+    })
+    .unwrap()
+}
+
+#[test]
+fn memory_add_lists_in_text_and_json_and_supports_tag_filter() {
+    with_isolated_cli_env(|| {
+        add_memory("First", "Hello world", &["topic:test"]);
+        let entries = common::block_on(async {
+            let store = common::open_store().await?;
+            store.list_memories(10, 0).await
+        })
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "First");
+
+        cmd_memory(MemoryAction::List {
+            limit: 10,
+            offset: 0,
+            tag: None,
+            json: false,
+        })
+        .unwrap();
+        cmd_memory(MemoryAction::List {
+            limit: 10,
+            offset: 0,
+            tag: Some("tag:topic:test".to_string()),
+            json: true,
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+fn memory_add_to_org_layer_without_config_errors() {
+    with_isolated_cli_env(|| {
+        let result = cmd_memory(MemoryAction::Add {
+            title: "Org".to_string(),
+            content: "c".to_string(),
+            tags: vec![],
+            layer: "org".to_string(),
+            memory_type: "project".to_string(),
+        });
+        assert!(result.is_err());
+    });
+}
+
+#[test]
+fn memory_get_edit_tag_and_rm_round_trip() {
+    with_isolated_cli_env(|| {
+        add_memory("A", "content a", &["topic:x"]);
+        let id = all_memory_ids_sorted_by_title().remove(0);
+
+        cmd_memory(MemoryAction::Get {
+            id: id.clone(),
+            json: false,
+        })
+        .unwrap();
+        cmd_memory(MemoryAction::Get {
+            id: id.clone(),
+            json: true,
+        })
+        .unwrap();
+
+        cmd_memory(MemoryAction::Edit {
+            id: id.clone(),
+            title: Some("A2".to_string()),
+            content: None,
+            tags: None,
+        })
+        .unwrap();
+        cmd_memory(MemoryAction::TagAdd {
+            id: id.clone(),
+            tags: vec!["status:done".to_string()],
+        })
+        .unwrap();
+        cmd_memory(MemoryAction::TagRemove {
+            id: id.clone(),
+            tags: vec!["topic:x".to_string()],
+        })
+        .unwrap();
+
+        let updated = common::block_on(async {
+            let store = common::open_store().await?;
+            store.recall_by_id(&id).await
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.title, "A2");
+        assert_eq!(updated.tags, vec!["status:done".to_string()]);
+
+        cmd_memory(MemoryAction::Rm {
+            id: id.clone(),
+            yes: true,
+        })
+        .unwrap();
+        let gone = common::block_on(async {
+            let store = common::open_store().await?;
+            store.recall_by_id(&id).await
+        })
+        .unwrap();
+        assert!(gone.is_none());
+    });
+}
+
+#[test]
+fn memory_search_matches_content_and_tag_expressions() {
+    with_isolated_cli_env(|| {
+        add_memory("Findme", "unique-search-token", &[]);
+        cmd_memory(MemoryAction::Search {
+            query: "unique-search-token".to_string(),
+            limit: 10,
+            json: true,
+        })
+        .unwrap();
+        cmd_memory(MemoryAction::Search {
+            query: "tag:topic:nope".to_string(),
+            limit: 10,
+            json: false,
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+fn memory_actions_on_missing_id_error() {
+    with_isolated_cli_env(|| {
+        assert!(
+            cmd_memory(MemoryAction::Get {
+                id: "mem_nope".to_string(),
+                json: false
+            })
+            .is_err()
+        );
+        assert!(
+            cmd_memory(MemoryAction::Edit {
+                id: "mem_nope".to_string(),
+                title: None,
+                content: None,
+                tags: None
+            })
+            .is_err()
+        );
+        assert!(
+            cmd_memory(MemoryAction::TagAdd {
+                id: "mem_nope".to_string(),
+                tags: vec!["a".to_string()]
+            })
+            .is_err()
+        );
+        assert!(
+            cmd_memory(MemoryAction::TagRemove {
+                id: "mem_nope".to_string(),
+                tags: vec!["a".to_string()]
+            })
+            .is_err()
+        );
+        assert!(
+            cmd_memory(MemoryAction::Rm {
+                id: "mem_nope".to_string(),
+                yes: true
+            })
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn edge_add_list_and_status_lifecycle() {
+    with_isolated_cli_env(|| {
+        add_memory("A", "a", &[]);
+        add_memory("B", "b", &[]);
+        let ids = all_memory_ids_sorted_by_title();
+        let (id_a, id_b) = (ids[0].clone(), ids[1].clone());
+
+        cmd_edge(EdgeAction::Add {
+            source_id: id_a.clone(),
+            target_id: id_b.clone(),
+            relationship: "sibling".to_string(),
+        })
+        .unwrap();
+        assert!(
+            cmd_edge(EdgeAction::Add {
+                source_id: id_a.clone(),
+                target_id: id_b.clone(),
+                relationship: "sibling".to_string(),
+            })
+            .is_err(),
+            "duplicate edge must be rejected"
+        );
+        assert!(
+            cmd_edge(EdgeAction::Add {
+                source_id: id_a.clone(),
+                target_id: id_b.clone(),
+                relationship: "bogus".to_string(),
+            })
+            .is_err(),
+            "invalid relationship must be rejected"
+        );
+        assert!(
+            cmd_edge(EdgeAction::Add {
+                source_id: id_a.clone(),
+                target_id: "mem_nope".to_string(),
+                relationship: "parent".to_string(),
+            })
+            .is_err(),
+            "missing endpoint must be rejected"
+        );
+
+        cmd_edge(EdgeAction::List {
+            memory_id: None,
+            status: None,
+            json: false,
+        })
+        .unwrap();
+        cmd_edge(EdgeAction::List {
+            memory_id: Some(id_a.clone()),
+            status: Some("active".to_string()),
+            json: true,
+        })
+        .unwrap();
+
+        let edge_id = common::block_on(async {
+            let store = common::open_store().await?;
+            Ok::<_, anyhow::Error>(store.list_edges(None).await?.remove(0).id)
+        })
+        .unwrap();
+
+        cmd_edge(EdgeAction::Status {
+            id: edge_id.clone(),
+            status: "pending".to_string(),
+        })
+        .unwrap();
+        cmd_edge(EdgeAction::Approve {
+            id: edge_id.clone(),
+        })
+        .unwrap();
+        cmd_edge(EdgeAction::Reject {
+            id: edge_id.clone(),
+        })
+        .unwrap();
+        assert!(
+            cmd_edge(EdgeAction::Status {
+                id: edge_id.clone(),
+                status: "bogus".to_string(),
+            })
+            .is_err()
+        );
+        assert!(
+            cmd_edge(EdgeAction::Status {
+                id: "edge_nope".to_string(),
+                status: "active".to_string(),
+            })
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn feedback_add_list_resolve_dismiss_lifecycle() {
+    with_isolated_cli_env(|| {
+        add_memory("A", "a", &[]);
+        let id = all_memory_ids_sorted_by_title().remove(0);
+
+        cmd_feedback(FeedbackAction::Add {
+            memory_id: id.clone(),
+            signal: "outdated".to_string(),
+            note: Some("stale".to_string()),
+        })
+        .unwrap();
+        cmd_feedback(FeedbackAction::List {
+            memory_id: Some(id.clone()),
+            status: None,
+            json: false,
+        })
+        .unwrap();
+        cmd_feedback(FeedbackAction::List {
+            memory_id: None,
+            status: Some("pending".to_string()),
+            json: true,
+        })
+        .unwrap();
+
+        let fb_id = common::block_on(async {
+            let store = common::open_store().await?;
+            Ok::<_, anyhow::Error>(store.list_feedback(None, None).await?.remove(0).id)
+        })
+        .unwrap();
+
+        cmd_feedback(FeedbackAction::Resolve { id: fb_id.clone() }).unwrap();
+        assert!(
+            cmd_feedback(FeedbackAction::Dismiss {
+                id: "fb_nope".to_string()
+            })
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn conflict_list_and_resolve_lifecycle() {
+    with_isolated_cli_env(|| {
+        add_memory("A", "local content", &[]);
+        let mem_id = all_memory_ids_sorted_by_title().remove(0);
+        common::block_on(async {
+            let store = common::open_store().await?;
+            store
+                .write_conflict(&mem_id, "remote content", "local content", 100, 200)
+                .await
+        })
+        .unwrap();
+
+        cmd_conflict(ConflictAction::List {
+            status: None,
+            json: false,
+        })
+        .unwrap();
+        cmd_conflict(ConflictAction::List {
+            status: Some("pending".to_string()),
+            json: true,
+        })
+        .unwrap();
+
+        let conflict_id = common::block_on(async {
+            let store = common::open_store().await?;
+            Ok::<_, anyhow::Error>(store.list_conflicts(None).await?.remove(0).id)
+        })
+        .unwrap();
+
+        assert!(
+            cmd_conflict(ConflictAction::Resolve {
+                id: conflict_id.clone(),
+                resolution: "bogus".to_string(),
+            })
+            .is_err()
+        );
+        cmd_conflict(ConflictAction::Resolve {
+            id: conflict_id.clone(),
+            resolution: "keep-local".to_string(),
+        })
+        .unwrap();
+        assert!(
+            cmd_conflict(ConflictAction::Resolve {
+                id: conflict_id,
+                resolution: "keep-remote".to_string(),
+            })
+            .is_err(),
+            "already-resolved conflict must be rejected"
+        );
+    });
+}
+
+#[test]
+fn tags_add_set_value_and_rm_lifecycle() {
+    with_isolated_cli_env(|| {
+        cmd_tags(TagsAction::List { json: false }).unwrap();
+        cmd_tags(TagsAction::List { json: true }).unwrap();
+
+        cmd_tags(TagsAction::Add {
+            name: "myns".to_string(),
+            color: "#123456".to_string(),
+            description: Some("desc".to_string()),
+            single_value: false,
+            values_mode: "suggestion".to_string(),
+        })
+        .unwrap();
+        assert!(
+            cmd_tags(TagsAction::Add {
+                name: "myns".to_string(),
+                color: "#123456".to_string(),
+                description: None,
+                single_value: false,
+                values_mode: "suggestion".to_string(),
+            })
+            .is_err(),
+            "duplicate namespace must be rejected"
+        );
+        assert!(
+            cmd_tags(TagsAction::Add {
+                name: "other".to_string(),
+                color: "#123456".to_string(),
+                description: None,
+                single_value: false,
+                values_mode: "bogus".to_string(),
+            })
+            .is_err(),
+            "invalid values-mode must be rejected"
+        );
+
+        cmd_tags(TagsAction::ValueAdd {
+            name: "myns".to_string(),
+            value: "foo".to_string(),
+        })
+        .unwrap();
+        cmd_tags(TagsAction::ValueAdd {
+            name: "myns".to_string(),
+            value: "foo".to_string(),
+        })
+        .unwrap();
+        cmd_tags(TagsAction::ValueRemove {
+            name: "myns".to_string(),
+            value: "foo".to_string(),
+        })
+        .unwrap();
+        assert!(
+            cmd_tags(TagsAction::ValueAdd {
+                name: "nope".to_string(),
+                value: "x".to_string(),
+            })
+            .is_err()
+        );
+
+        cmd_tags(TagsAction::Set {
+            name: "myns".to_string(),
+            color: Some("#abcdef".to_string()),
+            description: Some("d2".to_string()),
+            single_value: Some(true),
+            values_mode: Some("fixed".to_string()),
+        })
+        .unwrap();
+        assert!(
+            cmd_tags(TagsAction::Set {
+                name: "myns".to_string(),
+                color: None,
+                description: None,
+                single_value: None,
+                values_mode: Some("bogus".to_string()),
+            })
+            .is_err()
+        );
+        assert!(
+            cmd_tags(TagsAction::Set {
+                name: "nope".to_string(),
+                color: Some("#fff".to_string()),
+                description: None,
+                single_value: None,
+                values_mode: None,
+            })
+            .is_err()
+        );
+
+        cmd_tags(TagsAction::Rm {
+            name: "myns".to_string(),
+        })
+        .unwrap();
+        assert!(
+            cmd_tags(TagsAction::Rm {
+                name: "myns".to_string()
+            })
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn tags_predefined_namespace_is_guarded_by_default() {
+    with_isolated_cli_env(|| {
+        assert!(
+            cmd_tags(TagsAction::Set {
+                name: "project".to_string(),
+                color: Some("#ffffff".to_string()),
+                description: None,
+                single_value: None,
+                values_mode: None,
+            })
+            .is_err()
+        );
+        assert!(
+            cmd_tags(TagsAction::Rm {
+                name: "project".to_string()
+            })
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn limits_show_and_set() {
+    with_isolated_cli_env(|| {
+        cmd_limits(LimitsAction::Show { json: false }).unwrap();
+        cmd_limits(LimitsAction::Show { json: true }).unwrap();
+        cmd_limits(LimitsAction::Set { tokens: 500 }).unwrap();
+        let tokens = common::block_on(async {
+            let store = common::open_store().await?;
+            Ok::<_, anyhow::Error>(store.max_content_tokens().await)
+        })
+        .unwrap();
+        assert_eq!(tokens, 500);
+        assert!(cmd_limits(LimitsAction::Set { tokens: 0 }).is_err());
+        assert!(cmd_limits(LimitsAction::Set { tokens: -5 }).is_err());
+    });
+}
+
+#[test]
+fn data_export_import_and_wipe_round_trip() {
+    with_isolated_cli_env(|| {
+        add_memory("A", "a", &["topic:x"]);
+        add_memory("B", "b", &[]);
+        let ids = all_memory_ids_sorted_by_title();
+        cmd_edge(EdgeAction::Add {
+            source_id: ids[0].clone(),
+            target_id: ids[1].clone(),
+            relationship: "sibling".to_string(),
+        })
+        .unwrap();
+
+        cmd_data(DataAction::Export { output: None }).unwrap();
+
+        let export_dir = tempfile::tempdir().unwrap();
+        let export_path = export_dir.path().join("export.json");
+        cmd_data(DataAction::Export {
+            output: Some(export_path.clone()),
+        })
+        .unwrap();
+
+        cmd_data(DataAction::Wipe { yes: true }).unwrap();
+        let count_after_wipe = common::block_on(async {
+            let store = common::open_store().await?;
+            store.count().await
+        })
+        .unwrap();
+        assert_eq!(count_after_wipe, 0);
+
+        cmd_data(DataAction::Import {
+            input: export_path.clone(),
+        })
+        .unwrap();
+        let count_after_import = common::block_on(async {
+            let store = common::open_store().await?;
+            store.count().await
+        })
+        .unwrap();
+        assert_eq!(count_after_import, 2);
+
+        assert!(
+            cmd_data(DataAction::Import {
+                input: export_dir.path().join("does-not-exist.json"),
+            })
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn analytics_reports_counts_across_tags_types_and_projects() {
+    with_isolated_cli_env(|| {
+        add_memory("A", "a", &["topic:sync", "project:hivemind"]);
+        cmd_memory(MemoryAction::Add {
+            title: "B".to_string(),
+            content: "b".to_string(),
+            tags: vec!["topic:sync".to_string(), "project:hivemind".to_string()],
+            layer: "workspace".to_string(),
+            memory_type: "preference".to_string(),
+        })
+        .unwrap();
+        cmd_memory(MemoryAction::Add {
+            title: "C".to_string(),
+            content: "c".to_string(),
+            tags: vec!["project:other".to_string()],
+            layer: "workspace".to_string(),
+            memory_type: "history".to_string(),
+        })
+        .unwrap();
+
+        cmd_analytics(false, 90, 50).unwrap();
+        cmd_analytics(true, 30, 5).unwrap();
+    });
+}
+
+#[test]
+fn analytics_handles_empty_store() {
+    with_isolated_cli_env(|| {
+        cmd_analytics(false, 90, 50).unwrap();
+        cmd_analytics(true, 90, 50).unwrap();
+    });
+}
+
+#[test]
+fn confirm_short_circuits_when_yes_is_true() {
+    assert!(common::confirm("proceed?", true).unwrap());
+}
+
+#[test]
+fn print_json_does_not_panic() {
+    common::print_json(&serde_json::json!({"a": 1}));
+}
+
+#[test]
+fn update_check_reports_available_and_up_to_date() {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let app = axum::Router::new().route(
+                "/release",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "tag_name": "v99.0.0",
+                        "body": "notes",
+                        "html_url": "https://example.com/release",
+                    }))
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            addr_tx.send(addr).unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    let addr = addr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::set_var("MYND_UPDATE_CHECK_URL", format!("http://{addr}/release"));
+    }
+    cmd_update(UpdateAction::Check { json: false }).unwrap();
+    cmd_update(UpdateAction::Check { json: true }).unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::remove_var("MYND_UPDATE_CHECK_URL");
+    }
+}
+
+#[test]
+fn update_apply_without_yes_is_cancelled_without_running_binstall() {
+    // `cargo test` runs with an empty/closed stdin, so `confirm()` reads EOF
+    // and returns false — this must short-circuit before touching
+    // cargo-binstall (which this test must never actually invoke).
+    cmd_update(UpdateAction::Apply { yes: false }).unwrap();
+}
+
+#[test]
+fn suggest_actions_report_friendly_error_when_server_not_running() {
+    with_isolated_cli_env_and_dashboard_api_url("http://127.0.0.1:1", || {
+        let err = cmd_suggest(SuggestAction::Start).unwrap_err();
+        assert!(err.to_string().contains("mynd up"));
+        assert!(cmd_suggest(SuggestAction::Status { json: false }).is_err());
+        assert!(
+            cmd_suggest(SuggestAction::Revise {
+                edge_id: "edge_x".to_string(),
+                feedback: "f".to_string(),
+            })
+            .is_err()
+        );
+        assert!(cmd_suggest(SuggestAction::End).is_err());
+    });
+}
+
+#[test]
+fn suggest_lifecycle_against_mock_server() {
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let app = axum::Router::new()
+                .route(
+                    "/api/v1/suggest-sessions",
+                    axum::routing::post(|| async { axum::http::StatusCode::ACCEPTED }),
+                )
+                .route(
+                    "/api/v1/suggest-sessions/current",
+                    axum::routing::get(|| async {
+                        axum::Json(serde_json::json!({
+                            "active": true,
+                            "phase": "reviewing",
+                            "revising_edge_id": null,
+                            "queued_edge_ids": [],
+                        }))
+                    })
+                    .delete(|| async { axum::Json(serde_json::json!({"ended": true})) }),
+                )
+                .route(
+                    "/api/v1/suggest-sessions/current/revise",
+                    axum::routing::post(|| async { axum::http::StatusCode::ACCEPTED }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            addr_tx.send(addr).unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    let addr = addr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    with_isolated_cli_env_and_dashboard_api_url(&format!("http://{addr}"), || {
+        cmd_suggest(SuggestAction::Start).unwrap();
+        cmd_suggest(SuggestAction::Status { json: false }).unwrap();
+        cmd_suggest(SuggestAction::Status { json: true }).unwrap();
+        cmd_suggest(SuggestAction::Revise {
+            edge_id: "edge_x".to_string(),
+            feedback: "make it a parent".to_string(),
+        })
+        .unwrap();
+        cmd_suggest(SuggestAction::End).unwrap();
+    });
+}
+
+// ── more coverage: mcp install, status, and find_owning's org branch ────────
+//
+// `claude` itself is on PATH in this sandbox (it's the CLI running these
+// tests), so `cmd_mcp_install("claude")` is never exercised here — doing so
+// for real would register/mutate this environment's actual Claude Code MCP
+// servers. opencode/kimi/codex/cursor/windsurf have no CLI on PATH, so their
+// "write the config file directly" branches run deterministically.
+
+fn with_isolated_home<T>(f: impl FnOnce(&Path) -> T) -> T {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::set_var("HOME", home.path());
+    }
+    let result = f(home.path());
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::remove_var("HOME");
+    }
+    result
+}
+
+#[test]
+fn mcp_install_rejects_unknown_client() {
+    assert!(cmd_mcp_install("not-a-real-client").is_err());
+}
+
+#[test]
+fn mcp_install_opencode_writes_config_when_cli_absent() {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let xdg_config = tempfile::tempdir().unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", xdg_config.path());
+    }
+    let result = cmd_mcp_install("opencode");
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::remove_var("HOME");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+    result.unwrap();
+    let content =
+        fs::read_to_string(xdg_config.path().join("opencode").join("opencode.json")).unwrap();
+    assert!(content.contains("mynd"));
+}
+
+#[test]
+fn mcp_install_kimi_writes_config_when_cli_absent() {
+    with_isolated_home(|home| {
+        cmd_mcp_install("kimi").unwrap();
+        let content = fs::read_to_string(home.join(".kimi").join("mcp.json")).unwrap();
+        assert!(content.contains("mynd"));
+    });
+}
+
+#[test]
+fn mcp_install_codex_writes_toml_and_is_idempotent() {
+    with_isolated_home(|home| {
+        cmd_mcp_install("codex").unwrap();
+        let content = fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
+        assert!(content.contains("[mcp_servers.mynd]"));
+        // Second run should detect the existing block and skip re-writing.
+        cmd_mcp_install("codex").unwrap();
+    });
+}
+
+#[test]
+fn mcp_install_cursor_writes_config() {
+    with_isolated_home(|home| {
+        cmd_mcp_install("cursor").unwrap();
+        let content = fs::read_to_string(home.join(".cursor").join("mcp.json")).unwrap();
+        assert!(content.contains("mynd"));
+    });
+}
+
+#[test]
+fn mcp_install_windsurf_writes_config() {
+    with_isolated_home(|home| {
+        cmd_mcp_install("windsurf").unwrap();
+        let content = fs::read_to_string(
+            home.join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json"),
+        )
+        .unwrap();
+        assert!(content.contains("mynd"));
+    });
+}
+
+#[test]
+fn toml_escape_escapes_backslashes_and_quotes() {
+    assert_eq!(
+        crate::cli::mcp_install::toml_escape(r#"C:\bin\"hivemind""#),
+        r#"C:\\bin\\\"hivemind\""#
+    );
+}
+
+#[test]
+fn cmd_status_plain_runs_end_to_end_against_isolated_store() {
+    with_isolated_cli_env(|| {
+        cmd_status(true).unwrap();
+    });
+}
+
+#[test]
+fn cmd_session_start_logs_and_prints_against_real_project_config() {
+    // The test binary's cwd is this crate's root, which has a real
+    // .mynd.toml (see the repo's own dogfood config) — discover_project_root
+    // finds it, so this exercises the full db-open + recall + log-write path
+    // against the isolated temp store, not just the `no project config` early
+    // return.
+    with_isolated_cli_env(|| {
+        cmd_session_start(false).unwrap();
+        cmd_session_start(true).unwrap();
+    });
+}
+
+#[test]
+fn cmd_migrate_reports_nothing_to_migrate_when_isolated() {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_DATA_HOME", home.path());
+    }
+    // legacy_db_path() is under HOME, so with no legacy db present this
+    // returns via the "nothing to migrate" early-out — never touches stdin.
+    let result = cmd_migrate();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::remove_var("HOME");
+        std::env::remove_var("XDG_DATA_HOME");
+    }
+    result.unwrap();
+}
+
+#[test]
+fn cmd_status_reports_matrix_not_running_when_configured_but_no_daemon() {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let db_dir = tempfile::tempdir().unwrap();
+    let cfg_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("test.db");
+    let mynd_cfg_dir = cfg_dir.path().join("mynd");
+    fs::create_dir_all(&mynd_cfg_dir).unwrap();
+    fs::write(
+        mynd_cfg_dir.join("config.toml"),
+        "[matrix]\nhomeserver_url = \"https://matrix.example.org\"\nuser_id = \"@bot:example.org\"\n",
+    )
+    .unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::set_var("HIVEMIND_DB_PATH", &db_path);
+        std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path());
+    }
+    // No matrix daemon is running against this isolated socket path, so this
+    // exercises the "configured but not running" branch deterministically.
+    let result = cmd_status(true);
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+    unsafe {
+        std::env::remove_var("HIVEMIND_DB_PATH");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+    result.unwrap();
+}
+
+#[test]
+fn find_owning_falls_back_to_org_store_and_reports_true_miss() {
+    async fn temp_store() -> (crate::store::SqliteStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let sync = crate::config::SyncSettings::default();
+        let database = crate::db::open_database(&sync, path.to_str().unwrap())
+            .await
+            .unwrap();
+        let conn = database.connect().unwrap();
+        crate::db::run_migrations(&conn).await.unwrap();
+        (crate::store::SqliteStore::new(conn), dir)
+    }
+
+    common::block_on(async {
+        let (primary, _d1) = temp_store().await;
+        let (org, _d2) = temp_store().await;
+        org.store(&crate::store::NewMemoryRow {
+            id: "mem_org_only",
+            title: "Org memory",
+            content: "lives only in org",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+        let org_store = Some(org);
+
+        // Found in org after a primary miss.
+        let owning = common::find_owning(&primary, &org_store, "mem_org_only")
+            .await
+            .unwrap();
+        assert!(owning.is_some());
+
+        // Missing from both.
+        let owning = common::find_owning(&primary, &org_store, "mem_nowhere")
+            .await
+            .unwrap();
+        assert!(owning.is_none());
+
+        Ok::<_, anyhow::Error>(())
+    })
+    .unwrap();
 }
