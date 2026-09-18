@@ -257,6 +257,24 @@ mod tests {
     }
 
     #[test]
+    fn resolve_org_db_path_respects_env_override() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        unsafe { std::env::set_var("HIVEMIND_ORG_DB_PATH", "/custom/path/org.sqlite") };
+        let result = resolve_org_db_path();
+        unsafe { std::env::remove_var("HIVEMIND_ORG_DB_PATH") };
+        assert_eq!(result, "/custom/path/org.sqlite");
+    }
+
+    #[test]
+    fn resolve_org_db_path_default_ends_with_org_db() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        unsafe { std::env::remove_var("HIVEMIND_ORG_DB_PATH") };
+        let result = resolve_org_db_path();
+        assert!(result.ends_with("org.db"), "got: {result}");
+        assert!(result.contains("mynd"));
+    }
+
+    #[test]
     fn resolve_db_path_default_ends_with_memories_db() {
         let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
         unsafe {

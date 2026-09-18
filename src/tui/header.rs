@@ -126,6 +126,37 @@ mod tests {
     }
 
     #[test]
+    fn header_shows_budget_line_when_project_present() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut data = sample_data();
+        data.project = Some(crate::cli::ProjectStatus {
+            project_name: "hivemind".to_string(),
+            has_local_config: false,
+            file_open_rule_count: 0,
+            mention_trigger_count: 0,
+            loaded: vec![],
+            skipped: vec![],
+            used_tokens: 500,
+            max_tokens: 2000,
+            truncated: false,
+        });
+        terminal
+            .draw(|frame| render_header(&data, false, frame.area(), frame.buffer_mut()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("500"));
+        assert!(content.contains("2000"));
+        assert!(content.contains("1500 remaining"));
+    }
+
+    #[test]
     fn header_no_color_skips_foreground_styling_but_keeps_text() {
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).unwrap();

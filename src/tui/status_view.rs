@@ -351,3 +351,115 @@ fn draw(
         layout[3],
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn sample_data() -> StatusData {
+        StatusData {
+            version: "0.6.0",
+            project_label: Some("oxhive-hivemind".to_string()),
+            server_up: false,
+            server_host: "127.0.0.1".to_string(),
+            server_port: 3456,
+            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            memory_count: 128,
+            sync_enabled: false,
+            sync_remote_url: String::new(),
+            registered_clients: vec!["claude".to_string()],
+            project: None,
+            matrix: MatrixStatusLine::NotConfigured,
+        }
+    }
+
+    fn render(data: &StatusData, last_error: Option<&str>, last_message: Option<&str>) -> String {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(data, last_error, last_message, false, frame))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn draw_shows_not_running_and_missing_project_notice() {
+        let data = sample_data();
+        let content = render(&data, None, None);
+        assert!(content.contains("not running"));
+        assert!(!content.contains("none registered")); // has one client
+        assert!(content.contains("No .mynd.toml found in this directory tree."));
+        assert!(content.contains("q quit"));
+        assert!(!content.contains("k kill server"));
+    }
+
+    #[test]
+    fn draw_shows_running_server_and_kill_hint() {
+        let mut data = sample_data();
+        data.server_up = true;
+        data.registered_clients = vec![];
+        let content = render(&data, None, None);
+        assert!(content.contains("running at http://127.0.0.1:3456"));
+        assert!(content.contains("k kill server"));
+        assert!(content.contains("none registered"));
+    }
+
+    #[test]
+    fn draw_shows_sync_enabled_url() {
+        let mut data = sample_data();
+        data.sync_enabled = true;
+        data.sync_remote_url = "https://sync.example.com".to_string();
+        let content = render(&data, None, None);
+        assert!(content.contains("enabled -> https://sync.example.com"));
+    }
+
+    #[test]
+    fn draw_shows_matrix_not_running_and_running_states() {
+        let mut data = sample_data();
+        data.matrix = MatrixStatusLine::NotRunning;
+        let content = render(&data, None, None);
+        assert!(content.contains("Matrix     configured, not running"));
+
+        data.matrix = MatrixStatusLine::Running {
+            user_id: "@bot:example.com".to_string(),
+            sync_state: "synced".to_string(),
+            room_count: 3,
+            active_sessions: 1,
+        };
+        let content = render(&data, None, None);
+        assert!(content.contains("@bot:example.com"));
+        assert!(content.contains("3 room(s)"));
+        assert!(content.contains("1 active session(s)"));
+    }
+
+    #[test]
+    fn draw_prioritizes_error_notice_over_message() {
+        let data = sample_data();
+        let content = render(&data, Some("boom"), Some("all good"));
+        assert!(content.contains("refresh failed: boom"));
+        assert!(!content.contains("all good"));
+    }
+
+    #[test]
+    fn draw_shows_message_notice_when_no_error() {
+        let data = sample_data();
+        let content = render(&data, None, Some("stopped server (pid 123)"));
+        assert!(content.contains("stopped server (pid 123)"));
+    }
+
+    #[test]
+    fn draw_widens_box_for_long_storage_path() {
+        let mut data = sample_data();
+        data.db_path =
+            "/a/very/long/path/that/should/widen/the/overview/box/memories.db".to_string();
+        let content = render(&data, None, None);
+        assert!(content.contains(&data.db_path));
+    }
+}

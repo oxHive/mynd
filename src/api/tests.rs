@@ -553,6 +553,47 @@ async fn save_tag_settings_rejects_malformed_body() {
 }
 
 #[tokio::test]
+async fn save_tag_settings_rejects_missing_values_array() {
+    let (app, _dir) = test_router().await;
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(json!({ "area": { "color": "#fff" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn save_tag_settings_rejects_non_bool_single_value() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(json!({ "area": { "color": "#fff", "values": [], "single_value": "yes" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("single_value"));
+}
+
+#[tokio::test]
+async fn save_tag_settings_rejects_non_string_description() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(json!({ "area": { "color": "#fff", "values": [], "description": 5 } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("description"));
+}
+
+#[tokio::test]
 async fn save_tag_settings_rejects_invalid_values_mode() {
     let (app, _dir) = test_router().await;
     let (status, _) = req(
@@ -811,6 +852,28 @@ fn localhost_origins_with_empty_string() {
 }
 
 #[tokio::test]
+async fn get_memory_returns_404_for_missing_id() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(app, "GET", "/api/v1/memories/mem_missing", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no memory"));
+}
+
+#[tokio::test]
+async fn create_memory_rejects_invalid_memory_type() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "t", "content": "c", "memory_type": "bogus" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
 async fn create_and_list_feedback() {
     let (app, _dir) = test_router().await;
 
@@ -974,6 +1037,88 @@ async fn list_edges_includes_org_edges_when_configured() {
 }
 
 #[tokio::test]
+async fn create_edge_rejects_duplicate_missing_endpoint_and_bad_relationship() {
+    let (app, _dir) = test_router().await;
+    let (_, ma) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(memory_body("A", "a", &[])),
+    )
+    .await;
+    let (_, mb) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(memory_body("B", "b", &[])),
+    )
+    .await;
+    let id_a = ma["id"].as_str().unwrap().to_string();
+    let id_b = mb["id"].as_str().unwrap().to_string();
+
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/edges",
+        Some(json!({"source_id": id_a, "target_id": id_b, "relationship": "sibling"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    // Duplicate
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/edges",
+        Some(json!({"source_id": id_a, "target_id": id_b, "relationship": "sibling"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // Missing endpoint (no org configured to retry against)
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/edges",
+        Some(
+            json!({"source_id": id_a, "target_id": "mem_does_not_exist", "relationship": "parent"}),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Invalid relationship
+    let (st, body) = req(
+        app,
+        "POST",
+        "/api/v1/edges",
+        Some(json!({"source_id": id_a, "target_id": id_b, "relationship": "bogus"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid relationship")
+    );
+}
+
+#[tokio::test]
+async fn patch_edge_status_not_found_when_no_org_configured() {
+    let (app, _dir) = test_router().await;
+    let (st, body) = req(
+        app,
+        "PATCH",
+        "/api/v1/edges/edge_does_not_exist",
+        Some(json!({"status": "active"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no edge"));
+}
+
+#[tokio::test]
 async fn resolve_conflict_success() {
     let (app, store, _dir) = test_router_with_store().await;
 
@@ -1004,6 +1149,64 @@ async fn resolve_conflict_success() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["resolved"], true);
     assert_eq!(body["resolution"], "keep_local");
+}
+
+#[tokio::test]
+async fn resolve_conflict_rejects_invalid_resolution() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/conflicts/cfl_whatever/resolve",
+        Some(json!({ "resolution": "bogus" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("keep_local"));
+}
+
+#[tokio::test]
+async fn patch_feedback_rejects_invalid_status_and_missing_id() {
+    let (app, _dir) = test_router().await;
+    let (_, ma) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(memory_body("A", "a", &[])),
+    )
+    .await;
+    let (_, fb) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/feedback",
+        Some(json!({ "memory_id": ma["id"], "signal": "outdated" })),
+    )
+    .await;
+
+    let (st, body) = req(
+        app.clone(),
+        "PATCH",
+        &format!("/api/v1/feedback/{}", fb["id"].as_str().unwrap()),
+        Some(json!({"status": "bogus"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("pending|resolved|dismissed")
+    );
+
+    let (st, body) = req(
+        app,
+        "PATCH",
+        "/api/v1/feedback/fb_missing",
+        Some(json!({"status": "resolved"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no feedback"));
 }
 
 #[tokio::test]
@@ -1173,6 +1376,36 @@ async fn export_import_roundtrip() {
     assert_eq!(res["imported_memories"], 1);
     let (_, list) = req(app2, "GET", "/api/v1/memories", None).await;
     assert_eq!(list["memories"][0]["title"], "m1");
+}
+
+#[tokio::test]
+async fn import_applies_defaults_for_omitted_layer_type_and_edge_status() {
+    let (app, _dir) = test_router().await;
+    let (st, res) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/import",
+        Some(json!({
+            "memories": [
+                { "id": "mem_a", "title": "A", "content": "a" },
+                { "id": "mem_b", "title": "B", "content": "b" }
+            ],
+            "edges": [
+                { "source_id": "mem_a", "target_id": "mem_b", "relationship": "sibling" }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(res["imported_memories"], 2);
+    assert_eq!(res["imported_edges"], 1);
+
+    let (_, mem) = req(app.clone(), "GET", "/api/v1/memories/mem_a", None).await;
+    assert_eq!(mem["layer"], "workspace");
+    assert_eq!(mem["memory_type"], "project");
+
+    let (_, edges) = req(app, "GET", "/api/v1/edges", None).await;
+    assert_eq!(edges["edges"][0]["status"], "active");
 }
 
 #[tokio::test]
@@ -1584,4 +1817,44 @@ async fn search_includes_org_entries_when_configured() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["count"], 1);
     assert_eq!(json["results"][0]["title"], "orgsearchable");
+}
+
+// Only GET /api/v1/update is exercised here — POST /api/v1/update/apply
+// spawns a real `cargo binstall` + process-replacing restart on success
+// (see update::do_update), which must never run inside a test.
+#[tokio::test]
+async fn get_update_state_reports_idle_by_default() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/update")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "idle");
+    assert_eq!(json["available"], false);
+}
+
+#[tokio::test]
+async fn sse_events_endpoint_responds_with_event_stream_headers() {
+    let (app, _dir) = test_router().await;
+    // Only check status/headers — the body is an infinite keep-alive stream,
+    // so it must never be collected/awaited to completion in a test.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/event-stream");
 }
