@@ -76,7 +76,7 @@ pub enum ServiceAction {
         /// Also install the Matrix bot unit (requires `mynd matrix login` first)
         #[arg(long)]
         matrix: bool,
-        /// Also install the Discord bot unit (requires `hivemind discord login` first)
+        /// Also install the Discord bot unit (requires `mynd discord login` first)
         #[arg(long)]
         discord: bool,
     },
@@ -111,7 +111,7 @@ pub enum MatrixAction {
 pub enum DiscordAction {
     /// Log into a Discord bot account once; persists the token to the OS keyring
     Login,
-    /// Run the Discord bot daemon (requires `hivemind discord login` first)
+    /// Run the Discord bot daemon (requires `mynd discord login` first)
     Run {
         /// Print verbose connection/message logs to stderr
         #[arg(long)]

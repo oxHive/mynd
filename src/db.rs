@@ -51,10 +51,10 @@ pub fn db_path_override() -> Option<String> {
         .ok()
 }
 
-/// PID file written by `hivemind discord run` while its daemon is running:
-/// $XDG_DATA_HOME/hivemind/hivemind-discord.pid
+/// PID file written by `mynd discord run` while its daemon is running:
+/// $XDG_DATA_HOME/mynd/mynd-discord.pid
 pub fn discord_pidfile_path() -> std::path::PathBuf {
-    xdg_data_dir().join("hivemind-discord.pid")
+    xdg_data_dir().join("mynd-discord.pid")
 }
 
 pub fn resolve_db_path() -> String {

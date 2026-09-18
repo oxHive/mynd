@@ -46,7 +46,7 @@ fn format_login_success(user_name: &str, application_id: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "Token saved to the OS keyring. Run `hivemind discord run` to start the bot."
+        "Token saved to the OS keyring. Run `mynd discord run` to start the bot."
     );
     out
 }
@@ -63,13 +63,13 @@ pub fn cmd_discord_status() -> Result<()> {
                     Ok(())
                 }
                 Err(crate::discord::status::QueryError::NotRunning) => {
-                    println!("hivemind discord is not running.");
-                    println!("Start it with: hivemind discord run");
+                    println!("mynd discord is not running.");
+                    println!("Start it with: mynd discord run");
                     Ok(())
                 }
                 Err(crate::discord::status::QueryError::Protocol(msg)) => {
                     println!(
-                        "hivemind discord appears to be running but returned invalid status data: {msg}"
+                        "mynd discord appears to be running but returned invalid status data: {msg}"
                     );
                     Ok(())
                 }
@@ -113,9 +113,9 @@ mod tests {
 
     #[test]
     fn format_login_success_includes_name_and_application_id() {
-        let out = format_login_success("hivemind-bot", "999999999999999999");
-        assert!(out.contains("Logged in as hivemind-bot (application id 999999999999999999)."));
-        assert!(out.contains("Run `hivemind discord run` to start the bot."));
+        let out = format_login_success("mynd-bot", "999999999999999999");
+        assert!(out.contains("Logged in as mynd-bot (application id 999999999999999999)."));
+        assert!(out.contains("Run `mynd discord run` to start the bot."));
     }
 
     fn base_reply() -> StatusReply {

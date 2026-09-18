@@ -6,17 +6,19 @@ pub trait TokenStore: Send + Sync {
     fn delete(&self, application_id: &str) -> Result<()>;
 }
 
+const SERVICE: &str = "mynd-discord";
+
 pub struct KeyringTokenStore;
 
 impl TokenStore for KeyringTokenStore {
     fn save(&self, application_id: &str, token: &str) -> Result<()> {
-        let entry = keyring::Entry::new("hivemind-discord", application_id)?;
+        let entry = keyring::Entry::new(SERVICE, application_id)?;
         entry.set_password(token)?;
         Ok(())
     }
 
     fn load(&self, application_id: &str) -> Result<Option<String>> {
-        let entry = keyring::Entry::new("hivemind-discord", application_id)?;
+        let entry = keyring::Entry::new(SERVICE, application_id)?;
         match entry.get_password() {
             Ok(pw) => Ok(Some(pw)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -25,7 +27,7 @@ impl TokenStore for KeyringTokenStore {
     }
 
     fn delete(&self, application_id: &str) -> Result<()> {
-        let entry = keyring::Entry::new("hivemind-discord", application_id)?;
+        let entry = keyring::Entry::new(SERVICE, application_id)?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.into()),

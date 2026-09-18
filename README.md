@@ -561,12 +561,12 @@ you.
 
 ## Discord chat interface (optional)
 
-Capture and recall HiveMind memories from a Discord channel or DM — mention the bot in a
+Capture and recall Mynd memories from a Discord channel or DM — mention the bot in a
 channel, use the `/hm` slash command, or DM it directly. Same headless-agent mechanism as
 Matrix and the dashboard's suggest flow: no bespoke NLU, no local model.
 
-This is a separate process from `hivemind up` and doesn't depend on it being started —
-each message/command spawns a short-lived agent turn that talks to HiveMind the same way
+This is a separate process from `mynd up` and doesn't depend on it being started —
+each message/command spawns a short-lived agent turn that talks to Mynd the same way
 any other MCP client does.
 
 ### Setup
@@ -576,7 +576,7 @@ enable the **Message Content Intent** under Bot settings, and invite it to your 
 the `bot` and `applications.commands` OAuth scopes. Then:
 
 ```sh
-hivemind discord login
+mynd discord login
 ```
 
 Prompts for the bot token. The token is validated against Discord once, then persisted to
@@ -584,11 +584,11 @@ your OS keyring (Secret Service/kwallet on Linux, Keychain on macOS) — the sam
 Matrix uses.
 
 > **Headless Linux servers:** `keyring` needs a functioning Secret Service (D-Bus). A
-> bare VPS with no login session running may not have one available; `hivemind discord
+> bare VPS with no login session running may not have one available; `mynd discord
 > login` will fail with an actionable message if so. Install/start a Secret Service
 > provider (e.g. `gnome-keyring`) first.
 
-Add channel mappings and the DM allowlist to `~/.config/hivemind/config.toml`:
+Add channel mappings and the DM allowlist to `~/.config/mynd/config.toml`:
 
 ```toml
 [discord]
@@ -598,8 +598,8 @@ permission_gate = "manage_guild"           # optional; restricts who can invoke 
 
 [[discord.channels]]
 channel_id = "222222222222222222"
-alias = "hivemind-project"                 # optional, for `hivemind discord status`
-base_tags = ["project:hivemind"]
+alias = "mynd-project"                     # optional, for `mynd discord status`
+base_tags = ["project:mynd"]
 ```
 
 Channels the bot is in but not listed here still work — memories land in the `workspace`
@@ -617,10 +617,10 @@ layer tagged `channel:<id-or-alias>` + `source:discord` instead of your configur
 Then run it:
 
 ```sh
-hivemind discord run
+mynd discord run
 ```
 
-Or install it as a background service alongside `hivemind up` — `hivemind service
+Or install it as a background service alongside `mynd up` — `mynd service
 install --discord` adds a unit once `[discord]` is configured.
 
 ### Using it
@@ -629,7 +629,7 @@ install --discord` adds a unit once `[discord]` is configured.
 - `/hm store text:<text>` — direct write, skips the agent (fast, no interpretation).
 - `/hm reset` — starts a fresh conversation in that channel (drops continuity, not memory).
 - `/hm help` — lists these commands.
-- `hivemind discord status` — shows login state, sync status, and per-channel session
+- `mynd discord status` — shows login state, sync status, and per-channel session
   activity.
 
 ### Agent compatibility

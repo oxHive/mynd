@@ -686,7 +686,7 @@ pub fn load_discord_settings(global_path: &Path) -> Result<Option<DiscordSetting
 
 /// Writes `application_id` into the global config's `[discord]` table,
 /// preserving every other section and any existing `allowed_users`/
-/// `permission_gate`/`[[discord.channels]]`. Used by `hivemind discord login`
+/// `permission_gate`/`[[discord.channels]]`. Used by `mynd discord login`
 /// after a successful token validation.
 pub fn write_discord_login(global_path: &Path, application_id: &str) -> Result<()> {
     let mut doc: toml::Value = if global_path.is_file() {

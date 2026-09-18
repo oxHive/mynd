@@ -335,7 +335,7 @@ pub enum MatrixStatusLine {
 pub enum DiscordStatusLine {
     /// No `[discord]` section in the global config — discord isn't set up.
     NotConfigured,
-    /// Configured, but `hivemind discord run` isn't currently up.
+    /// Configured, but `mynd discord run` isn't currently up.
     NotRunning,
     Running {
         application_id: String,
@@ -545,7 +545,7 @@ pub fn format_status_text(data: &StatusData) -> String {
         DiscordStatusLine::NotRunning => {
             writeln!(
                 out,
-                "Discord:    configured, not running (hivemind discord run)"
+                "Discord:    configured, not running (mynd discord run)"
             )
             .unwrap();
         }

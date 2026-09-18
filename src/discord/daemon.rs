@@ -123,7 +123,7 @@ pub fn parse_permission_gate(value: &str) -> Result<serenity::model::Permissions
 struct Handler {
     settings: Arc<DiscordSettings>,
     agent: Arc<AgentSettings>,
-    hivemind_bin: Arc<String>,
+    mynd_bin: Arc<String>,
     sessions: crate::discord::session::SessionMap,
     status_reply: Arc<Mutex<StatusReply>>,
     permission_gate: Option<serenity::model::Permissions>,
@@ -131,7 +131,7 @@ struct Handler {
 
 fn build_hm_command(permission_gate: Option<serenity::model::Permissions>) -> CreateCommand {
     let mut cmd = CreateCommand::new("hm")
-        .description("HiveMind memory bot")
+        .description("Mynd memory bot")
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
@@ -310,7 +310,7 @@ impl EventHandler for Handler {
         }
         match crate::chat_bot::agent::run_turn(
             &self.agent,
-            &self.hivemind_bin,
+            &self.mynd_bin,
             &msg.content,
             resume.as_deref(),
             Some(&system_prompt),
@@ -335,7 +335,7 @@ impl EventHandler for Handler {
                 send_chunked(
                     &ctx,
                     msg.channel_id,
-                    &format!("hivemind discord hit an error: {e}"),
+                    &format!("mynd discord hit an error: {e}"),
                 )
                 .await;
             }
@@ -384,7 +384,7 @@ impl EventHandler for Handler {
                 respond_ephemeral(&ctx, &command, "Reset.").await;
             }
             "store" => {
-                // `store_memory` spawns the `hivemind` binary and does an MCP
+                // `store_memory` spawns the `mynd` binary and does an MCP
                 // handshake, which can outlast Discord's 3-second
                 // interaction-response deadline. Defer immediately so the
                 // interaction token stays valid, then deliver the real
@@ -401,7 +401,7 @@ impl EventHandler for Handler {
                 let target =
                     crate::discord::channels::resolve_target(&self.settings, &channel_id, is_dm);
                 tracing::debug!(channel_id = %channel_id, "storing memory via /hm store");
-                match crate::discord::store_direct::store_memory(&self.hivemind_bin, &text, &target)
+                match crate::discord::store_direct::store_memory(&self.mynd_bin, &text, &target)
                     .await
                 {
                     Ok(()) => {
@@ -414,7 +414,7 @@ impl EventHandler for Handler {
                         respond_followup(
                             &ctx,
                             &command,
-                            &format!("hivemind discord failed to store that: {e}"),
+                            &format!("mynd discord failed to store that: {e}"),
                         )
                         .await;
                     }
@@ -425,11 +425,7 @@ impl EventHandler for Handler {
     }
 }
 
-pub async fn run(
-    settings: DiscordSettings,
-    agent: AgentSettings,
-    hivemind_bin: String,
-) -> Result<()> {
+pub async fn run(settings: DiscordSettings, agent: AgentSettings, mynd_bin: String) -> Result<()> {
     tracing::debug!(application_id = %settings.application_id, "loading saved bot token from OS keyring");
     let application_id = settings.application_id.clone();
     let token = tokio::time::timeout(
@@ -443,7 +439,7 @@ pub async fn run(
              running and unlocked? (e.g. `systemctl --user start gnome-keyring-daemon`)"
         )
     })???
-    .ok_or_else(|| anyhow::anyhow!("no saved bot token — run `hivemind discord login` first"))?;
+    .ok_or_else(|| anyhow::anyhow!("no saved bot token — run `mynd discord login` first"))?;
     tracing::debug!("bot token loaded from keyring");
 
     let _pid_guard = write_pidfile()?;
@@ -486,7 +482,7 @@ pub async fn run(
     let handler = Handler {
         settings: Arc::new(settings),
         agent: Arc::new(agent),
-        hivemind_bin: Arc::new(hivemind_bin),
+        mynd_bin: Arc::new(mynd_bin),
         sessions,
         status_reply,
         permission_gate,
@@ -503,7 +499,7 @@ pub async fn run(
 }
 
 /// Sends a text message to the given user's DM channel, opening one if
-/// needed. Used for one-off connectivity checks (`hivemind discord send`)
+/// needed. Used for one-off connectivity checks (`mynd discord send`)
 /// independent of the daemon's gateway connection.
 pub async fn send_direct_message(
     settings: &DiscordSettings,
@@ -522,7 +518,7 @@ pub async fn send_direct_message(
              running and unlocked? (e.g. `systemctl --user start gnome-keyring-daemon`)"
         )
     })???
-    .ok_or_else(|| anyhow::anyhow!("no saved bot token — run `hivemind discord login` first"))?;
+    .ok_or_else(|| anyhow::anyhow!("no saved bot token — run `mynd discord login` first"))?;
 
     let http = serenity::http::Http::new(&token);
     let user_id: serenity::model::id::UserId = to_user_id

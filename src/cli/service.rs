@@ -12,6 +12,8 @@ const CURRENT_UNIT: &str = "mynd";
 #[cfg(target_os = "linux")]
 const CURRENT_MATRIX_UNIT: &str = "mynd-matrix";
 #[cfg(target_os = "linux")]
+const CURRENT_DISCORD_UNIT: &str = "mynd-discord";
+#[cfg(target_os = "linux")]
 const LEGACY_UNITS: [&str; 2] = ["hivemind", "hivemind-matrix"];
 
 pub fn cmd_service_install(dashboard: bool, matrix: bool, discord: bool) -> Result<()> {
@@ -216,12 +218,12 @@ fn service_install_linux(dashboard: bool, matrix: bool, discord: bool) -> Result
         if !configured {
             anyhow::bail!(
                 "--discord was passed but Discord is not configured.\n\
-                 Run `hivemind discord login` first, then re-run `hivemind service install --discord`."
+                 Run `mynd discord login` first, then re-run `mynd service install --discord`."
             );
         }
         service_install_unit_linux(
-            "hivemind-discord",
-            "HiveMind Discord chat bot",
+            CURRENT_DISCORD_UNIT,
+            "Mynd Discord chat bot",
             &["discord", "run"],
         )?;
     }
@@ -245,8 +247,8 @@ fn service_uninstall_linux() -> Result<()> {
     if systemd_unit_path(CURRENT_MATRIX_UNIT).exists() {
         service_uninstall_unit_linux(CURRENT_MATRIX_UNIT)?;
     }
-    if systemd_unit_path("hivemind-discord").exists() {
-        service_uninstall_unit_linux("hivemind-discord")?;
+    if systemd_unit_path(CURRENT_DISCORD_UNIT).exists() {
+        service_uninstall_unit_linux(CURRENT_DISCORD_UNIT)?;
     }
 
     println!("Mynd service uninstalled.");
@@ -259,8 +261,8 @@ fn service_status_linux() -> Result<()> {
     if systemd_unit_path(CURRENT_MATRIX_UNIT).exists() {
         service_status_unit_linux(CURRENT_MATRIX_UNIT)?;
     }
-    if systemd_unit_path("hivemind-discord").exists() {
-        service_status_unit_linux("hivemind-discord")?;
+    if systemd_unit_path(CURRENT_DISCORD_UNIT).exists() {
+        service_status_unit_linux(CURRENT_DISCORD_UNIT)?;
     }
     Ok(())
 }
@@ -284,12 +286,12 @@ mod matrix_service_tests {
     #[test]
     fn systemd_unit_content_for_discord_names_the_unit_and_subcommand() {
         let content = systemd_unit_content(
-            "HiveMind Discord chat bot",
-            &std::path::PathBuf::from("/usr/local/bin/hivemind"),
+            "Mynd Discord chat bot",
+            &std::path::PathBuf::from("/usr/local/bin/mynd"),
             &["discord", "run"],
         );
-        assert!(content.contains("Description=HiveMind Discord chat bot"));
-        assert!(content.contains("ExecStart=/usr/local/bin/hivemind discord run"));
+        assert!(content.contains("Description=Mynd Discord chat bot"));
+        assert!(content.contains("ExecStart=/usr/local/bin/mynd discord run"));
         assert!(content.contains("WantedBy=default.target"));
     }
 
@@ -311,6 +313,7 @@ mod matrix_service_tests {
     fn unit_names_carry_the_mynd_name_and_legacy_names_are_the_hivemind_ones() {
         assert_eq!(CURRENT_UNIT, "mynd");
         assert_eq!(CURRENT_MATRIX_UNIT, "mynd-matrix");
+        assert_eq!(CURRENT_DISCORD_UNIT, "mynd-discord");
         assert!(
             systemd_unit_path(CURRENT_UNIT).ends_with("mynd.service"),
             "unit path: {}",
@@ -341,7 +344,7 @@ const LEGACY_LAUNCH_AGENT_LABELS: [&str; 4] = [
 ];
 
 #[cfg(target_os = "macos")]
-const DISCORD_LAUNCH_AGENT_LABEL: &str = "com.oxhive.hivemind-discord";
+const DISCORD_LAUNCH_AGENT_LABEL: &str = "dev.oxhive.mynd-discord";
 
 #[cfg(target_os = "macos")]
 fn launch_agent_path(label: &str) -> PathBuf {
@@ -498,13 +501,13 @@ fn service_install_macos(dashboard: bool, matrix: bool, discord: bool) -> Result
         if !configured {
             anyhow::bail!(
                 "--discord was passed but Discord is not configured.\n\
-                 Run `hivemind discord login` first, then re-run `hivemind service install --discord`."
+                 Run `mynd discord login` first, then re-run `mynd service install --discord`."
             );
         }
         service_install_unit_macos(
             DISCORD_LAUNCH_AGENT_LABEL,
             &["discord", "run"],
-            "HiveMind Discord chat bot",
+            "Mynd Discord chat bot",
         )?;
     }
 
