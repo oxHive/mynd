@@ -312,8 +312,8 @@ impl SuggestSessionManager {
         mut cmd: tokio::process::Command,
         command_name: &str,
     ) -> Result<String, String> {
-        let child = cmd
-            .spawn()
+        let child = spawn_retrying_busy(&mut cmd)
+            .await
             .map_err(|e| format!("failed to spawn {command_name}: {e}"))?;
         let out = tokio::time::timeout(TURN_TIMEOUT, child.wait_with_output())
             .await
@@ -336,6 +336,26 @@ impl SuggestSessionManager {
             .find(|l| !l.trim().is_empty())
             .map(str::to_string)
             .ok_or_else(|| "agent produced no output".to_string())
+    }
+}
+
+/// `spawn`, retrying briefly on ETXTBSY. Linux refuses to exec a file that
+/// any process still has open for writing; a freshly written script (or a
+/// binary mid-replacement by self-update) can hit that for a few
+/// milliseconds, and a forked-but-not-yet-exec'd sibling holds inherited
+/// write descriptors for exactly that window.
+async fn spawn_retrying_busy(
+    cmd: &mut tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            other => return other,
+        }
     }
 }
 
