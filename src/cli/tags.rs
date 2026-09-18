@@ -120,7 +120,7 @@ fn validate_predefined_namespaces_unchanged(body: &Value) -> Result<()> {
             return Err(anyhow!(
                 "namespace {name:?} is predefined and cannot be deleted or modified. \
                  Disable this guard with [tags] guard_predefined_namespaces = false \
-                 in the global hivemind config to allow it."
+                 in the global mynd config to allow it."
             ));
         }
     }

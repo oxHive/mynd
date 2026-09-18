@@ -94,12 +94,12 @@ pub enum Command {
         #[command(subcommand)]
         action: DataAction,
     },
-    /// AI-assisted graph suggestions (requires `hivemind up` to be running)
+    /// AI-assisted graph suggestions (requires `mynd up` to be running)
     Suggest {
         #[command(subcommand)]
         action: SuggestAction,
     },
-    /// Check for and apply HiveMind updates
+    /// Check for and apply Mynd updates
     Update {
         #[command(subcommand)]
         action: UpdateAction,

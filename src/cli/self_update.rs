@@ -14,7 +14,7 @@ pub enum UpdateAction {
         json: bool,
     },
     /// Self-update via `cargo binstall` (does not restart any running server —
-    /// restart `hivemind up`/the background service afterward)
+    /// restart `mynd up`/the background service afterward)
     Apply {
         /// Skip the confirmation prompt
         #[arg(long)]
@@ -46,14 +46,14 @@ pub fn cmd_update(action: UpdateAction) -> Result<()> {
                 println!("update available: v{current} -> v{}", release.version);
                 println!("{}", release.html_url);
                 println!();
-                println!("apply it with: hivemind update apply");
+                println!("apply it with: mynd update apply");
             } else {
                 println!("v{current} is up to date (latest: v{})", release.version);
             }
             Ok(())
         }),
         UpdateAction::Apply { yes } => {
-            if !confirm("This will run `cargo binstall oxhivemind`. Continue?", yes)? {
+            if !confirm("This will run `cargo binstall oxmynd`. Continue?", yes)? {
                 println!("Cancelled.");
                 return Ok(());
             }
@@ -62,7 +62,7 @@ pub fn cmd_update(action: UpdateAction) -> Result<()> {
                 ensure_binstall_available().await?;
                 run_binstall().await?;
                 println!(
-                    "updated. Restart `hivemind up` (or the background service) to run the new version."
+                    "updated. Restart `mynd up` (or the background service) to run the new version."
                 );
                 Ok(())
             })

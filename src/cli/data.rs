@@ -16,7 +16,7 @@ pub enum DataAction {
     },
     /// Import memories + edges from a previous export
     Import {
-        /// Path to a JSON file previously produced by `hivemind data export`
+        /// Path to a JSON file previously produced by `mynd data export`
         input: PathBuf,
     },
     /// Permanently delete all memories, edges, feedback, and conflicts

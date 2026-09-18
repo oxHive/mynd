@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::store::SqliteStore;
 
 /// Opens the primary store using the real configured sync settings (same
-/// wiring `hivemind up`/`session-start` use), minus the background sync
+/// wiring `mynd up`/`session-start` use), minus the background sync
 /// loop — CLI subcommands are one-shot, so there's nothing to keep alive
 /// after the command returns.
 pub(crate) async fn open_store() -> Result<SqliteStore> {

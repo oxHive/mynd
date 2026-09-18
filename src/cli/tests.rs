@@ -1301,14 +1301,7 @@ fn global_config_template_parses_with_org_sync_disabled_by_default() {
 
 #[test]
 fn parses_memory_list_with_tag_and_json() {
-    let cli = Cli::parse_from([
-        "hivemind",
-        "memory",
-        "list",
-        "--tag",
-        "tag:topic:x",
-        "--json",
-    ]);
+    let cli = Cli::parse_from(["mynd", "memory", "list", "--tag", "tag:topic:x", "--json"]);
     match cli.command {
         Some(Command::Memory {
             action: MemoryAction::List { tag, json, .. },
@@ -1323,7 +1316,7 @@ fn parses_memory_list_with_tag_and_json() {
 #[test]
 fn parses_memory_add_with_repeated_tags() {
     let cli = Cli::parse_from([
-        "hivemind",
+        "mynd",
         "memory",
         "add",
         "--title",
@@ -1355,7 +1348,7 @@ fn parses_memory_add_with_repeated_tags() {
 
 #[test]
 fn parses_memory_edit_without_tags_leaves_none() {
-    let cli = Cli::parse_from(["hivemind", "memory", "edit", "mem_x", "--title", "New"]);
+    let cli = Cli::parse_from(["mynd", "memory", "edit", "mem_x", "--title", "New"]);
     match cli.command {
         Some(Command::Memory {
             action: MemoryAction::Edit {
@@ -1372,7 +1365,7 @@ fn parses_memory_edit_without_tags_leaves_none() {
 
 #[test]
 fn parses_edge_add_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "edge", "add", "mem_a", "mem_b", "sibling"]);
+    let cli = Cli::parse_from(["mynd", "edge", "add", "mem_a", "mem_b", "sibling"]);
     assert!(matches!(
         cli.command,
         Some(Command::Edge {
@@ -1383,7 +1376,7 @@ fn parses_edge_add_subcommand() {
 
 #[test]
 fn parses_edge_approve_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "edge", "approve", "edge_x"]);
+    let cli = Cli::parse_from(["mynd", "edge", "approve", "edge_x"]);
     match cli.command {
         Some(Command::Edge {
             action: EdgeAction::Approve { id },
@@ -1394,7 +1387,7 @@ fn parses_edge_approve_subcommand() {
 
 #[test]
 fn parses_feedback_add_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "feedback", "add", "mem_x", "outdated"]);
+    let cli = Cli::parse_from(["mynd", "feedback", "add", "mem_x", "outdated"]);
     assert!(matches!(
         cli.command,
         Some(Command::Feedback {
@@ -1405,13 +1398,7 @@ fn parses_feedback_add_subcommand() {
 
 #[test]
 fn parses_conflict_resolve_subcommand() {
-    let cli = Cli::parse_from([
-        "hivemind",
-        "conflict",
-        "resolve",
-        "conflict_x",
-        "keep-local",
-    ]);
+    let cli = Cli::parse_from(["mynd", "conflict", "resolve", "conflict_x", "keep-local"]);
     match cli.command {
         Some(Command::Conflict {
             action: ConflictAction::Resolve { id, resolution },
@@ -1425,7 +1412,7 @@ fn parses_conflict_resolve_subcommand() {
 
 #[test]
 fn parses_tags_add_subcommand_with_defaults() {
-    let cli = Cli::parse_from(["hivemind", "tags", "add", "myns"]);
+    let cli = Cli::parse_from(["mynd", "tags", "add", "myns"]);
     match cli.command {
         Some(Command::Tags {
             action:
@@ -1448,7 +1435,7 @@ fn parses_tags_add_subcommand_with_defaults() {
 
 #[test]
 fn parses_limits_set_subcommand() {
-    let cli = Cli::parse_from(["hivemind", "limits", "set", "2000"]);
+    let cli = Cli::parse_from(["mynd", "limits", "set", "2000"]);
     match cli.command {
         Some(Command::Limits {
             action: LimitsAction::Set { tokens },
@@ -1459,7 +1446,7 @@ fn parses_limits_set_subcommand() {
 
 #[test]
 fn parses_data_wipe_with_yes_flag() {
-    let cli = Cli::parse_from(["hivemind", "data", "wipe", "--yes"]);
+    let cli = Cli::parse_from(["mynd", "data", "wipe", "--yes"]);
     match cli.command {
         Some(Command::Data {
             action: DataAction::Wipe { yes },
@@ -1470,13 +1457,7 @@ fn parses_data_wipe_with_yes_flag() {
 
 #[test]
 fn parses_suggest_revise_subcommand() {
-    let cli = Cli::parse_from([
-        "hivemind",
-        "suggest",
-        "revise",
-        "edge_x",
-        "make it a parent",
-    ]);
+    let cli = Cli::parse_from(["mynd", "suggest", "revise", "edge_x", "make it a parent"]);
     match cli.command {
         Some(Command::Suggest {
             action: SuggestAction::Revise { edge_id, feedback },
@@ -1490,7 +1471,7 @@ fn parses_suggest_revise_subcommand() {
 
 #[test]
 fn parses_analytics_with_defaults() {
-    let cli = Cli::parse_from(["hivemind", "analytics"]);
+    let cli = Cli::parse_from(["mynd", "analytics"]);
     match cli.command {
         Some(Command::Analytics { json, days, limit }) => {
             assert!(!json);
@@ -1504,7 +1485,7 @@ fn parses_analytics_with_defaults() {
 #[test]
 fn parses_analytics_with_overrides() {
     let cli = Cli::parse_from([
-        "hivemind",
+        "mynd",
         "analytics",
         "--json",
         "--days",
@@ -1524,7 +1505,7 @@ fn parses_analytics_with_overrides() {
 
 #[test]
 fn parses_update_apply_with_yes_flag() {
-    let cli = Cli::parse_from(["hivemind", "update", "apply", "--yes"]);
+    let cli = Cli::parse_from(["mynd", "update", "apply", "--yes"]);
     match cli.command {
         Some(Command::Update {
             action: UpdateAction::Apply { yes },
@@ -1564,7 +1545,7 @@ fn with_isolated_cli_env<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Like `with_isolated_cli_env`, but also writes a global config with
-/// `[dashboard] api_url = "<api_url>"` — needed for `hivemind suggest`,
+/// `[dashboard] api_url = "<api_url>"` — needed for `mynd suggest`,
 /// which reads the REST API base URL from the global config rather than
 /// an env var.
 fn with_isolated_cli_env_and_dashboard_api_url<T>(api_url: &str, f: impl FnOnce() -> T) -> T {
@@ -1572,10 +1553,10 @@ fn with_isolated_cli_env_and_dashboard_api_url<T>(api_url: &str, f: impl FnOnce(
     let db_dir = tempfile::tempdir().unwrap();
     let cfg_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("test.db");
-    let hivemind_cfg_dir = cfg_dir.path().join("hivemind");
-    fs::create_dir_all(&hivemind_cfg_dir).unwrap();
+    let mynd_cfg_dir = cfg_dir.path().join("mynd");
+    fs::create_dir_all(&mynd_cfg_dir).unwrap();
     fs::write(
-        hivemind_cfg_dir.join("config.toml"),
+        mynd_cfg_dir.join("config.toml"),
         format!("[dashboard]\napi_url = \"{api_url}\"\n"),
     )
     .unwrap();
@@ -2223,16 +2204,13 @@ fn update_check_reports_available_and_up_to_date() {
     let addr = addr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
     unsafe {
-        std::env::set_var(
-            "HIVEMIND_UPDATE_CHECK_URL",
-            format!("http://{addr}/release"),
-        );
+        std::env::set_var("MYND_UPDATE_CHECK_URL", format!("http://{addr}/release"));
     }
     cmd_update(UpdateAction::Check { json: false }).unwrap();
     cmd_update(UpdateAction::Check { json: true }).unwrap();
     // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
     unsafe {
-        std::env::remove_var("HIVEMIND_UPDATE_CHECK_URL");
+        std::env::remove_var("MYND_UPDATE_CHECK_URL");
     }
 }
 
@@ -2248,7 +2226,7 @@ fn update_apply_without_yes_is_cancelled_without_running_binstall() {
 fn suggest_actions_report_friendly_error_when_server_not_running() {
     with_isolated_cli_env_and_dashboard_api_url("http://127.0.0.1:1", || {
         let err = cmd_suggest(SuggestAction::Start).unwrap_err();
-        assert!(err.to_string().contains("hivemind up"));
+        assert!(err.to_string().contains("mynd up"));
         assert!(cmd_suggest(SuggestAction::Status { json: false }).is_err());
         assert!(
             cmd_suggest(SuggestAction::Revise {
@@ -2356,7 +2334,7 @@ fn mcp_install_opencode_writes_config_when_cli_absent() {
     result.unwrap();
     let content =
         fs::read_to_string(xdg_config.path().join("opencode").join("opencode.json")).unwrap();
-    assert!(content.contains("hivemind"));
+    assert!(content.contains("mynd"));
 }
 
 #[test]
@@ -2364,7 +2342,7 @@ fn mcp_install_kimi_writes_config_when_cli_absent() {
     with_isolated_home(|home| {
         cmd_mcp_install("kimi").unwrap();
         let content = fs::read_to_string(home.join(".kimi").join("mcp.json")).unwrap();
-        assert!(content.contains("hivemind"));
+        assert!(content.contains("mynd"));
     });
 }
 
@@ -2373,7 +2351,7 @@ fn mcp_install_codex_writes_toml_and_is_idempotent() {
     with_isolated_home(|home| {
         cmd_mcp_install("codex").unwrap();
         let content = fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
-        assert!(content.contains("[mcp_servers.hivemind]"));
+        assert!(content.contains("[mcp_servers.mynd]"));
         // Second run should detect the existing block and skip re-writing.
         cmd_mcp_install("codex").unwrap();
     });
@@ -2384,7 +2362,7 @@ fn mcp_install_cursor_writes_config() {
     with_isolated_home(|home| {
         cmd_mcp_install("cursor").unwrap();
         let content = fs::read_to_string(home.join(".cursor").join("mcp.json")).unwrap();
-        assert!(content.contains("hivemind"));
+        assert!(content.contains("mynd"));
     });
 }
 
@@ -2398,7 +2376,7 @@ fn mcp_install_windsurf_writes_config() {
                 .join("mcp_config.json"),
         )
         .unwrap();
-        assert!(content.contains("hivemind"));
+        assert!(content.contains("mynd"));
     });
 }
 
@@ -2420,7 +2398,7 @@ fn cmd_status_plain_runs_end_to_end_against_isolated_store() {
 #[test]
 fn cmd_session_start_logs_and_prints_against_real_project_config() {
     // The test binary's cwd is this crate's root, which has a real
-    // .hivemind.toml (see the repo's own dogfood config) — discover_project_root
+    // .mynd.toml (see the repo's own dogfood config) — discover_project_root
     // finds it, so this exercises the full db-open + recall + log-write path
     // against the isolated temp store, not just the `no project config` early
     // return.
@@ -2456,10 +2434,10 @@ fn cmd_status_reports_matrix_not_running_when_configured_but_no_daemon() {
     let db_dir = tempfile::tempdir().unwrap();
     let cfg_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("test.db");
-    let hivemind_cfg_dir = cfg_dir.path().join("hivemind");
-    fs::create_dir_all(&hivemind_cfg_dir).unwrap();
+    let mynd_cfg_dir = cfg_dir.path().join("mynd");
+    fs::create_dir_all(&mynd_cfg_dir).unwrap();
     fs::write(
-        hivemind_cfg_dir.join("config.toml"),
+        mynd_cfg_dir.join("config.toml"),
         "[matrix]\nhomeserver_url = \"https://matrix.example.org\"\nuser_id = \"@bot:example.org\"\n",
     )
     .unwrap();

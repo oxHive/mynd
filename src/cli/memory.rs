@@ -15,7 +15,7 @@ pub enum MemoryAction {
         /// Number of memories to skip, for pagination
         #[arg(long, default_value_t = 0)]
         offset: i64,
-        /// Filter by a tag expression, e.g. "tag:topic:sync" or "tag:status:done & tag:project:hivemind"
+        /// Filter by a tag expression, e.g. "tag:topic:sync" or "tag:status:done & tag:project:mynd"
         #[arg(long)]
         tag: Option<String>,
         /// Emit machine-readable JSON instead of one line per memory

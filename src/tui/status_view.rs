@@ -395,7 +395,7 @@ mod tests {
         let content = render(&data, None, None);
         assert!(content.contains("not running"));
         assert!(!content.contains("none registered")); // has one client
-        assert!(content.contains("No .hivemind.toml found in this directory tree."));
+        assert!(content.contains("No .mynd.toml found in this directory tree."));
         assert!(content.contains("q quit"));
         assert!(!content.contains("k kill server"));
     }

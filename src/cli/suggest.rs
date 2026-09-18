@@ -7,7 +7,7 @@ use super::common::{block_on, print_json};
 #[derive(Subcommand)]
 pub enum SuggestAction {
     /// Start an AI-assisted session that proposes edges between memories
-    /// (requires `hivemind up` to be running)
+    /// (requires `mynd up` to be running)
     Start,
     /// Show the current suggest session's phase and pending suggestions
     Status {
@@ -33,7 +33,7 @@ fn api_base() -> Result<String> {
 
 fn not_running_hint(e: reqwest::Error) -> anyhow::Error {
     if e.is_connect() {
-        anyhow!("could not reach the HiveMind server — start it first with `hivemind up`")
+        anyhow!("could not reach the Mynd server — start it first with `mynd up`")
     } else {
         anyhow::Error::new(e)
     }
@@ -55,7 +55,7 @@ pub fn cmd_suggest(action: SuggestAction) -> Result<()> {
                 return Err(anyhow!("start failed ({status}): {text}"));
             }
             println!("suggest session started — analyzing memories in the background");
-            println!("check progress with: hivemind suggest status");
+            println!("check progress with: mynd suggest status");
             Ok(())
         }),
         SuggestAction::Status { json } => block_on(async {
@@ -95,7 +95,7 @@ pub fn cmd_suggest(action: SuggestAction) -> Result<()> {
                     println!("queued: {}", queued.len());
                 }
                 println!();
-                println!("review pending suggestions with: hivemind edge list --status pending");
+                println!("review pending suggestions with: mynd edge list --status pending");
             }
             Ok(())
         }),

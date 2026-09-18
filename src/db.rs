@@ -271,7 +271,7 @@ mod tests {
         unsafe { std::env::remove_var("HIVEMIND_ORG_DB_PATH") };
         let result = resolve_org_db_path();
         assert!(result.ends_with("org.db"), "got: {result}");
-        assert!(result.contains("hivemind"));
+        assert!(result.contains("mynd"));
     }
 
     #[test]

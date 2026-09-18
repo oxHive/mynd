@@ -350,45 +350,45 @@ mynd dashboard --open        Open the dashboard (requires server running)
 
 ### Managing data from the CLI
 
-Everything you can do in the web dashboard is also available as a CLI command — useful for scripting, headless boxes, or when you just don't want to open a browser. All of these work directly against the local database; `suggest` additionally requires `hivemind up` to be running.
+Everything you can do in the web dashboard is also available as a CLI command — useful for scripting, headless boxes, or when you just don't want to open a browser. All of these work directly against the local database; `suggest` additionally requires `mynd up` to be running.
 
 ```
-hivemind memory list [--tag EXPR] [--json]        List memories (--tag filters by a tag expression, e.g. tag:topic:sync)
-hivemind memory get <id> [--json]                 Show one memory
-hivemind memory search <query> [--json]           Full-text search
-hivemind memory add --title T --content C         Create a memory (--tag repeatable, --layer, --type)
-hivemind memory edit <id> [--title] [--content]   Edit a memory (--tag repeatable, replaces the full tag set)
-hivemind memory tag-add <id> <tags...>             Add tags without touching the rest
-hivemind memory tag-remove <id> <tags...>          Remove tags without touching the rest
-hivemind memory rm <id> [--yes]                    Delete a memory
+mynd memory list [--tag EXPR] [--json]        List memories (--tag filters by a tag expression, e.g. tag:topic:sync)
+mynd memory get <id> [--json]                 Show one memory
+mynd memory search <query> [--json]           Full-text search
+mynd memory add --title T --content C         Create a memory (--tag repeatable, --layer, --type)
+mynd memory edit <id> [--title] [--content]   Edit a memory (--tag repeatable, replaces the full tag set)
+mynd memory tag-add <id> <tags...>             Add tags without touching the rest
+mynd memory tag-remove <id> <tags...>          Remove tags without touching the rest
+mynd memory rm <id> [--yes]                    Delete a memory
 
-hivemind edge list [--memory-id] [--status]       List the memory relationship graph
-hivemind edge add <source> <target> <rel>         Create an edge (parent|child|sibling)
-hivemind edge approve <id> / reject <id>          Approve/reject a pending (e.g. AI-suggested) edge
-hivemind edge status <id> <status>                Set an edge's status directly
+mynd edge list [--memory-id] [--status]       List the memory relationship graph
+mynd edge add <source> <target> <rel>         Create an edge (parent|child|sibling)
+mynd edge approve <id> / reject <id>          Approve/reject a pending (e.g. AI-suggested) edge
+mynd edge status <id> <status>                Set an edge's status directly
 
-hivemind feedback list / add / resolve / dismiss  Flag memories for review and triage feedback
-hivemind conflict list / resolve <id> <resolution> Review and resolve sync conflicts (keep-local|keep-remote)
+mynd feedback list / add / resolve / dismiss  Flag memories for review and triage feedback
+mynd conflict list / resolve <id> <resolution> Review and resolve sync conflicts (keep-local|keep-remote)
 
-hivemind tags list                                Show the tag namespace registry
-hivemind tags add/set/rm <name>                   Create/edit/delete a namespace (predefined ones are guarded)
-hivemind tags value-add/value-remove <name> <v>   Manage a namespace's suggested/fixed values
+mynd tags list                                Show the tag namespace registry
+mynd tags add/set/rm <name>                   Create/edit/delete a namespace (predefined ones are guarded)
+mynd tags value-add/value-remove <name> <v>   Manage a namespace's suggested/fixed values
 
-hivemind limits show / set <tokens>               View or change the max-content-tokens guardrail
+mynd limits show / set <tokens>               View or change the max-content-tokens guardrail
 
-hivemind data export [--output FILE]              Export memories + edges to JSON
-hivemind data import <file>                       Import from a previous export
-hivemind data wipe [--yes]                        Permanently delete all memories, edges, feedback, conflicts
+mynd data export [--output FILE]              Export memories + edges to JSON
+mynd data import <file>                       Import from a previous export
+mynd data wipe [--yes]                        Permanently delete all memories, edges, feedback, conflicts
 
-hivemind suggest start / status / revise / end    Drive an AI-assisted graph-suggestion session
+mynd suggest start / status / revise / end    Drive an AI-assisted graph-suggestion session
 
-hivemind update check [--json]                    Check GitHub releases for a newer version
-hivemind update apply [--yes]                     Self-update via cargo-binstall
+mynd update check [--json]                    Check GitHub releases for a newer version
+mynd update apply [--yes]                     Self-update via cargo-binstall
 
-hivemind analytics [--days N] [--limit N]         Tag/type/project counts, activity by day, recall sessions
+mynd analytics [--days N] [--limit N]         Tag/type/project counts, activity by day, recall sessions
 ```
 
-Pass `--json` where available for machine-readable output. Run `hivemind <command> --help` for full flag lists.
+Pass `--json` where available for machine-readable output. Run `mynd <command> --help` for full flag lists.
 
 ---
 
