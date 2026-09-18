@@ -558,7 +558,7 @@ Add room mappings and the DM allowlist to `~/.config/mynd/config.toml`:
 [matrix]
 homeserver_url = "https://matrix.org"      # written automatically by `matrix login`
 user_id = "@mynd-bot:matrix.org"       # written automatically by `matrix login`
-allowed_users = ["@you:matrix.org"]        # required for DMs — anyone else is ignored
+allowed_users = ["@you:matrix.org"]        # required — DMs, room mentions and invites from anyone else are ignored
 
 [[matrix.rooms]]
 room_id = "!abc123:matrix.org"
@@ -569,6 +569,11 @@ base_tags = ["project:mynd"]
 Rooms the bot is in but not listed here still work — memories land in the `workspace`
 layer tagged `room:<id-or-alias>` + `source:matrix` instead of your configured
 `base_tags`. DMs always use the `personal` layer.
+
+`allowed_users` is the only authorization the bot has. It applies everywhere: the
+bot only joins rooms it is invited to by an allowed user, and in a room it only
+acts on mentions from allowed users. Listing a room under `[[matrix.rooms]]`
+sets tags; it does not grant anyone in that room access to your memories.
 
 Then run it:
 
