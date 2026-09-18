@@ -1281,3 +1281,40 @@ async fn list_session_logs_orders_newest_first() {
     assert_eq!(logs[0].project_name, "second", "newest first");
     assert_eq!(logs[1].project_name, "first");
 }
+
+/// All handlers share one libsql connection, and a libsql transaction is
+/// just `BEGIN` on that connection. Without the store's write lock, two
+/// tasks that both reach `BEGIN` fail with "cannot start a transaction
+/// within a transaction", and a bystander's statement can be swallowed by
+/// (and rolled back with) another task's transaction. Multi-threaded on
+/// purpose so the writers genuinely interleave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_writers_never_collide_on_the_shared_connection() {
+    let (s, _dir) = make_store().await;
+    let store = std::sync::Arc::new(s);
+    let mut handles = Vec::new();
+    for i in 0..40u32 {
+        let store = store.clone();
+        handles.push(tokio::spawn(async move {
+            let id = format!("mem_{i:032x}");
+            store
+                .store(&test_row(&id, "t", "c", &["topic:x".into()]))
+                .await?;
+            store.update(&id, "t2", "c2", &[]).await?;
+            store.set_meta("last_writer", &i.to_string()).await?;
+            anyhow::Ok(())
+        }));
+    }
+    for h in handles {
+        h.await.unwrap().expect("no writer may fail");
+    }
+    assert_eq!(store.count().await.unwrap(), 40);
+    for i in 0..40u32 {
+        let e = store
+            .recall_by_id(&format!("mem_{i:032x}"))
+            .await
+            .unwrap()
+            .expect("every write must have landed");
+        assert_eq!(e.content, "c2");
+    }
+}

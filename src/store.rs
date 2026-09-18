@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use libsql::{Connection, params};
+use libsql::{Connection, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -96,6 +96,16 @@ pub struct JournalRow {
 
 pub struct SqliteStore {
     pub(crate) conn: Connection,
+    /// Serialises writers. Every handler, MCP session and background loop
+    /// shares this one connection, and a libsql transaction is nothing more
+    /// than `BEGIN` executed on it: two tasks reaching `BEGIN` concurrently
+    /// get "cannot start a transaction within a transaction", and a
+    /// standalone statement issued while another task's transaction is
+    /// open gets committed or rolled back with it. Held for the full
+    /// duration of every write (including its `.await`s). Reads are not
+    /// locked: SQLite serialises them at the handle, and seeing another
+    /// task's uncommitted rows is acceptable for this tool.
+    write_lock: tokio::sync::Mutex<()>,
 }
 
 pub const VALID_RELATIONSHIPS: &[&str] = &["parent", "child", "sibling"];
@@ -363,7 +373,26 @@ fn validate_project_singleton_fallback(tags: &[String]) -> Result<()> {
 
 impl SqliteStore {
     pub fn new(conn: Connection) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            write_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Takes the write lock; see `write_lock`. Never call another public
+    /// write method while holding it (the lock is not re-entrant).
+    async fn write(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.write_lock.lock().await
+    }
+
+    /// Opens a transaction that takes SQLite's write lock up front
+    /// (`BEGIN IMMEDIATE`), so a transaction that reads first can never be
+    /// starved or fail with SQLITE_BUSY when it later tries to write.
+    async fn begin(&self) -> Result<libsql::Transaction> {
+        Ok(self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await?)
     }
 
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
@@ -374,7 +403,8 @@ impl SqliteStore {
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
 
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         tx.execute(
             "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -490,7 +520,8 @@ impl SqliteStore {
         validate_tags_against_registry(self, tags).await?;
         let now = chrono_now();
         let token_count = crate::budget::count_entry_tokens(title, content) as i64;
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         let changed = tx
             .execute(
                 "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4 WHERE id = ?5",
@@ -546,7 +577,8 @@ impl SqliteStore {
         validate_tags_against_registry(self, &merged).await?;
 
         let now = chrono_now();
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         for t in tags {
             tx.execute(
                 "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
@@ -578,7 +610,8 @@ impl SqliteStore {
             return Ok(false);
         };
         let now = chrono_now();
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         for t in tags {
             tx.execute(
                 "DELETE FROM memory_tags WHERE memory_id = ?1 AND tag = ?2",
@@ -604,6 +637,7 @@ impl SqliteStore {
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool> {
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute("DELETE FROM memories WHERE id = ?1", params![id])
@@ -622,6 +656,7 @@ impl SqliteStore {
     }
 
     pub async fn delete_all(&self) -> Result<i64> {
+        let _w = self.write().await;
         let changed = self.conn.execute("DELETE FROM memories", ()).await?;
         Ok(changed as i64)
     }
@@ -666,6 +701,7 @@ impl SqliteStore {
         // returned for this identical session-start run.
         let truncated = result.truncated();
 
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO session_start_log
@@ -876,6 +912,7 @@ impl SqliteStore {
         if !VALID_RELATIONSHIPS.contains(&relationship) || source_id == target_id {
             return Ok(EdgeCreate::InvalidRelationship);
         }
+        let _w = self.write().await;
         let endpoints: i64 = {
             let mut rows = self
                 .conn
@@ -924,6 +961,7 @@ impl SqliteStore {
     }
 
     pub async fn set_edge_status(&self, id: &str, status: &str) -> Result<bool> {
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -975,6 +1013,7 @@ impl SqliteStore {
                 VALID_RELATIONSHIPS.join(", ")
             );
         }
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -997,6 +1036,7 @@ impl SqliteStore {
     ) -> Result<FeedbackEntry> {
         let id = format!("fb_{}", uuid::Uuid::new_v4().simple());
         let now = chrono_now();
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO feedback (id, memory_id, signal, note, status, created_at)
@@ -1072,6 +1112,7 @@ impl SqliteStore {
     }
 
     pub async fn set_feedback_status(&self, id: &str, status: &str) -> Result<bool> {
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -1095,6 +1136,7 @@ impl SqliteStore {
             self.update(&mem.id, &mem.title, &conflict.local_content, &mem.tags)
                 .await?;
         }
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -1141,12 +1183,14 @@ impl SqliteStore {
                 .await?;
                 found += 1;
             }
+            let _w = self.write().await;
             self.conn
                 .execute(
                     "DELETE FROM sync_journal WHERE memory_id = ?1",
                     params![j.memory_id.as_str()],
                 )
                 .await?;
+            drop(_w);
         }
         Ok(found)
     }
@@ -1163,6 +1207,7 @@ impl SqliteStore {
     }
 
     pub async fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO _meta (key, value) VALUES (?1, ?2)
@@ -1288,6 +1333,7 @@ impl SqliteStore {
     ) -> Result<ConflictEntry> {
         let id = format!("conflict_{}", uuid::Uuid::new_v4().simple());
         let now = chrono_now();
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO conflicts (id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at)
