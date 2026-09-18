@@ -932,6 +932,12 @@ mod tests {
 
     #[test]
     fn sync_settings_reads_from_global_config() {
+        // Reads an api_key from the file: must not overlap with the tests
+        // that set MYND_*_API_KEY, which override the file for the whole
+        // process. Same lock those tests hold.
+        let _lock = crate::test_env_lock::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         write(
             tmp.path(),
@@ -968,6 +974,12 @@ mod tests {
 
     #[test]
     fn org_sync_some_when_enabled_with_remote_url() {
+        // Reads an api_key from the file: must not overlap with the tests
+        // that set MYND_*_API_KEY, which override the file for the whole
+        // process. Same lock those tests hold.
+        let _lock = crate::test_env_lock::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(
