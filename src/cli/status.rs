@@ -23,31 +23,31 @@ pub fn ensure_global_config() {
     }
 }
 
-/// Print a one-time hint when `hivemind init` has never been run.
+/// Print a one-time hint when `mynd init` has never been run.
 /// Called from commands that work without init but benefit from it.
 pub fn warn_if_not_initialized() {
     let config_path = crate::config::global_config_path();
     let home = home_dir();
 
     if !config_path.exists() {
-        eprintln!("hint: looks like you haven't run `hivemind init` yet.");
+        eprintln!("hint: looks like you haven't run `mynd init` yet.");
         eprintln!("      Run it in your project directory to create config files and");
-        eprintln!("      register HiveMind with your AI coding client.");
+        eprintln!("      register Mynd with your AI coding client.");
         eprintln!();
         return;
     }
 
     // init was run but no AI client has been registered yet
     if detect_registered_clients(&home).is_empty() {
-        eprintln!("hint: no AI client is registered with HiveMind yet.");
+        eprintln!("hint: no AI client is registered with Mynd yet.");
         eprintln!("      The server will start, but your AI client won't connect to it.");
-        eprintln!("      Register once with:  hivemind mcp install claude");
+        eprintln!("      Register once with:  mynd mcp install claude");
         eprintln!("      (or cursor, windsurf, opencode, kimi, codex)");
         eprintln!();
     }
 }
 
-/// TCP-probes whether a HiveMind server is currently listening on
+/// TCP-probes whether a Mynd server is currently listening on
 /// `settings`'s host:port. 0.0.0.0/:: are redirected to 127.0.0.1 since you
 /// can't dial a wildcard bind address directly.
 pub fn probe_server_up(settings: &crate::config::ServerSettings) -> bool {
@@ -125,8 +125,8 @@ pub fn cmd_status(plain: bool) -> Result<()> {
     })?;
     println!("{out}");
     if clients.is_empty() {
-        eprintln!("hint: no AI client is registered with HiveMind yet.");
-        eprintln!("      Register once with:  hivemind mcp install claude");
+        eprintln!("hint: no AI client is registered with Mynd yet.");
+        eprintln!("      Register once with:  mynd mcp install claude");
         eprintln!("      (or cursor, windsurf, opencode, kimi, codex)");
     }
     Ok(())
@@ -206,16 +206,16 @@ pub(crate) fn render_session_start(
         return String::new();
     }
     let mut out = format!(
-        "<hivemind-context project=\"{}\" tokens=\"{}/{}\">\n",
+        "<mynd-context project=\"{}\" tokens=\"{}/{}\">\n",
         result.project, result.used_tokens, result.max_tokens
     );
     for l in &result.loaded {
         out.push_str(&format!("\n## {}\n{}\n", l.entry.title, l.entry.content));
     }
-    out.push_str("</hivemind-context>\n");
+    out.push_str("</mynd-context>\n");
     for s in &result.skipped {
         out.push_str(&format!(
-            "hivemind: skipped recall \"{}\" ({})\n",
+            "mynd: skipped recall \"{}\" ({})\n",
             s.query,
             s.reason.as_str()
         ));
@@ -279,7 +279,7 @@ pub(crate) fn cmd_migrate_inner(
     Ok(())
 }
 
-/// Build the `hivemind status` report. `global_path` is injectable for testing.
+/// Build the `mynd status` report. `global_path` is injectable for testing.
 pub struct LoadedEntrySummary {
     pub title: String,
     pub tokens: usize,
@@ -321,7 +321,7 @@ pub struct StatusData {
 pub enum MatrixStatusLine {
     /// No `[matrix]` section in the global config — matrix isn't set up.
     NotConfigured,
-    /// Configured, but `hivemind matrix run` isn't currently up.
+    /// Configured, but `mynd matrix run` isn't currently up.
     NotRunning,
     Running {
         user_id: String,
@@ -421,7 +421,9 @@ pub async fn build_status_data(
 
     data.project = Some(ProjectStatus {
         project_name: config.project_name.clone(),
-        has_local_config: root.join(".hivemind.local.toml").is_file(),
+        has_local_config: crate::config::PROJECT_LOCAL_CONFIG_NAMES
+            .iter()
+            .any(|n| root.join(n).is_file()),
         file_open_rule_count: config.file_open_rule_count,
         mention_trigger_count: config.mention_trigger_count,
         loaded: result
@@ -454,14 +456,14 @@ pub fn format_status_text(data: &StatusData) -> String {
     let mut out = String::new();
 
     match &data.project_label {
-        Some(label) => writeln!(out, "HiveMind v{} — {label}", data.version).unwrap(),
-        None => writeln!(out, "HiveMind v{}", data.version).unwrap(),
+        Some(label) => writeln!(out, "Mynd v{} — {label}", data.version).unwrap(),
+        None => writeln!(out, "Mynd v{}", data.version).unwrap(),
     }
     writeln!(out, "─────────────────────────────────────────────────────").unwrap();
     if data.server_up {
         writeln!(
             out,
-            "Server:     running at http://{}:{} (hivemind up)",
+            "Server:     running at http://{}:{} (mynd up)",
             data.server_host, data.server_port
         )
         .unwrap();
@@ -491,11 +493,7 @@ pub fn format_status_text(data: &StatusData) -> String {
     match &data.matrix {
         MatrixStatusLine::NotConfigured => {}
         MatrixStatusLine::NotRunning => {
-            writeln!(
-                out,
-                "Matrix:     configured, not running (hivemind matrix run)"
-            )
-            .unwrap();
+            writeln!(out, "Matrix:     configured, not running (mynd matrix run)").unwrap();
         }
         MatrixStatusLine::Running {
             user_id,
@@ -514,10 +512,10 @@ pub fn format_status_text(data: &StatusData) -> String {
     writeln!(out).unwrap();
 
     let Some(project) = &data.project else {
-        writeln!(out, "No .hivemind.toml found in this directory tree.").unwrap();
+        writeln!(out, "No .mynd.toml found in this directory tree.").unwrap();
         writeln!(
             out,
-            "Run `hivemind init` to set up memory hooks for this project."
+            "Run `mynd init` to set up memory hooks for this project."
         )
         .unwrap();
         return out;
@@ -526,9 +524,9 @@ pub fn format_status_text(data: &StatusData) -> String {
     writeln!(out, "Project:    {}", project.project_name).unwrap();
     writeln!(
         out,
-        "Config:     .hivemind.toml{}",
+        "Config:     .mynd.toml{}",
         if project.has_local_config {
-            " + .hivemind.local.toml"
+            " + .mynd.local.toml"
         } else {
             ""
         }

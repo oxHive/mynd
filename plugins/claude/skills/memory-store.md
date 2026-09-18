@@ -1,9 +1,9 @@
 ---
 name: memory-store
-description: Save something to HiveMind memory. Pass a title and content, or describe what to remember and Claude will extract and store it.
+description: Save something to Mynd memory. Pass a title and content, or describe what to remember and Claude will extract and store it.
 ---
 
-Save a new memory to HiveMind.
+Save a new memory to Mynd.
 
 Input from $ARGUMENTS: a title and content to store, or a free-text description of what to remember. This may be plain text, a URL, or a document — if it's a URL or a document reference, fetch/read its actual content first; size and chunking decisions (step 4) need the real content, not just the reference to it.
 
@@ -19,7 +19,7 @@ Ask the user to confirm the title before storing if it is ambiguous.
 
 ### 2. Default the project tag
 
-If `.hivemind.toml` exists in the project root, read it and check for a `[project]` table with a `name` key. If present, default the memory's `project:*` tag to `project:<name>` (lowercased). This is a default only — an explicit user instruction about which project to tag (a different name, or no project tag at all) always overrides it. Skip this step if `.hivemind.toml` doesn't exist or has no `project.name`.
+If `.mynd.toml` exists in the project root, read it and check for a `[project]` table with a `name` key. If present, default the memory's `project:*` tag to `project:<name>` (lowercased). This is a default only — an explicit user instruction about which project to tag (a different name, or no project tag at all) always overrides it. Skip this step if `.mynd.toml` doesn't exist or has no `project.name`.
 
 ### 3. Identify tags
 
@@ -57,5 +57,5 @@ Report back: "Stored: [title] (ID: [id])". If it was chunked, report the index a
 
 - Never auto-store without showing the user what will be saved.
 - Keep titles short and specific enough to be recalled by keyword later.
-- The `.hivemind.toml`-derived project tag is a default, not a mandate — always defer to what the user explicitly says about tagging.
+- The `.mynd.toml`-derived project tag is a default, not a mandate — always defer to what the user explicitly says about tagging.
 - When chunking, the goal is that a later reader (agent or human) only loads the specific chunk relevant to what they need — never the whole original document — so keep chunks focused and the index's link phrases specific enough to choose from without opening them.

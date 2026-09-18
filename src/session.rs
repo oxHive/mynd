@@ -1,5 +1,5 @@
 use crate::budget::count_entry_tokens;
-use crate::config::{HiveMindConfig, RecallSource};
+use crate::config::{MyndConfig, RecallSource};
 use crate::store::{MemoryEntry, SqliteStore};
 use anyhow::Result;
 
@@ -169,7 +169,7 @@ async fn recall_pass(
 /// displaces personal/workspace. A missing `org_store`, or any error running
 /// org recalls, is treated as "nothing more to load" rather than a failure.
 pub async fn execute_session_start(
-    config: &HiveMindConfig,
+    config: &MyndConfig,
     store: &SqliteStore,
     org_store: Option<&SqliteStore>,
 ) -> Result<SessionStartResult> {
@@ -253,7 +253,7 @@ pub async fn execute_session_start(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{HiveMindConfig, Recall, RecallSource};
+    use crate::config::{MyndConfig, Recall, RecallSource};
     use crate::{db, store::SqliteStore};
     use tempfile::TempDir;
 
@@ -284,8 +284,8 @@ mod tests {
         (store, dir)
     }
 
-    fn config(max: usize, recalls: Vec<&str>) -> HiveMindConfig {
-        HiveMindConfig {
+    fn config(max: usize, recalls: Vec<&str>) -> MyndConfig {
+        MyndConfig {
             project_name: "test-proj".to_string(),
             max_tokens: max,
             recalls: recalls

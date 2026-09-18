@@ -12,7 +12,7 @@ pub struct TurnResult {
 
 pub async fn run_turn(
     agent: &AgentSettings,
-    hivemind_bin: &str,
+    mynd_bin: &str,
     prompt: &str,
     resume: Option<&str>,
     system_prompt: Option<&str>,
@@ -26,21 +26,19 @@ pub async fn run_turn(
             // attacker-controlled message text.
             run_opencode_turn(agent, prompt, resume).await
         }
-        AgentKind::Claude => {
-            run_claude_turn(agent, hivemind_bin, prompt, resume, system_prompt).await
-        }
+        AgentKind::Claude => run_claude_turn(agent, mynd_bin, prompt, resume, system_prompt).await,
     }
 }
 
 async fn run_claude_turn(
     agent: &AgentSettings,
-    hivemind_bin: &str,
+    mynd_bin: &str,
     prompt: &str,
     resume: Option<&str>,
     system_prompt: Option<&str>,
 ) -> Result<TurnResult, String> {
     let mcp_config = json!({
-        "mcpServers": { "hivemind": { "command": hivemind_bin, "args": [] } }
+        "mcpServers": { "mynd": { "command": mynd_bin, "args": [] } }
     })
     .to_string();
     let mut cmd = tokio::process::Command::new(&agent.command);
@@ -59,7 +57,7 @@ async fn run_claude_turn(
         .arg(&mcp_config)
         .arg("--strict-mcp-config")
         .arg("--allowedTools")
-        .arg("mcp__hivemind__memory_store,mcp__hivemind__memory_recall,mcp__hivemind__memory_search,mcp__hivemind__memory_update")
+        .arg("mcp__mynd__memory_store,mcp__mynd__memory_recall,mcp__mynd__memory_search,mcp__mynd__memory_update")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -94,7 +92,7 @@ async fn run_opencode_turn(
         cmd.arg("-s").arg(id);
     }
     cmd.arg("--agent")
-        .arg("hivemind-bot")
+        .arg("mynd-bot")
         .arg("--format")
         .arg("json")
         .stdin(std::process::Stdio::null())
@@ -183,7 +181,7 @@ mod tests {
             args: vec![],
             kind: AgentKind::Claude,
         };
-        let result = run_turn(&agent, "/usr/local/bin/hivemind", "remember X", None, None)
+        let result = run_turn(&agent, "/usr/local/bin/mynd", "remember X", None, None)
             .await
             .unwrap();
         assert_eq!(result.session_id, "stub-sess-1");
@@ -194,10 +192,10 @@ mod tests {
         assert!(log.contains("--output-format json"));
         assert!(log.contains("--strict-mcp-config"));
         assert!(log.contains("--allowedTools"));
-        assert!(log.contains("mcp__hivemind__memory_store"));
+        assert!(log.contains("mcp__mynd__memory_store"));
         assert!(
-            log.contains("\"command\":\"/usr/local/bin/hivemind\""),
-            "mcp-config must point at hivemind in stdio mode, not an HTTP url"
+            log.contains("\"command\":\"/usr/local/bin/mynd\""),
+            "mcp-config must point at mynd in stdio mode, not an HTTP url"
         );
         assert!(
             !log.contains("--resume"),
@@ -216,7 +214,7 @@ mod tests {
         };
         run_turn(
             &agent,
-            "/usr/local/bin/hivemind",
+            "/usr/local/bin/mynd",
             "again",
             Some("prior-session"),
             None,
@@ -238,7 +236,7 @@ mod tests {
         };
         run_turn(
             &agent,
-            "/usr/local/bin/hivemind",
+            "/usr/local/bin/mynd",
             "hello",
             None,
             Some("use layer \"personal\" and tag source:matrix"),
@@ -261,7 +259,7 @@ mod tests {
         };
         let result = run_turn(
             &agent,
-            "/usr/local/bin/hivemind",
+            "/usr/local/bin/mynd",
             "remember X",
             Some("sess-1"),
             None,
@@ -271,7 +269,7 @@ mod tests {
         assert_eq!(result.session_id, "stub-sess-2");
         let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
         assert!(log.contains("run"));
-        assert!(log.contains("--agent hivemind-bot"));
+        assert!(log.contains("--agent mynd-bot"));
         assert!(log.contains("-s sess-1"));
         assert!(log.contains("--format json"));
     }
@@ -287,7 +285,7 @@ mod tests {
             args: vec![],
             kind: AgentKind::Claude,
         };
-        let err = run_turn(&agent, "/usr/local/bin/hivemind", "hi", None, None)
+        let err = run_turn(&agent, "/usr/local/bin/mynd", "hi", None, None)
             .await
             .unwrap_err();
         assert!(err.contains("boom"));

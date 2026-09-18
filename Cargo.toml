@@ -1,28 +1,28 @@
 [package]
-name = "oxhivemind"
-version = "0.14.3"
+name = "oxmynd"
+version = "0.15.1"
 edition = "2024"
 description = "A persistent memory MCP server for AI agents"
-repository = "https://github.com/oxhive/hivemind"
+repository = "https://github.com/oxhive/mynd"
 license = "AGPL-3.0-only"
 keywords = ["mcp", "memory", "ai", "agent", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/hivemind-{ target }.tar.gz"
-bin-dir = "hivemind"
+pkg-url = "{ repo }/releases/download/v{ version }/mynd-{ target }.tar.gz"
+bin-dir = "mynd"
 pkg-fmt = "tgz"
 
 [[bin]]
-name = "hivemind"
+name = "mynd"
 path = "src/main.rs"
 
 [lib]
-name = "oxhivemind"
+name = "oxmynd"
 path = "src/lib.rs"
 
 [dependencies]
-rmcp = { version = "2", features = ["server", "macros", "transport-streamable-http-server", "transport-child-process", "client"] }
+rmcp = { version = "3", features = ["server", "macros", "transport-streamable-http-server", "transport-child-process", "client"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["cors"] }
 libsql = { version = "0.9", features = ["core", "replication"] }

@@ -17,7 +17,7 @@ pub struct Recall {
 }
 
 #[derive(Debug, Clone)]
-pub struct HiveMindConfig {
+pub struct MyndConfig {
     pub project_name: String,
     pub max_tokens: usize,
     pub recalls: Vec<Recall>,
@@ -188,7 +188,7 @@ impl Default for UpdateSettings {
     }
 }
 
-/// Which headless-agent CLI `hivemind suggest` / the Matrix bot shell out to.
+/// Which headless-agent CLI `mynd suggest` / the Matrix bot shell out to.
 /// Explicit rather than sniffed from `command`'s file name, so a wrapper
 /// script or a renamed binary doesn't silently change which flags get used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,42 +296,77 @@ struct RawDefaults {
     max_inject_tokens: Option<usize>,
 }
 
+/// Project config filename, current then legacy. `discover_project_root` and
+/// `load_config_with_global` accept either; a not-yet-migrated repo keeps
+/// working with `.hivemind.toml`.
+pub const PROJECT_CONFIG_NAMES: [&str; 2] = [".mynd.toml", ".hivemind.toml"];
+pub const PROJECT_LOCAL_CONFIG_NAMES: [&str; 2] = [".mynd.local.toml", ".hivemind.local.toml"];
+
+/// Path to the project config in `root`, preferring the current name and
+/// falling back to the legacy one. Returns the current-name path when neither
+/// exists (callers surface that as "no config found").
+pub fn project_config_file(root: &Path) -> PathBuf {
+    PROJECT_CONFIG_NAMES
+        .iter()
+        .map(|n| root.join(n))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| root.join(PROJECT_CONFIG_NAMES[0]))
+}
+
+fn project_local_config_file(root: &Path) -> Option<PathBuf> {
+    PROJECT_LOCAL_CONFIG_NAMES
+        .iter()
+        .map(|n| root.join(n))
+        .find(|p| p.is_file())
+}
+
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
     let start = start.canonicalize().ok()?;
     let mut dir: &Path = &start;
     loop {
-        if dir.join(".hivemind.toml").is_file() {
+        if PROJECT_CONFIG_NAMES.iter().any(|n| dir.join(n).is_file()) {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;
     }
 }
 
-pub fn global_config_dir() -> PathBuf {
+fn config_base() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("hivemind");
+        return PathBuf::from(xdg);
     }
-    let home = std::env::var_os("HOME")
+    std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".config").join("hivemind")
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+}
+
+pub fn global_config_dir() -> PathBuf {
+    config_base().join("mynd")
+}
+
+/// Pre-rename global config dir (`hivemind` instead of `mynd`); source for the
+/// one-time directory relocation in [`crate::dir_migrate`].
+pub fn legacy_global_config_dir() -> PathBuf {
+    config_base().join("hivemind")
 }
 
 pub fn global_config_path() -> PathBuf {
     global_config_dir().join("config.toml")
 }
 
-pub fn load_config(project_path: &Path) -> Result<HiveMindConfig> {
+pub fn load_config(project_path: &Path) -> Result<MyndConfig> {
     let root = discover_project_root(project_path).ok_or_else(|| {
         anyhow::anyhow!(
-            "no .hivemind.toml found at or above {}",
+            "no {} found at or above {}",
+            PROJECT_CONFIG_NAMES[0],
             project_path.display()
         )
     })?;
     load_config_with_global(&root, &global_config_path())
 }
 
-pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Result<HiveMindConfig> {
+pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Result<MyndConfig> {
     let global_default = if global_path.is_file() {
         let raw: RawGlobal = toml::from_str(&std::fs::read_to_string(global_path)?)
             .with_context(|| format!("parsing {}", global_path.display()))?;
@@ -340,7 +375,7 @@ pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Resul
         None
     };
 
-    let project_file = project_root.join(".hivemind.toml");
+    let project_file = project_config_file(project_root);
     let raw_project: RawProject = toml::from_str(
         &std::fs::read_to_string(&project_file)
             .with_context(|| format!("reading {}", project_file.display()))?,
@@ -365,9 +400,8 @@ pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Resul
         })
         .collect();
 
-    let local_file = project_root.join(".hivemind.local.toml");
     let mut max_tokens = base_max;
-    if local_file.is_file() {
+    if let Some(local_file) = project_local_config_file(project_root) {
         let raw_local: RawLocal = toml::from_str(&std::fs::read_to_string(&local_file)?)
             .with_context(|| format!("parsing {}", local_file.display()))?;
         max_tokens =
@@ -389,7 +423,7 @@ pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Resul
         raw_project.project.name
     };
 
-    Ok(HiveMindConfig {
+    Ok(MyndConfig {
         project_name,
         max_tokens,
         recalls,
@@ -545,7 +579,7 @@ pub fn load_matrix_settings(global_path: &Path) -> Result<Option<MatrixSettings>
 
 /// Writes `homeserver_url`/`user_id` into the global config's `[matrix]` table,
 /// preserving every other section and any existing `allowed_users`/`[[matrix.rooms]]`.
-/// Used by `hivemind matrix login` after a successful login.
+/// Used by `mynd matrix login` after a successful login.
 pub fn write_matrix_login(global_path: &Path, homeserver_url: &str, user_id: &str) -> Result<()> {
     let mut doc: toml::Value = if global_path.is_file() {
         toml::from_str(&std::fs::read_to_string(global_path)?)
@@ -587,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn discover_walks_up_to_find_project_config() {
+    fn discover_walks_up_to_find_legacy_hivemind_toml() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(root, ".hivemind.toml", "[project]\nname=\"x\"\n");
@@ -598,9 +632,51 @@ mod tests {
     }
 
     #[test]
+    fn discover_walks_up_to_find_mynd_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, ".mynd.toml", "[project]\nname=\"x\"\n");
+        let nested = root.join("internal").join("svc");
+        fs::create_dir_all(&nested).unwrap();
+        let found = discover_project_root(&nested).unwrap();
+        assert_eq!(found, root.canonicalize().unwrap());
+    }
+
+    #[test]
     fn discover_returns_none_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(discover_project_root(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn load_reads_mynd_toml_and_mynd_local_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".mynd.toml",
+            "[project]\nname=\"p\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[\"team\"]\n",
+        );
+        write(
+            tmp.path(),
+            ".mynd.local.toml",
+            "[hooks.on_session_start]\nmax_tokens=500\nrecalls=[\"mine\"]\n",
+        );
+        let missing_global = tmp.path().join("no-global.toml");
+        let cfg = load_config_with_global(tmp.path(), &missing_global).unwrap();
+        assert_eq!(cfg.project_name, "p");
+        assert_eq!(cfg.max_tokens, 2500);
+        assert_eq!(cfg.recalls.len(), 2);
+        assert_eq!(cfg.recalls[1].query, "mine");
+    }
+
+    #[test]
+    fn load_prefers_mynd_toml_over_hivemind_toml_when_both_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".hivemind.toml", "[project]\nname=\"old\"\n");
+        write(tmp.path(), ".mynd.toml", "[project]\nname=\"new\"\n");
+        let missing_global = tmp.path().join("no-global.toml");
+        let cfg = load_config_with_global(tmp.path(), &missing_global).unwrap();
+        assert_eq!(cfg.project_name, "new");
     }
 
     #[test]
@@ -847,10 +923,12 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", tmp.path());
         }
         let dir = global_config_dir();
+        let legacy = legacy_global_config_dir();
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
-        assert_eq!(dir, tmp.path().join("hivemind"));
+        assert_eq!(dir, tmp.path().join("mynd"));
+        assert_eq!(legacy, tmp.path().join("hivemind"));
     }
 
     #[test]
@@ -949,23 +1027,23 @@ mod tests {
             "config.toml",
             "[matrix]\n\
              homeserver_url=\"https://matrix.org\"\n\
-             user_id=\"@hivemind-bot:matrix.org\"\n\
+             user_id=\"@mynd-bot:matrix.org\"\n\
              allowed_users=[\"@you:matrix.org\"]\n\
              \n\
              [[matrix.rooms]]\n\
              room_id=\"!abc123:matrix.org\"\n\
-             alias=\"hivemind-project\"\n\
+             alias=\"mynd-project\"\n\
              base_tags=[\"project:hivemind\"]\n",
         );
         let s = load_matrix_settings(&tmp.path().join("config.toml"))
             .unwrap()
             .expect("matrix settings should be present");
         assert_eq!(s.homeserver_url, "https://matrix.org");
-        assert_eq!(s.user_id, "@hivemind-bot:matrix.org");
+        assert_eq!(s.user_id, "@mynd-bot:matrix.org");
         assert_eq!(s.allowed_users, vec!["@you:matrix.org".to_string()]);
         assert_eq!(s.rooms.len(), 1);
         assert_eq!(s.rooms[0].room_id, "!abc123:matrix.org");
-        assert_eq!(s.rooms[0].alias.as_deref(), Some("hivemind-project"));
+        assert_eq!(s.rooms[0].alias.as_deref(), Some("mynd-project"));
         assert_eq!(s.rooms[0].base_tags, vec!["project:hivemind".to_string()]);
         assert_eq!(s.session_ttl_seconds, DEFAULT_SESSION_TTL_SECONDS);
     }

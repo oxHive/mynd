@@ -14,9 +14,13 @@ jobs:
       checks: write
     uses: oxHive/pipelines/.github/workflows/rust-release.yml@v2
     with:
-      package-name: oxhivemind
-      binary-name: hivemind
+      package-name: oxmynd
+      binary-name: mynd
       dashboard-dir: dashboard
+      # publish-crates: true
+      publish-homebrew: true
+      homebrew-install: 'bin.install "mynd"'
+      homebrew-test-command: 'system "#{bin}/mynd", "--version"'
     secrets: inherit
 
   publish-opencode:

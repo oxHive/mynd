@@ -1,9 +1,9 @@
 ---
 name: memory-list
-description: List all stored memories with titles, tags, and IDs. Use to browse what HiveMind knows before searching or editing.
+description: List all stored memories with titles, tags, and IDs. Use to browse what Mynd knows before searching or editing.
 ---
 
-List all memories stored in HiveMind.
+List all memories stored in Mynd.
 
 ## Process
 

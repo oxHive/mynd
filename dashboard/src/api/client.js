@@ -1,4 +1,4 @@
-export const BASE = window.HIVEMIND_API || (import.meta.env.DEV ? '' : 'http://localhost:3456')
+export const BASE = window.MYND_API || (import.meta.env.DEV ? '' : 'http://localhost:3456')
 
 /**
  * @param {'GET'|'POST'|'PATCH'|'DELETE'} method

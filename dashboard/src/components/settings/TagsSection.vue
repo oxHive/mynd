@@ -17,7 +17,7 @@ const valuesModeTooltip = ref({ visible: false, x: 0, y: 0, text: '' })
 // Predefined namespaces are fully read-only in this UI while the guard is
 // active: color, description, single_value, values_mode, and values all
 // locked. Disable the guard via [tags] guard_predefined_namespaces = false
-// in the global hivemind config to edit them here again.
+// in the global mynd config to edit them here again.
 function isLocked(name) {
   return tagSettings.isPredefined(name) && tagSettings.guardPredefinedNamespaces
 }
@@ -121,7 +121,7 @@ async function save() {
           <TagChip :tag="`${name}:example`" size="md" />
           <span v-if="tagSettings.isPredefined(name)" class="font-mono rounded-sm px-1.5 py-0.5"
             style="font-size:12px; background:var(--hm-bg-elevated); color:var(--hm-text-tertiary); border:0.5px solid var(--hm-border-subtle)"
-            :title="isLocked(name) ? 'Built into HiveMind, locked from deletion/edits. Disable via [tags] guard_predefined_namespaces = false in the global config.' : 'Built into HiveMind, but the guard is currently disabled, so it is editable/removable.'">
+            :title="isLocked(name) ? 'Built into Mynd, locked from deletion/edits. Disable via [tags] guard_predefined_namespaces = false in the global config.' : 'Built into Mynd, but the guard is currently disabled, so it is editable/removable.'">
             PREDEFINED
           </span>
           <span class="flex-1"></span>

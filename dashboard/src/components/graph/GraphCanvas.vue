@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import * as d3 from 'd3'
 import { useMemoriesStore } from '../../stores/memories.js'
 import { useGraphStore } from '../../stores/graph.js'
+import { readStored } from '../../lib/localStore.js'
 
 const emit = defineEmits(['node-click', 'node-hover', 'edge-hover'])
 const memories = useMemoriesStore()
@@ -19,11 +20,11 @@ let panning = false
 let middlePanning = false
 let lastMid = [0, 0]
 
-const CAMERA_KEY = 'hivemind.graph.camera'
+const CAMERA_KEY = 'mynd.graph.camera'
 
 function loadCamera() {
   try {
-    const raw = localStorage.getItem(CAMERA_KEY)
+    const raw = readStored(CAMERA_KEY)
     if (raw) {
       const p = JSON.parse(raw)
       if (typeof p.x === 'number' && typeof p.y === 'number' && typeof p.k === 'number') return p
@@ -36,11 +37,11 @@ function saveCamera() {
   localStorage.setItem(CAMERA_KEY, JSON.stringify(transform))
 }
 
-const PINNED_KEY = 'hivemind.graph.pinned'
+const PINNED_KEY = 'mynd.graph.pinned'
 
 function loadPinned() {
   try {
-    const raw = localStorage.getItem(PINNED_KEY)
+    const raw = readStored(PINNED_KEY)
     return raw ? JSON.parse(raw) : {}
   } catch {
     return {}
