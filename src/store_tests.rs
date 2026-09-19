@@ -615,7 +615,11 @@ async fn list_feedback_filtered_by_memory_id() {
 async fn set_feedback_status_updates() {
     let (s, _dir) = make_store().await;
     s.store(&test_row("mem_g", "G", "body", &[])).await.unwrap();
-    let fb = s.create_feedback("mem_g", "negative", None).await.unwrap();
+    let fb = s
+        .create_feedback("mem_g", "negative", None)
+        .await
+        .unwrap()
+        .unwrap();
     let ok = s.set_feedback_status(&fb.id, "resolved").await.unwrap();
     assert!(ok);
     let items = s.list_feedback(Some("mem_g"), None).await.unwrap();
@@ -1350,4 +1354,62 @@ async fn batched_tag_loading_matches_per_memory_recall_across_batches() {
         let single = s.recall_by_id(&e.id).await.unwrap().unwrap();
         assert_eq!(e.tags, single.tags);
     }
+}
+
+#[tokio::test]
+async fn create_feedback_returns_none_for_unknown_memory() {
+    let (s, _dir) = make_store().await;
+    let result = s
+        .create_feedback("mem_nope", "incorrect", None)
+        .await
+        .unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn create_feedback_returns_entry_for_known_memory() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row("mem_1", "t", "c", &[])).await.unwrap();
+    let entry = s
+        .create_feedback("mem_1", "outdated", Some("stale"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.memory_id, "mem_1");
+    assert_eq!(entry.signal, "outdated");
+}
+
+#[tokio::test]
+async fn delete_all_also_clears_sync_journal_and_session_start_log() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row("mem_1", "t", "c", &[])).await.unwrap();
+    assert!(
+        !s.take_journal().await.unwrap().is_empty(),
+        "store() journals the write"
+    );
+    s.log_session_start(
+        "/proj",
+        &crate::session::SessionStartResult {
+            project: "p".to_string(),
+            loaded: vec![],
+            skipped: vec![],
+            used_tokens: 0,
+            max_tokens: 100,
+            memories_recalled: 0,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.list_session_logs(10).await.unwrap().len(), 1);
+
+    let deleted = s.delete_all().await.unwrap();
+    assert_eq!(deleted, 1);
+    assert!(
+        s.take_journal().await.unwrap().is_empty(),
+        "journal must be cleared too"
+    );
+    assert!(
+        s.list_session_logs(10).await.unwrap().is_empty(),
+        "session_start_log must be cleared too"
+    );
 }

@@ -965,6 +965,20 @@ async fn create_memory_rejects_invalid_memory_type() {
 }
 
 #[tokio::test]
+async fn create_feedback_404s_for_unknown_memory() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/feedback",
+        Some(json!({ "memory_id": "mem_nope", "signal": "incorrect" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no memory"));
+}
+
+#[tokio::test]
 async fn create_and_list_feedback() {
     let (app, _dir) = test_router().await;
 
@@ -1610,6 +1624,7 @@ async fn patch_edge_and_feedback_status() {
     let fb = store
         .create_feedback("mem_a", "outdated", None)
         .await
+        .unwrap()
         .unwrap();
     let (st, body) = req(
         app,

@@ -549,20 +549,23 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
     let host = raw.server.host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = raw.server.port.unwrap_or(3456);
     let dashboard_port = raw.dashboard.port.unwrap_or(3457);
-    let api_url = raw
-        .dashboard
-        .api_url
-        .unwrap_or_else(|| format!("http://{host}:{port}"));
-    // For the CORS origin default, wildcard bind addresses (0.0.0.0 / ::) are
-    // not valid browser origins, so fall back to the loopback address.
-    let cors_host = match host.as_str() {
+    // Wildcard bind addresses (0.0.0.0 / ::) are not something a browser can
+    // dial, so every browser-facing default — the dashboard's own origin
+    // (cors_origin) and the URL it's told to call the API at (api_url) —
+    // falls back to loopback instead. An explicit override in either field
+    // still wins.
+    let browser_host = match host.as_str() {
         "0.0.0.0" | "::" => "127.0.0.1",
         h => h,
     };
+    let api_url = raw
+        .dashboard
+        .api_url
+        .unwrap_or_else(|| format!("http://{browser_host}:{port}"));
     let cors_origin = raw
         .dashboard
         .cors_origin
-        .unwrap_or_else(|| format!("http://{cors_host}:{dashboard_port}"));
+        .unwrap_or_else(|| format!("http://{browser_host}:{dashboard_port}"));
     let sync = SyncSettings {
         enabled: raw.sync.enabled.unwrap_or(false),
         remote_url: raw.sync.remote_url.unwrap_or_default(),
@@ -905,6 +908,19 @@ mod tests {
         assert_eq!(s.api_url, "http://pi.local:4000");
         // wildcard bind → CORS default falls back to loopback
         assert_eq!(s.cors_origin, "http://127.0.0.1:4001");
+    }
+
+    #[test]
+    fn wildcard_bind_remaps_api_url_default_to_loopback_like_cors_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[server]\nhost = \"0.0.0.0\"\nport = 9000\n[dashboard]\nport = 9001\n",
+        );
+        let s = load_server_settings(&tmp.path().join("config.toml")).unwrap();
+        assert_eq!(s.api_url, "http://127.0.0.1:9000");
+        assert_eq!(s.cors_origin, "http://127.0.0.1:9001");
     }
 
     #[test]

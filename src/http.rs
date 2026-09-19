@@ -270,7 +270,11 @@ pub async fn run_up(
     plain: bool,
     notify_on_store: Option<Arc<tokio::sync::Notify>>,
 ) -> Result<()> {
-    let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+    // Sized well above what a burst (import, a suggest session creating
+    // many edges) can produce between two SSE polls, so a slow dashboard
+    // tab sees every "changed"/"update_*"/"suggest_session" event instead
+    // of silently missing ones once the ring buffer wraps.
+    let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(256);
     spawn_change_poller(
         store.clone(),
         events_tx.clone(),

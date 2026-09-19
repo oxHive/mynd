@@ -777,10 +777,17 @@ impl Mynd {
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
             .ok_or_else(|| ErrorData::invalid_params(format!("Memory {} not found", p.id), None))?;
+        // `mem` above already confirmed p.id exists, so `None` here would
+        // mean it was deleted in the instant between that fetch and this
+        // insert — vanishingly unlikely, and internal_error is the right
+        // shape for it (a normal caller can't hit this any other way).
         self.store
             .create_feedback(&p.id, &p.reason, p.note.as_deref())
             .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            .ok_or_else(|| {
+                ErrorData::internal_error(format!("memory {} vanished mid-flag", p.id), None)
+            })?;
         let body = format!(
             "Flagged memory \"{}\" ({}) as \"{}\".\n\
              A feedback record has been created and will appear in the dashboard under Feedback.\n\

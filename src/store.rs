@@ -714,9 +714,19 @@ impl SqliteStore {
         Ok(results)
     }
 
+    /// Deletes every memory (FK cascade takes edges/feedback/conflicts with
+    /// it) plus the two tables the cascade doesn't reach: `sync_journal`
+    /// (stale entries here would surface as phantom conflicts against a
+    /// remote that still has the "deleted" content) and
+    /// `session_start_log` (would otherwise keep every wiped memory's
+    /// title/content in analytics forever).
     pub async fn delete_all(&self) -> Result<i64> {
         let _w = self.write().await;
-        let changed = self.conn.execute("DELETE FROM memories", ()).await?;
+        let tx = self.begin().await?;
+        let changed = tx.execute("DELETE FROM memories", ()).await?;
+        tx.execute("DELETE FROM sync_journal", ()).await?;
+        tx.execute("DELETE FROM session_start_log", ()).await?;
+        tx.commit().await?;
         Ok(changed as i64)
     }
 
@@ -1084,12 +1094,20 @@ impl SqliteStore {
         Ok(changed > 0)
     }
 
+    /// Creates a feedback row, or `None` if `memory_id` does not exist.
+    /// Checked explicitly rather than left to the `feedback.memory_id`
+    /// foreign key: an FK violation surfaces to callers as an opaque 500,
+    /// where "no such memory" is a 404/422-shaped, entirely ordinary case
+    /// (a stale dashboard tab, a typo'd id from the CLI).
     pub async fn create_feedback(
         &self,
         memory_id: &str,
         signal: &str,
         note: Option<&str>,
-    ) -> Result<FeedbackEntry> {
+    ) -> Result<Option<FeedbackEntry>> {
+        if self.recall_by_id(memory_id).await?.is_none() {
+            return Ok(None);
+        }
         let id = format!("fb_{}", uuid::Uuid::new_v4().simple());
         let now = chrono_now();
         let _w = self.write().await;
@@ -1100,14 +1118,14 @@ impl SqliteStore {
                 params![id.as_str(), memory_id, signal, note, now],
             )
             .await?;
-        Ok(FeedbackEntry {
+        Ok(Some(FeedbackEntry {
             id,
             memory_id: memory_id.to_string(),
             signal: signal.to_string(),
             note: note.map(|s| s.to_string()),
             status: "pending".to_string(),
             created_at: now,
-        })
+        }))
     }
 
     pub async fn list_feedback(
