@@ -325,6 +325,7 @@ pub struct StatusData {
     pub registered_clients: Vec<String>,
     pub project: Option<ProjectStatus>,
     pub matrix: MatrixStatusLine,
+    pub discord: DiscordStatusLine,
 }
 
 pub enum MatrixStatusLine {
@@ -336,6 +337,19 @@ pub enum MatrixStatusLine {
         user_id: String,
         sync_state: String,
         room_count: usize,
+        active_sessions: usize,
+    },
+}
+
+pub enum DiscordStatusLine {
+    /// No `[discord]` section in the global config — discord isn't set up.
+    NotConfigured,
+    /// Configured, but `mynd discord run` isn't currently up.
+    NotRunning,
+    Running {
+        application_id: String,
+        sync_state: String,
+        channel_count: usize,
         active_sessions: usize,
     },
 }
@@ -381,6 +395,22 @@ pub async fn build_status_data(
         }
     };
 
+    let discord = match crate::config::load_discord_settings(global_path)? {
+        None => DiscordStatusLine::NotConfigured,
+        Some(_) => {
+            let socket_path = crate::discord::status::socket_path();
+            match crate::discord::status::query_status(&socket_path).await {
+                Ok(reply) => DiscordStatusLine::Running {
+                    application_id: reply.application_id,
+                    sync_state: reply.sync_state,
+                    channel_count: reply.channels.len(),
+                    active_sessions: reply.channels.iter().filter(|c| c.active_session).count(),
+                },
+                Err(_) => DiscordStatusLine::NotRunning,
+            }
+        }
+    };
+
     let mut data = StatusData {
         version,
         project_label,
@@ -394,6 +424,7 @@ pub async fn build_status_data(
         registered_clients: registered_clients.iter().map(|s| s.to_string()).collect(),
         project: None,
         matrix,
+        discord,
     };
 
     let (Some(root), Some(config)) = (root, config) else {
@@ -513,6 +544,29 @@ pub fn format_status_text(data: &StatusData) -> String {
             writeln!(
                 out,
                 "Matrix:     {user_id} ({sync_state}), {room_count} room(s), \
+                 {active_sessions} active session(s)"
+            )
+            .unwrap();
+        }
+    }
+    match &data.discord {
+        DiscordStatusLine::NotConfigured => {}
+        DiscordStatusLine::NotRunning => {
+            writeln!(
+                out,
+                "Discord:    configured, not running (mynd discord run)"
+            )
+            .unwrap();
+        }
+        DiscordStatusLine::Running {
+            application_id,
+            sync_state,
+            channel_count,
+            active_sessions,
+        } => {
+            writeln!(
+                out,
+                "Discord:    {application_id} ({sync_state}), {channel_count} channel(s), \
                  {active_sessions} active session(s)"
             )
             .unwrap();

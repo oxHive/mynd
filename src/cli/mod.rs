@@ -51,6 +51,11 @@ pub enum Command {
         #[command(subcommand)]
         action: MatrixAction,
     },
+    /// Discord chat interface: capture/recall Mynd memories from a channel or DM
+    Discord {
+        #[command(subcommand)]
+        action: DiscordAction,
+    },
     /// Migrate the database from the legacy ~/.hivemind/ path to XDG data dir
     Migrate,
     /// Print the session-start memory context for the current project (for hooks and scripts)
@@ -128,6 +133,9 @@ pub enum ServiceAction {
         /// Also install the Matrix bot unit (requires `mynd matrix login` first)
         #[arg(long)]
         matrix: bool,
+        /// Also install the Discord bot unit (requires `mynd discord login` first)
+        #[arg(long)]
+        discord: bool,
     },
     /// Stop and remove the Mynd background service
     Uninstall,
@@ -157,6 +165,27 @@ pub enum MatrixAction {
 }
 
 #[derive(Subcommand)]
+pub enum DiscordAction {
+    /// Log into a Discord bot account once; persists the token to the OS keyring
+    Login,
+    /// Run the Discord bot daemon (requires `mynd discord login` first)
+    Run {
+        /// Print verbose connection/message logs to stderr
+        #[arg(long)]
+        debug: bool,
+    },
+    /// Show whether the daemon is running and its sync/session state
+    Status,
+    /// Send a one-off DM to a user (connectivity smoke test, no daemon needed)
+    Send {
+        /// Recipient's Discord user ID (snowflake, e.g. 111111111111111111)
+        user_id: String,
+        /// Message text to send
+        message: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum McpAction {
     /// Register Mynd as an MCP server in a supported AI coding client
     Install {
@@ -168,6 +197,7 @@ pub enum McpAction {
 mod analytics;
 pub(crate) mod common;
 mod data;
+mod discord_cmds;
 mod edge;
 mod feedback;
 mod init;
@@ -185,6 +215,7 @@ mod tests;
 
 pub use analytics::*;
 pub use data::*;
+pub use discord_cmds::*;
 pub use edge::*;
 pub use feedback::*;
 pub use init::*;
