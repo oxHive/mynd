@@ -471,6 +471,12 @@ api_key = ""           # gateway-issued key, or sqld auth token
 interval_seconds = 300
 sync_on_store = true
 sync_on_startup = true
+
+[update]
+enabled = true                 # check GitHub releases for a newer version
+check_interval_seconds = 600
+allow_apply_from_api = true    # let the dashboard's Update button run `cargo binstall` + restart;
+                               # set false to require `mynd update apply` on the CLI
 ```
 
 `$XDG_CONFIG_HOME/mynd/config.toml` is used instead if `XDG_CONFIG_HOME` is set.
@@ -480,6 +486,8 @@ sync_on_startup = true
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MYND_DB_PATH` | `~/.local/share/mynd/memories.db` (or `$XDG_DATA_HOME/mynd/memories.db`) | Path to the SQLite database |
+| `MYND_SYNC_API_KEY` | – | Overrides `[sync] api_key`, so the token never has to be written to `config.toml` |
+| `MYND_ORG_SYNC_API_KEY` | – | Overrides `[org_sync] api_key` |
 
 Databases from versions before 0.3.x lived at `~/.hivemind/memories.db`; run `mynd migrate` to move them.
 
@@ -505,6 +513,8 @@ Two `remote_url` targets are supported:
 |-------|------------------------|-----------|
 | **Self-hosted** | Your own [sqld](https://github.com/tursodatabase/libsql/tree/main/libsql-server) server | sqld auth token; leave empty if sqld has no auth configured |
 | **Oxhive hosted** *(coming soon)* | `https://sync.oxhive.dev` | Your Oxhive account key |
+
+`api_key` is a credential: `mynd init` creates `config.toml` owner-only (`0600`), and `mynd` warns at startup if the file holds a key but is readable by other users. On shared machines prefer the `MYND_SYNC_API_KEY` / `MYND_ORG_SYNC_API_KEY` environment variables and leave `api_key` empty.
 
 `api_key` is never sent to Claude or the dashboard. It is only used during replication.
 
@@ -561,7 +571,7 @@ Add room mappings and the DM allowlist to `~/.config/mynd/config.toml`:
 [matrix]
 homeserver_url = "https://matrix.org"      # written automatically by `matrix login`
 user_id = "@mynd-bot:matrix.org"       # written automatically by `matrix login`
-allowed_users = ["@you:matrix.org"]        # required for DMs — anyone else is ignored
+allowed_users = ["@you:matrix.org"]        # required — DMs, room mentions and invites from anyone else are ignored
 
 [[matrix.rooms]]
 room_id = "!abc123:matrix.org"
@@ -572,6 +582,11 @@ base_tags = ["project:mynd"]
 Rooms the bot is in but not listed here still work — memories land in the `workspace`
 layer tagged `room:<id-or-alias>` + `source:matrix` instead of your configured
 `base_tags`. DMs always use the `personal` layer.
+
+`allowed_users` is the only authorization the bot has. It applies everywhere: the
+bot only joins rooms it is invited to by an allowed user, and in a room it only
+acts on mentions from allowed users. Listing a room under `[[matrix.rooms]]`
+sets tags; it does not grant anyone in that room access to your memories.
 
 Then run it:
 
@@ -782,7 +797,7 @@ No. Memories stored with `layer = "personal"` follow you, not the repo. Only `la
 
 **Is the MCP connection authenticated?**
 
-The MCP endpoint (`/mcp`) and the REST API (`/api/v1/*`) are unauthenticated and bind to `127.0.0.1` by default, so only processes on your local machine can reach them. The `api_key` under `[sync]` is your auth token for the remote sync target (sqld token for self-hosted, account key for Oxhive hosted); it is used only during replication and has nothing to do with Claude's connection to Mynd.
+The MCP endpoint (`/mcp`) and the REST API (`/api/v1/*`) are unauthenticated and bind to `127.0.0.1` by default, so only processes on your local machine can reach them. To keep web pages from riding along on that trust, the server also rejects requests whose `Host` header is not loopback (or your configured `[server] host` / `[dashboard] api_url`), which blocks DNS-rebinding attacks, and rejects state-changing requests whose `Origin` is not the dashboard's (or another loopback origin), which blocks cross-site request forgery. Non-browser clients (the CLI, curl, MCP clients) send neither header and are unaffected. The `api_key` under `[sync]` is your auth token for the remote sync target (sqld token for self-hosted, account key for Oxhive hosted); it is used only during replication and has nothing to do with Claude's connection to Mynd.
 
 **Can I use Mynd with agents other than Claude Code?**
 

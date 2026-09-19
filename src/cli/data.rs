@@ -133,6 +133,20 @@ fn cmd_import(input: PathBuf) -> Result<()> {
         let text = std::fs::read_to_string(&input)?;
         let body: ImportBody = serde_json::from_str(&text)?;
         let store = open_store().await?;
+        crate::api::transfer::validate_import_memories(
+            &store,
+            body.memories.iter().map(|m| {
+                (
+                    m.id.as_str(),
+                    m.title.as_str(),
+                    m.content.as_str(),
+                    m.layer.as_str(),
+                    m.memory_type.as_str(),
+                )
+            }),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
         let mut mem_count = 0usize;
         for m in &body.memories {
             store

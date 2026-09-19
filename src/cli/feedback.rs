@@ -109,7 +109,8 @@ pub fn cmd_feedback(action: FeedbackAction) -> Result<()> {
             let store = open_store().await?;
             let entry = store
                 .create_feedback(&memory_id, &signal, note.as_deref())
-                .await?;
+                .await?
+                .ok_or_else(|| anyhow!("no memory {memory_id}"))?;
             println!("created {}", entry.id);
             Ok(())
         }),

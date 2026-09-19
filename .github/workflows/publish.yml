@@ -12,6 +12,8 @@ jobs:
       contents: write
       pull-requests: read
       checks: write
+    # Pinned to a commit (see pull-request.yml); this job signs and publishes
+    # release artifacts, so the workflow it runs must not change under it.
     uses: oxHive/pipelines/.github/workflows/rust-release.yml@v2
     with:
       package-name: oxmynd
@@ -21,7 +23,20 @@ jobs:
       publish-homebrew: true
       homebrew-install: 'bin.install "mynd"'
       homebrew-test-command: 'system "#{bin}/mynd", "--version"'
-    secrets: inherit
+    # Only the secrets rust-release.yml declares (all optional), rather than
+    # `inherit`, so the reusable workflow never sees anything else this repo
+    # holds (NPM_TOKEN, CODECOV_TOKEN, ...).
+    secrets:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      HOMEBREW_APP_ID: ${{ secrets.HOMEBREW_APP_ID }}
+      HOMEBREW_APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+      MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
+      MATRIX_USER: ${{ secrets.MATRIX_USER }}
+      MATRIX_PASSWORD: ${{ secrets.MATRIX_PASSWORD }}
+      MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
+      MATRIX_ALERT_ROOM_ID: ${{ secrets.MATRIX_ALERT_ROOM_ID }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      DISCORD_ALERT_WEBHOOK_URL: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
 
   publish-opencode:
     permissions:

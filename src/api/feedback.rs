@@ -30,10 +30,13 @@ pub(super) async fn create_feedback(
     State(store): State<Store>,
     Json(b): Json<CreateFeedbackBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let entry = store
+    match store
         .create_feedback(&b.memory_id, &b.signal, b.note.as_deref())
-        .await?;
-    Ok((StatusCode::CREATED, Json(json!({ "id": entry.id }))))
+        .await?
+    {
+        Some(entry) => Ok((StatusCode::CREATED, Json(json!({ "id": entry.id })))),
+        None => Err(not_found(format!("no memory {}", b.memory_id))),
+    }
 }
 
 pub(super) async fn patch_feedback(

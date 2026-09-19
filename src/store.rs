@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use libsql::{Connection, params};
+use libsql::{Connection, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -96,6 +96,16 @@ pub struct JournalRow {
 
 pub struct SqliteStore {
     pub(crate) conn: Connection,
+    /// Serialises writers. Every handler, MCP session and background loop
+    /// shares this one connection, and a libsql transaction is nothing more
+    /// than `BEGIN` executed on it: two tasks reaching `BEGIN` concurrently
+    /// get "cannot start a transaction within a transaction", and a
+    /// standalone statement issued while another task's transaction is
+    /// open gets committed or rolled back with it. Held for the full
+    /// duration of every write (including its `.await`s). Reads are not
+    /// locked: SQLite serialises them at the handle, and seeing another
+    /// task's uncommitted rows is acceptable for this tool.
+    write_lock: tokio::sync::Mutex<()>,
 }
 
 pub const VALID_RELATIONSHIPS: &[&str] = &["parent", "child", "sibling"];
@@ -363,18 +373,59 @@ fn validate_project_singleton_fallback(tags: &[String]) -> Result<()> {
 
 impl SqliteStore {
     pub fn new(conn: Connection) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            write_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Takes the write lock; see `write_lock`. Never call another public
+    /// write method while holding it (the lock is not re-entrant).
+    async fn write(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.write_lock.lock().await
+    }
+
+    /// Opens a transaction that takes SQLite's write lock up front
+    /// (`BEGIN IMMEDIATE`), so a transaction that reads first can never be
+    /// starved or fail with SQLITE_BUSY when it later tries to write.
+    async fn begin(&self) -> Result<libsql::Transaction> {
+        Ok(self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await?)
+    }
+
+    /// Rejects a title+content pair whose token count exceeds the
+    /// `max_content_tokens` guardrail. Called by `store`/`update` so no
+    /// entry point (MCP, REST, CLI, import) can bypass it; callers that
+    /// want a nicer status code can call it first themselves.
+    pub async fn check_content_size(&self, title: &str, content: &str) -> Result<()> {
+        let tokens = crate::budget::count_entry_tokens(title, content) as i64;
+        let limit = self.max_content_tokens().await;
+        if tokens > limit {
+            return Err(anyhow!(
+                "content is {tokens} tokens, exceeds max_content_tokens ({limit}). \
+                 Split into an index memory plus child memories, linked via \
+                 [phrase](child:mem_xxx) — store each child first, then reference \
+                 their real returned ids from the index's content."
+            ));
+        }
+        Ok(())
     }
 
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        m.layer.parse::<crate::model::Layer>()?;
+        m.memory_type.parse::<crate::model::MemoryType>()?;
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
+        self.check_content_size(m.title, m.content).await?;
         let now = chrono_now();
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
 
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         tx.execute(
             "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -453,6 +504,45 @@ impl SqliteStore {
         }
     }
 
+    /// Loads tags for many entries in one query per `TAG_BATCH` ids rather
+    /// than one query per entry: `list_memories` with the default limit
+    /// used to issue 201 statements, and `find_by_tag_expr`/export one per
+    /// row in the table.
+    async fn attach_tags(&self, mut entries: Vec<MemoryEntry>) -> Result<Vec<MemoryEntry>> {
+        const TAG_BATCH: usize = 500;
+        if entries.is_empty() {
+            return Ok(entries);
+        }
+        let mut by_id: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for chunk in entries.chunks(TAG_BATCH) {
+            let placeholders = (1..=chunk.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT memory_id, tag FROM memory_tags WHERE memory_id IN ({placeholders}) \
+                 ORDER BY memory_id, tag"
+            );
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|e| libsql::Value::Text(e.id.clone()))
+                .collect();
+            let mut rows = self.conn.query(&sql, params).await?;
+            while let Some(row) = rows.next().await? {
+                let id: String = row.get(0)?;
+                let tag: String = row.get(1)?;
+                by_id.entry(id).or_default().push(tag);
+            }
+        }
+        for e in &mut entries {
+            if let Some(tags) = by_id.remove(&e.id) {
+                e.tags = tags;
+            }
+        }
+        Ok(entries)
+    }
+
     pub async fn search(&self, query: &str, limit: i64) -> Result<Vec<MemoryEntry>> {
         let quoted = fts_quote(query);
         if quoted.is_empty() {
@@ -472,11 +562,9 @@ impl SqliteStore {
             .await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            let entry = self.row_to_entry(&row)?;
-            let tags = self.fetch_tags(&entry.id).await?;
-            results.push(MemoryEntry { tags, ..entry });
+            results.push(self.row_to_entry(&row)?);
         }
-        Ok(results)
+        self.attach_tags(results).await
     }
 
     pub async fn update(
@@ -488,9 +576,11 @@ impl SqliteStore {
     ) -> Result<bool> {
         validate_tag_format(tags)?;
         validate_tags_against_registry(self, tags).await?;
+        self.check_content_size(title, content).await?;
         let now = chrono_now();
         let token_count = crate::budget::count_entry_tokens(title, content) as i64;
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         let changed = tx
             .execute(
                 "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4 WHERE id = ?5",
@@ -546,7 +636,8 @@ impl SqliteStore {
         validate_tags_against_registry(self, &merged).await?;
 
         let now = chrono_now();
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         for t in tags {
             tx.execute(
                 "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
@@ -578,7 +669,8 @@ impl SqliteStore {
             return Ok(false);
         };
         let now = chrono_now();
-        let tx = self.conn.transaction().await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
         for t in tags {
             tx.execute(
                 "DELETE FROM memory_tags WHERE memory_id = ?1 AND tag = ?2",
@@ -604,6 +696,7 @@ impl SqliteStore {
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool> {
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute("DELETE FROM memories WHERE id = ?1", params![id])
@@ -621,8 +714,19 @@ impl SqliteStore {
         Ok(results)
     }
 
+    /// Deletes every memory (FK cascade takes edges/feedback/conflicts with
+    /// it) plus the two tables the cascade doesn't reach: `sync_journal`
+    /// (stale entries here would surface as phantom conflicts against a
+    /// remote that still has the "deleted" content) and
+    /// `session_start_log` (would otherwise keep every wiped memory's
+    /// title/content in analytics forever).
     pub async fn delete_all(&self) -> Result<i64> {
-        let changed = self.conn.execute("DELETE FROM memories", ()).await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
+        let changed = tx.execute("DELETE FROM memories", ()).await?;
+        tx.execute("DELETE FROM sync_journal", ()).await?;
+        tx.execute("DELETE FROM session_start_log", ()).await?;
+        tx.commit().await?;
         Ok(changed as i64)
     }
 
@@ -666,6 +770,7 @@ impl SqliteStore {
         // returned for this identical session-start run.
         let truncated = result.truncated();
 
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO session_start_log
@@ -730,18 +835,15 @@ impl SqliteStore {
             .await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            let entry = self.row_to_entry(&row)?;
-            let tags = self.fetch_tags(&entry.id).await?;
-            results.push(MemoryEntry { tags, ..entry });
+            results.push(self.row_to_entry(&row)?);
         }
-        Ok(results)
+        self.attach_tags(results).await
     }
 
-    /// Evaluates a tag boolean expression against every stored memory. Reuses
-    /// `list_memories`'s per-row tag fetch (same N+1 pattern already used by
-    /// `list_memories`/`search`) rather than a bulk-query optimization — fine
-    /// at this tool's realistic memory counts (see `export()`'s identical
-    /// `list_memories(100_000, 0)` full-table convention).
+    /// Evaluates a tag boolean expression against every stored memory. Loads
+    /// the whole table (tags batched via `attach_tags`) and filters in Rust;
+    /// pushing the expression into SQL is the next step if tables grow past
+    /// what a single scan handles comfortably.
     pub async fn find_by_tag_expr(
         &self,
         expr: &crate::tag_query::TagExpr,
@@ -876,6 +978,7 @@ impl SqliteStore {
         if !VALID_RELATIONSHIPS.contains(&relationship) || source_id == target_id {
             return Ok(EdgeCreate::InvalidRelationship);
         }
+        let _w = self.write().await;
         let endpoints: i64 = {
             let mut rows = self
                 .conn
@@ -924,6 +1027,7 @@ impl SqliteStore {
     }
 
     pub async fn set_edge_status(&self, id: &str, status: &str) -> Result<bool> {
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -975,6 +1079,7 @@ impl SqliteStore {
                 VALID_RELATIONSHIPS.join(", ")
             );
         }
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -989,14 +1094,23 @@ impl SqliteStore {
         Ok(changed > 0)
     }
 
+    /// Creates a feedback row, or `None` if `memory_id` does not exist.
+    /// Checked explicitly rather than left to the `feedback.memory_id`
+    /// foreign key: an FK violation surfaces to callers as an opaque 500,
+    /// where "no such memory" is a 404/422-shaped, entirely ordinary case
+    /// (a stale dashboard tab, a typo'd id from the CLI).
     pub async fn create_feedback(
         &self,
         memory_id: &str,
         signal: &str,
         note: Option<&str>,
-    ) -> Result<FeedbackEntry> {
+    ) -> Result<Option<FeedbackEntry>> {
+        if self.recall_by_id(memory_id).await?.is_none() {
+            return Ok(None);
+        }
         let id = format!("fb_{}", uuid::Uuid::new_v4().simple());
         let now = chrono_now();
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO feedback (id, memory_id, signal, note, status, created_at)
@@ -1004,14 +1118,14 @@ impl SqliteStore {
                 params![id.as_str(), memory_id, signal, note, now],
             )
             .await?;
-        Ok(FeedbackEntry {
+        Ok(Some(FeedbackEntry {
             id,
             memory_id: memory_id.to_string(),
             signal: signal.to_string(),
             note: note.map(|s| s.to_string()),
             status: "pending".to_string(),
             created_at: now,
-        })
+        }))
     }
 
     pub async fn list_feedback(
@@ -1072,6 +1186,7 @@ impl SqliteStore {
     }
 
     pub async fn set_feedback_status(&self, id: &str, status: &str) -> Result<bool> {
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -1095,6 +1210,7 @@ impl SqliteStore {
             self.update(&mem.id, &mem.title, &conflict.local_content, &mem.tags)
                 .await?;
         }
+        let _w = self.write().await;
         let changed = self
             .conn
             .execute(
@@ -1141,12 +1257,14 @@ impl SqliteStore {
                 .await?;
                 found += 1;
             }
+            let _w = self.write().await;
             self.conn
                 .execute(
                     "DELETE FROM sync_journal WHERE memory_id = ?1",
                     params![j.memory_id.as_str()],
                 )
                 .await?;
+            drop(_w);
         }
         Ok(found)
     }
@@ -1163,6 +1281,7 @@ impl SqliteStore {
     }
 
     pub async fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO _meta (key, value) VALUES (?1, ?2)
@@ -1288,6 +1407,7 @@ impl SqliteStore {
     ) -> Result<ConflictEntry> {
         let id = format!("conflict_{}", uuid::Uuid::new_v4().simple());
         let now = chrono_now();
+        let _w = self.write().await;
         self.conn
             .execute(
                 "INSERT INTO conflicts (id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at)

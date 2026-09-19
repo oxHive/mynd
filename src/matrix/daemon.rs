@@ -31,6 +31,20 @@ pub struct EventDecision {
     pub is_dm: bool,
 }
 
+/// True if `user_id` is in `[matrix] allowed_users`. This is the single
+/// authorization check for everything the bot does on someone's behalf:
+/// handling a message (DM or room), and accepting a room invite.
+pub fn is_allowed_user(settings: &MatrixSettings, user_id: &str) -> bool {
+    settings.allowed_users.iter().any(|u| u == user_id)
+}
+
+/// Decides whether a message should be acted on. The sender must be in
+/// `allowed_users` in every case — a room message additionally has to
+/// mention the bot so it can stay quiet in ordinary chatter. Rooms are
+/// federated and anyone can invite the bot into one, so a room message
+/// from a non-allowed user is exactly as untrusted as a DM from one: acting
+/// on it would let any Matrix user read, store, and rewrite memories
+/// through the agent.
 pub fn decide(
     settings: &MatrixSettings,
     _room_id: &str,
@@ -39,17 +53,13 @@ pub fn decide(
     is_own_message: bool,
     mentions_bot: bool,
 ) -> EventDecision {
-    if is_own_message {
+    if is_own_message || !is_allowed_user(settings, sender_user_id) {
         return EventDecision {
             should_handle: false,
             is_dm,
         };
     }
-    let should_handle = if is_dm {
-        settings.allowed_users.iter().any(|u| u == sender_user_id)
-    } else {
-        mentions_bot
-    };
+    let should_handle = is_dm || mentions_bot;
     EventDecision {
         should_handle,
         is_dm,
@@ -251,12 +261,26 @@ pub async fn run(settings: MatrixSettings, agent: AgentSettings, mynd_bin: Strin
 
     let invite_bot_user_id = bot_user_id.clone();
     let invite_client = client.clone();
+    let invite_settings = settings.clone();
     client.add_event_handler(move |room_member: StrippedRoomMemberEvent, room: Room| {
         let bot_user_id = invite_bot_user_id.clone();
         let client = invite_client.clone();
+        let settings = invite_settings.clone();
         async move {
             if room_member.state_key.as_str() != bot_user_id || room.state() != RoomState::Invited
             {
+                return;
+            }
+            // Only allowed users may pull the bot into a room. Joining an
+            // arbitrary invite would hand the inviter a channel to the
+            // agent (see `decide`), and even a silent bot leaks its
+            // presence and room membership.
+            if !is_allowed_user(&settings, room_member.sender.as_str()) {
+                tracing::info!(
+                    room_id = %room.room_id(),
+                    sender = %room_member.sender,
+                    "ignoring invite from non-allowed user"
+                );
                 return;
             }
             let is_direct = room_member.content.is_direct.unwrap_or(false);
@@ -310,8 +334,8 @@ pub async fn run(settings: MatrixSettings, agent: AgentSettings, mynd_bin: Strin
                 mentions_bot,
             );
             if !decision.should_handle {
-                if is_dm && !is_own_message {
-                    tracing::debug!(sender = %event.sender, "DM from non-allowed user, ignoring");
+                if !is_own_message && !is_allowed_user(&settings, event.sender.as_str()) {
+                    tracing::debug!(sender = %event.sender, is_dm, "message from non-allowed user, ignoring");
                 } else {
                     tracing::debug!(sender = %event.sender, "message not handled (no mention or own message)");
                 }
@@ -454,7 +478,23 @@ mod tests {
     }
 
     #[test]
-    fn room_message_with_mention_is_handled_regardless_of_sender() {
+    fn room_message_with_mention_from_allowed_user_is_handled() {
+        let d = decide(
+            &settings(),
+            "!abc:matrix.org",
+            false,
+            "@you:matrix.org",
+            false,
+            true,
+        );
+        assert!(d.should_handle);
+        assert!(!d.is_dm);
+    }
+
+    #[test]
+    fn room_message_with_mention_from_non_allowed_user_is_ignored() {
+        // Rooms are federated: anyone can create one and invite the bot.
+        // A mention alone must never be enough to reach the agent.
         let d = decide(
             &settings(),
             "!abc:matrix.org",
@@ -463,7 +503,30 @@ mod tests {
             false,
             true,
         );
-        assert!(d.should_handle);
-        assert!(!d.is_dm);
+        assert!(!d.should_handle);
+    }
+
+    #[test]
+    fn mapped_room_does_not_bypass_the_allowlist() {
+        // A room listed under [[matrix.rooms]] only sets tags; it grants no
+        // authorization to the people in it.
+        let d = decide(
+            &settings(),
+            "!abc:matrix.org",
+            false,
+            "@stranger:matrix.org",
+            false,
+            true,
+        );
+        assert!(!d.should_handle);
+    }
+
+    #[test]
+    fn is_allowed_user_matches_exactly() {
+        let s = settings();
+        assert!(is_allowed_user(&s, "@you:matrix.org"));
+        assert!(!is_allowed_user(&s, "@you:matrix.org.evil"));
+        assert!(!is_allowed_user(&s, "@You:matrix.org"));
+        assert!(!is_allowed_user(&s, ""));
     }
 }

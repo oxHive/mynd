@@ -167,7 +167,7 @@ pub fn scaffold(
             &project_claude_md(&project_name),
         )?,
         ensure_global_claude_block(&home.join(".claude").join("CLAUDE.md"))?,
-        write_if_absent(&config_dir.join("config.toml"), GLOBAL_CONFIG)?,
+        write_private_if_absent(&config_dir.join("config.toml"), GLOBAL_CONFIG)?,
         ensure_claude_settings_hook(project_root)?,
     ];
 
@@ -196,6 +196,19 @@ pub(crate) fn write_if_absent(path: &Path, contents: &str) -> Result<(PathBuf, &
         return Ok((path.to_path_buf(), "exists"));
     }
     write_atomic(path, contents)?;
+    Ok((path.to_path_buf(), "created"))
+}
+
+/// `write_if_absent` for files that may hold credentials (the global
+/// config's `api_key`): created owner-only, see `config::write_private_file`.
+pub(crate) fn write_private_if_absent(
+    path: &Path,
+    contents: &str,
+) -> Result<(PathBuf, &'static str)> {
+    if path.exists() {
+        return Ok((path.to_path_buf(), "exists"));
+    }
+    crate::config::write_private_file(path, contents)?;
     Ok((path.to_path_buf(), "created"))
 }
 

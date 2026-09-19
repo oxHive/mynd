@@ -36,6 +36,8 @@ pub fn app_router(
     mcp_url: String,
     update_state: SharedUpdateState,
     guard_predefined_namespaces: bool,
+    request_guard: api::guard::GuardConfig,
+    shutdown: ShutdownSignal,
 ) -> Router {
     // Fires whenever a memory or edge is created/updated/deleted, either via
     // an MCP tool call (below) or the REST API (api::router) — the dashboard
@@ -75,7 +77,62 @@ pub fn app_router(
         guard_predefined_namespaces,
     )
     .nest_service("/mcp", mcp)
+    // Lets long-lived handlers (the SSE event stream) end when the server
+    // is shutting down, so graceful shutdown can actually drain.
+    .layer(axum::Extension(shutdown))
+    // Outermost: rejects DNS-rebound and cross-site browser requests before
+    // they reach either the REST routes or the MCP service. See api::guard.
+    .layer(axum::middleware::from_fn_with_state(
+        request_guard,
+        api::guard::guard,
+    ))
 }
+
+/// Broadcast "the server is stopping" to every listener, SSE handler and
+/// the TUI. `false` until shutdown is requested, then `true` forever.
+pub type ShutdownSignal = tokio::sync::watch::Receiver<bool>;
+
+pub fn shutdown_channel() -> (tokio::sync::watch::Sender<bool>, ShutdownSignal) {
+    tokio::sync::watch::channel(false)
+}
+
+/// Resolves once shutdown has been requested (or the sender is gone, which
+/// only happens when the owning `run_up` has already returned).
+pub async fn wait_for_shutdown(mut rx: ShutdownSignal) {
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Resolves on SIGTERM or SIGINT. `systemctl stop`, `launchctl unload`,
+/// and `mynd status`'s `k` all send SIGTERM; Ctrl+C in `--plain`/headless
+/// mode sends SIGINT (in the TUI, raw mode turns Ctrl+C into a key event
+/// that `up_view` handles itself).
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (mut term, mut int) = match (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) {
+        (Ok(t), Ok(i)) => (t, i),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!("could not install signal handlers ({e}); shutdown will be abrupt");
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    };
+    tokio::select! {
+        _ = term.recv() => tracing::info!("received SIGTERM, shutting down"),
+        _ = int.recv() => tracing::info!("received SIGINT, shutting down"),
+    }
+}
+
+/// How long to wait for in-flight connections after shutdown is requested
+/// before giving up on them. Long enough for a normal request; short enough
+/// that `systemctl stop` never looks hung.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn dashboard_router(api_url: &str) -> Router {
     let config_js = format!("window.MYND_API = {};\n", serde_json::json!(api_url));
@@ -213,15 +270,21 @@ pub async fn run_up(
     plain: bool,
     notify_on_store: Option<Arc<tokio::sync::Notify>>,
 ) -> Result<()> {
-    let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+    // Sized well above what a burst (import, a suggest session creating
+    // many edges) can produce between two SSE polls, so a slow dashboard
+    // tab sees every "changed"/"update_*"/"suggest_session" event instead
+    // of silently missing ones once the ring buffer wraps.
+    let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(256);
     spawn_change_poller(
         store.clone(),
         events_tx.clone(),
         std::time::Duration::from_secs(2),
     );
-    let update_state: SharedUpdateState = Arc::new(tokio::sync::RwLock::new(
-        crate::update::UpdateState::new_idle(),
-    ));
+    let update_state: SharedUpdateState = Arc::new(tokio::sync::RwLock::new({
+        let mut s = crate::update::UpdateState::new_idle();
+        s.apply_enabled = settings.update.allow_apply_from_api;
+        s
+    }));
     if settings.update.enabled {
         tokio::spawn(crate::update::run_update_check_loop(
             update_state.clone(),
@@ -235,6 +298,14 @@ pub async fn run_up(
         h => h,
     };
     let mcp_url = format!("http://{}:{}/mcp", mcp_host, settings.port);
+    let (shutdown_tx, shutdown_rx) = shutdown_channel();
+    {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            let _ = tx.send(true);
+        });
+    }
     let app = app_router(
         store.clone(),
         org_store,
@@ -247,6 +318,8 @@ pub async fn run_up(
         mcp_url.clone(),
         update_state,
         settings.guard_predefined_namespaces,
+        api::guard::GuardConfig::from_settings(settings),
+        shutdown_rx.clone(),
     );
 
     if !matches!(settings.host.as_str(), "127.0.0.1" | "localhost" | "::1") {
@@ -275,7 +348,14 @@ pub async fn run_up(
     }
 
     let mut dashboard_url = None;
-    let api_handle = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut api_handle = tokio::spawn({
+        let rx = shutdown_rx.clone();
+        async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(wait_for_shutdown(rx))
+                .await
+        }
+    });
 
     let dash_handle = if headless {
         None
@@ -299,8 +379,13 @@ pub async fn run_up(
             "http://{}:{}",
             settings.host, settings.dashboard_port
         ));
-        Some(tokio::spawn(async move {
-            axum::serve(dash_listener, dash).await
+        Some(tokio::spawn({
+            let rx = shutdown_rx.clone();
+            async move {
+                axum::serve(dash_listener, dash)
+                    .with_graceful_shutdown(wait_for_shutdown(rx))
+                    .await
+            }
         }))
     };
 
@@ -316,31 +401,70 @@ pub async fn run_up(
             true,
         )
         .await?;
-        crate::tui::up_view::run(data, dashboard_url, mcp_url, events_tx, store.clone()).await?;
-        // `d` returns here: terminal is already restored by up_view's TerminalGuard.
-        // Actually detach: stop this process's listeners so a re-exec'd child
-        // can rebind the same port, hand off the pidfile, and exit — the
-        // shell gets its prompt back immediately, and the child survives
-        // this terminal closing (new session, stdio off the tty).
-        api_handle.abort();
-        if let Some(h) = dash_handle {
-            h.abort();
-        }
-        for _ in 0..20 {
-            if !crate::cli::probe_server_up(settings) {
-                break;
+        let exit = crate::tui::up_view::run(
+            data,
+            dashboard_url,
+            mcp_url,
+            events_tx,
+            store.clone(),
+            shutdown_rx.clone(),
+        )
+        .await?;
+        // Terminal is already restored by up_view's TerminalGuard.
+        match exit {
+            crate::tui::up_view::UpExit::Detach => {
+                // Actually detach: stop this process's listeners so a
+                // re-exec'd child can rebind the same port, hand off the
+                // pidfile, and exit — the shell gets its prompt back
+                // immediately, and the child survives this terminal closing
+                // (new session, stdio off the tty).
+                api_handle.abort();
+                if let Some(h) = dash_handle {
+                    h.abort();
+                }
+                for _ in 0..20 {
+                    if !crate::cli::probe_server_up(settings) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                drop(_pid_guard); // removes the pidfile now; the child writes its own on bind
+                spawn_detached_child(headless)?;
+                std::process::exit(0);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            crate::tui::up_view::UpExit::Stop => {
+                let _ = shutdown_tx.send(true);
+            }
         }
-        drop(_pid_guard); // removes the pidfile now; the child writes its own on bind
-        spawn_detached_child(headless)?;
-        std::process::exit(0);
     }
 
-    api_handle.await??;
-    if let Some(h) = dash_handle {
-        h.await??;
+    // Run until either the API listener stops on its own (accept error) or
+    // shutdown is requested; then give both servers a bounded window to
+    // finish in-flight requests. `_pid_guard` drops on return, removing the
+    // pidfile in every path except detach (handled above).
+    let api_result = tokio::select! {
+        r = &mut api_handle => Some(r),
+        _ = wait_for_shutdown(shutdown_rx.clone()) => None,
+    };
+    let _ = shutdown_tx.send(true);
+    let drain = async {
+        if api_result.is_none() {
+            let _ = api_handle.await;
+        }
+        if let Some(h) = dash_handle {
+            let _ = h.await;
+        }
+    };
+    if tokio::time::timeout(SHUTDOWN_GRACE, drain).await.is_err() {
+        tracing::warn!(
+            "connections did not drain within {}s; exiting anyway",
+            SHUTDOWN_GRACE.as_secs()
+        );
     }
+    if let Some(r) = api_result {
+        r??;
+    }
+    tracing::info!("server stopped");
     Ok(())
 }
 
@@ -484,6 +608,8 @@ mod tests {
                 crate::update::UpdateState::new_idle(),
             )),
             true,
+            api::guard::GuardConfig::loopback_only(),
+            shutdown_channel().1,
         );
         let resp = app
             .oneshot(
@@ -495,6 +621,181 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Full app router with the request guard, as `mynd up` builds it.
+    async fn guarded_app() -> (Router, TempDir) {
+        let (store, dir) = test_store().await;
+        let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        let agent = crate::config::AgentSettings {
+            command: write_stub_agent(dir.path()),
+            args: vec![],
+            kind: crate::config::AgentKind::Claude,
+        };
+        let app = app_router(
+            store,
+            None,
+            crate::config::SyncSettings::default(),
+            None,
+            None,
+            "http://127.0.0.1:3457",
+            events_tx,
+            agent,
+            "http://127.0.0.1:3456/mcp".into(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::update::UpdateState::new_idle(),
+            )),
+            true,
+            api::guard::GuardConfig::loopback_only(),
+            shutdown_channel().1,
+        );
+        (app, dir)
+    }
+
+    async fn send(app: Router, method: &str, uri: &str, headers: &[(&str, &str)]) -> StatusCode {
+        let mut b = Request::builder().method(method).uri(uri);
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        app.oneshot(b.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn sse_stream_ends_when_shutdown_is_signalled() {
+        // Without this, graceful shutdown would wait on every open
+        // dashboard tab forever (the event stream never ends on its own).
+        let (store, dir) = test_store().await;
+        let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        let (shutdown_tx, shutdown_rx) = shutdown_channel();
+        let agent = crate::config::AgentSettings {
+            command: write_stub_agent(dir.path()),
+            args: vec![],
+            kind: crate::config::AgentKind::Claude,
+        };
+        let app = app_router(
+            store,
+            None,
+            crate::config::SyncSettings::default(),
+            None,
+            None,
+            "http://127.0.0.1:3457",
+            events_tx,
+            agent,
+            "http://127.0.0.1:3456/mcp".into(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::update::UpdateState::new_idle(),
+            )),
+            true,
+            api::guard::GuardConfig::loopback_only(),
+            shutdown_rx,
+        );
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body();
+        let collect = body.collect();
+        tokio::pin!(collect);
+        // Still streaming: collecting must not finish yet.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut collect)
+                .await
+                .is_err(),
+            "stream ended before shutdown"
+        );
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), collect)
+            .await
+            .expect("stream must end within 2s of shutdown")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn guard_rejects_dns_rebound_host_on_rest_and_mcp() {
+        let (app, _dir) = guarded_app().await;
+        let s = send(
+            app.clone(),
+            "GET",
+            "/api/v1/status",
+            &[("host", "evil.example")],
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        let s = send(
+            app.clone(),
+            "POST",
+            "/mcp",
+            &[("host", "evil.example:3456")],
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::FORBIDDEN,
+            "the MCP endpoint must be guarded too"
+        );
+        let s = send(app, "GET", "/api/v1/status", &[("host", "localhost:3456")]).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn guard_rejects_cross_site_post_but_allows_dashboard_and_cli() {
+        let (app, _dir) = guarded_app().await;
+        // Bodyless POST from a hostile page: the CSRF case.
+        let s = send(
+            app.clone(),
+            "POST",
+            "/api/v1/suggest-sessions",
+            &[
+                ("host", "127.0.0.1:3456"),
+                ("origin", "https://evil.example"),
+            ],
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        let s = send(
+            app.clone(),
+            "POST",
+            "/api/v1/update/apply",
+            &[("host", "127.0.0.1:3456"), ("origin", "null")],
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        // Reads are not CSRF-relevant; CORS + the Host check cover them.
+        let s = send(
+            app.clone(),
+            "GET",
+            "/api/v1/status",
+            &[
+                ("host", "127.0.0.1:3456"),
+                ("origin", "https://evil.example"),
+            ],
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        // The dashboard's own origin, and a CLI/MCP client with no Origin,
+        // both get through to the handler (which here 202s and runs the stub).
+        let s = send(
+            app.clone(),
+            "DELETE",
+            "/api/v1/suggest-sessions/current",
+            &[
+                ("host", "127.0.0.1:3456"),
+                ("origin", "http://localhost:3457"),
+            ],
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let s = send(app, "DELETE", "/api/v1/suggest-sessions/current", &[]).await;
+        assert_eq!(s, StatusCode::OK);
     }
 
     #[tokio::test]
