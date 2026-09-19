@@ -291,7 +291,12 @@ All ten items on the prioritized list were implemented on this branch after the 
 
 Also fixed after the first CI run on the PR: two config tests that read an `api_key` from a file ran in parallel with the new env-override test without the env mutex (`test(config): serialise the tests that read sync keys with the env tests`).
 
-Still open from the Minor and Nitpick lists: m3, m4, m6, m7, m8, m9, m10, m12, m13, m14, m15, m16, m17, m18, m20, m21, and the nitpicks.
+| m3 | Feedback on an unknown memory 500s | Done | `fix: unknown-memory feedback 404s, wildcard-bind api_url, bigger SSE buffer, full wipe` | `store::create_feedback` checks existence first, returns `Option`; REST now 404s, CLI/MCP report the same case without a stack trace from an FK violation. |
+| m6 | `api_url` default breaks on a wildcard bind | Done | (same commit) | Now remapped to loopback the same way `cors_origin` already was. |
+| m14 | SSE channel too small | Done | (same commit) | 16 → 256; a burst no longer silently drops lifecycle events before a slow tab's next poll. |
+| m16 | `delete_all` leaves orphaned rows | Done | (same commit) | `sync_journal` and `session_start_log` are now cleared in the same transaction. |
+
+Still open from the Minor and Nitpick lists: m4, m7, m8, m9, m10, m12, m13, m15, m17, m18, m20, m21, and the nitpicks.
 
 ---
 
