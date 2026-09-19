@@ -102,6 +102,7 @@ mod tests {
             registered_clients: vec!["claude".to_string(), "opencode".to_string()],
             project: None,
             matrix: crate::cli::MatrixStatusLine::NotConfigured,
+            discord: crate::cli::DiscordStatusLine::NotConfigured,
         }
     }
 

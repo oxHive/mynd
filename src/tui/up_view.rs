@@ -203,3 +203,161 @@ fn draw(
         layout[2],
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{DiscordStatusLine, MatrixStatusLine};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn sample_data() -> StatusData {
+        StatusData {
+            version: "0.14.3",
+            project_label: None,
+            server_up: true,
+            server_host: "127.0.0.1".to_string(),
+            server_port: 3456,
+            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            memory_count: 42,
+            sync_enabled: false,
+            sync_remote_url: String::new(),
+            registered_clients: vec![],
+            project: None,
+            matrix: MatrixStatusLine::NotConfigured,
+            discord: DiscordStatusLine::NotConfigured,
+        }
+    }
+
+    fn render(
+        data: &StatusData,
+        no_color: bool,
+        dashboard_url: &Option<String>,
+        mcp_url: &str,
+        feed: &VecDeque<String>,
+    ) -> String {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(data, no_color, dashboard_url, mcp_url, feed, frame))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn draw_shows_server_url_and_mcp_url() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("http://127.0.0.1:3456"));
+        assert!(content.contains("http://127.0.0.1:3456/mcp"));
+        assert!(content.contains("Status     running"));
+    }
+
+    #[test]
+    fn draw_omits_dashboard_line_when_none() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(!content.contains("Dashboard"));
+    }
+
+    #[test]
+    fn draw_shows_dashboard_url_when_some() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let dashboard_url = Some("http://127.0.0.1:3457".to_string());
+        let content = render(
+            &data,
+            false,
+            &dashboard_url,
+            "http://127.0.0.1:3456/mcp",
+            &feed,
+        );
+        assert!(content.contains("Dashboard"));
+        assert!(content.contains("http://127.0.0.1:3457"));
+    }
+
+    #[test]
+    fn draw_shows_feed_entries_most_recent_first() {
+        let data = sample_data();
+        let mut feed = VecDeque::new();
+        feed.push_front("00:00:01  changed".to_string());
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("00:00:01"));
+        assert!(content.contains("changed"));
+    }
+
+    #[test]
+    fn draw_truncates_feed_to_twenty_lines() {
+        let data = sample_data();
+        let mut feed = VecDeque::new();
+        for i in 0..30 {
+            feed.push_front(format!("entry-{i:02}"));
+        }
+        // Backend is only 20 rows tall in total (header + body + footer all
+        // share it), so this just exercises the `.take(20)` path without
+        // panicking or overflowing the render — the real assertion is that
+        // rendering that many feed lines completes without error.
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("entry-29"));
+    }
+
+    #[test]
+    fn draw_footer_shows_detach_and_stop_hints() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("d detach"));
+        assert!(content.contains("ctrl+c stop server"));
+    }
+
+    #[test]
+    fn draw_no_color_skips_foreground_styling_but_keeps_text() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let dashboard_url = Some("http://127.0.0.1:3457".to_string());
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(
+                    &data,
+                    true,
+                    &dashboard_url,
+                    "http://127.0.0.1:3456/mcp",
+                    &feed,
+                    frame,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("http://127.0.0.1:3457"));
+        for cell in buffer.content.iter() {
+            assert_eq!(
+                cell.fg,
+                Color::Reset,
+                "cell {:?} should have no foreground color set when no_color=true",
+                cell.symbol()
+            );
+        }
+    }
+
+    #[test]
+    fn chrono_now_hms_formats_as_hh_mm_ss() {
+        let ts = chrono_now_hms();
+        assert_eq!(ts.len(), 8, "expected HH:MM:SS, got: {ts}");
+        let parts: Vec<&str> = ts.split(':').collect();
+        assert_eq!(parts.len(), 3);
+        for part in parts {
+            assert_eq!(part.len(), 2);
+            assert!(part.chars().all(|c| c.is_ascii_digit()));
+        }
+    }
+}
