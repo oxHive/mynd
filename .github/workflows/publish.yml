@@ -14,7 +14,7 @@ jobs:
       checks: write
     # Pinned to a commit (see pull-request.yml); this job signs and publishes
     # release artifacts, so the workflow it runs must not change under it.
-    uses: oxHive/pipelines/.github/workflows/rust-release.yml@09ce514638bf4934fc1a9239618cfe08aa06d62d # v2
+    uses: oxHive/pipelines/.github/workflows/rust-release.yml@v2
     with:
       package-name: oxmynd
       binary-name: mynd
@@ -42,7 +42,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: oxHive/pipelines/.github/workflows/npm-publish.yml@09ce514638bf4934fc1a9239618cfe08aa06d62d # v2
+    uses: oxHive/pipelines/.github/workflows/npm-publish.yml@v2
     with:
       package-path: plugins/opencode
     secrets:
