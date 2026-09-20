@@ -16,11 +16,14 @@ const CURRENT_DISCORD_UNIT: &str = "mynd-discord";
 #[cfg(target_os = "linux")]
 const LEGACY_UNITS: [&str; 2] = ["hivemind", "hivemind-matrix"];
 
-pub fn cmd_service_install(dashboard: bool, matrix: bool, discord: bool) -> Result<()> {
+pub fn cmd_service_install(dashboard: bool, matrix: bool, discord: bool, no_linger: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
-    return service_install_macos(dashboard, matrix, discord);
+    {
+        let _ = no_linger; // launchd has no linger equivalent — see service_install_macos.
+        return service_install_macos(dashboard, matrix, discord);
+    }
     #[cfg(target_os = "linux")]
-    return service_install_linux(dashboard, matrix, discord);
+    return service_install_linux(dashboard, matrix, discord, !no_linger);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("mynd service install is only supported on Linux and macOS");
 }
@@ -182,8 +185,83 @@ fn remove_legacy_units_linux() {
     }
 }
 
+/// Whether `loginctl enable-linger` ran, and how it went — mirrors wardn's
+/// `service::LingerOutcome`, kept the same shape across both products since
+/// the underlying systemd behavior (and the message a user reads) is
+/// identical.
 #[cfg(target_os = "linux")]
-fn service_install_linux(dashboard: bool, matrix: bool, discord: bool) -> Result<()> {
+enum LingerOutcome {
+    Skipped,
+    Enabled,
+    Failed(String),
+}
+
+/// `WantedBy=default.target` alone only starts a systemd --user unit when
+/// this user logs in — a `systemd --user` manager doesn't run at boot
+/// unless lingering is on. Without it, a headless box that reboots stays
+/// down until someone logs in again.
+#[cfg(target_os = "linux")]
+fn enable_linger_now() -> LingerOutcome {
+    match std::process::Command::new("loginctl")
+        .arg("enable-linger")
+        .output()
+    {
+        Ok(out) if out.status.success() => LingerOutcome::Enabled,
+        Ok(out) => {
+            LingerOutcome::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+        Err(e) => LingerOutcome::Failed(e.to_string()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linger_note(outcome: &LingerOutcome) -> String {
+    match outcome {
+        LingerOutcome::Enabled => {
+            "Linger enabled — this also starts the service at boot, without needing a login."
+                .to_string()
+        }
+        LingerOutcome::Skipped => {
+            "Linger not enabled (--no-linger) — the service starts on login, not at boot. \
+             Enable it later with `loginctl enable-linger $USER`."
+                .to_string()
+        }
+        LingerOutcome::Failed(err) => format!(
+            "Could not enable linger automatically ({err}) — the service still starts on \
+             login, but not at boot until you run `loginctl enable-linger $USER` yourself."
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linger_status_line() -> String {
+    let username = std::process::Command::new("whoami")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let linger = username.and_then(|user| {
+        std::process::Command::new("loginctl")
+            .args(["show-user", "--value", "-p", "Linger", &user])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    match linger.as_deref() {
+        Some("yes") => {
+            "linger: enabled — this service also starts at boot, without needing a login"
+                .to_string()
+        }
+        Some("no") => "linger: disabled — starts on login only (`loginctl enable-linger $USER` \
+                        to also start at boot)"
+            .to_string(),
+        _ => "linger: unknown".to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn service_install_linux(dashboard: bool, matrix: bool, discord: bool, enable_linger: bool) -> Result<()> {
     remove_legacy_units_linux();
     let (args, desc): (&[&str], &str) = if dashboard {
         (&["up"], "Mynd server (API + dashboard)")
@@ -228,8 +306,15 @@ fn service_install_linux(dashboard: bool, matrix: bool, discord: bool) -> Result
         )?;
     }
 
+    let linger = if enable_linger {
+        enable_linger_now()
+    } else {
+        LingerOutcome::Skipped
+    };
+
     println!();
     println!("Mynd will now start automatically on login.");
+    println!("{}", linger_note(&linger));
     if dashboard {
         let port = crate::config::load_server_settings(&crate::config::global_config_path())
             .map(|s| s.dashboard_port)
@@ -264,6 +349,7 @@ fn service_status_linux() -> Result<()> {
     if systemd_unit_path(CURRENT_DISCORD_UNIT).exists() {
         service_status_unit_linux(CURRENT_DISCORD_UNIT)?;
     }
+    println!("{}", linger_status_line());
     Ok(())
 }
 
@@ -307,6 +393,27 @@ mod matrix_service_tests {
             &[],
         );
         assert!(content.contains("ExecStart=/usr/local/bin/mynd\n"));
+    }
+
+    #[test]
+    fn linger_note_enabled_mentions_boot() {
+        assert!(linger_note(&LingerOutcome::Enabled).contains("boot"));
+    }
+
+    #[test]
+    fn linger_note_skipped_explains_how_to_enable_it_later() {
+        let note = linger_note(&LingerOutcome::Skipped);
+        assert!(note.contains("--no-linger"));
+        assert!(note.contains("loginctl enable-linger $USER"));
+    }
+
+    #[test]
+    fn linger_note_failed_surfaces_the_underlying_error() {
+        let note = linger_note(&LingerOutcome::Failed(
+            "Interactive authentication required.".into(),
+        ));
+        assert!(note.contains("Interactive authentication required."));
+        assert!(note.contains("loginctl enable-linger $USER"));
     }
 
     #[test]
