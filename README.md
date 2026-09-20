@@ -82,16 +82,14 @@ This runs a shell command and injects its stdout into the conversation. It works
 ## Installation
 
 ```sh
-cargo binstall oxmynd       # download pre-built binary (recommended, includes dashboard)
+curl -fsSL https://get.oxhive.dev/mynd | sh
 ```
 
-Compile from source instead:
+Downloads the prebuilt binary (includes the dashboard) for your OS/architecture and installs it to `~/.local/bin` (override with `INSTALL_DIR`, pin a version with `VERSION=v0.3.0`). See [get.oxhive.dev](https://get.oxhive.dev) for details.
 
-```sh
-cargo install oxmynd        # dashboard shows setup instructions instead of the UI
-```
+Alternative: `cargo binstall oxmynd` — the same prebuilt binary, via crates.io.
 
-To get the dashboard bundled in a source build, compile from a local checkout instead of crates.io:
+To build from source instead (e.g. for local development, or to bundle a custom dashboard build):
 
 ```sh
 git clone https://github.com/oxhive/mynd
@@ -750,7 +748,7 @@ Detection failures are silent: a missing config file or unavailable CLI simply m
 
 If `mynd_session_start` errors during a session, the most likely causes are:
 
-- **`mynd` not found in PATH**: verify with `which mynd`. If you installed via `cargo install`, make sure `~/.cargo/bin` is in your PATH.
+- **`mynd` not found in PATH**: verify with `which mynd`. Make sure the install location is on your PATH — `~/.local/bin` for the get.oxhive.dev installer (or `$INSTALL_DIR` if you overrode it), `~/.cargo/bin` if installed via `cargo install`/`cargo binstall`.
 - **Database error**: check `MYND_DB_PATH` and ensure the directory is writable.
 - **Corrupt config**: run `mynd status` in the project directory to validate `.mynd.toml`.
 - **Recalls with special characters**: recall titles containing FTS special characters (`/`, `+`, `-`, quotes) no longer fail the whole call; unmatched entries are simply reported as `not_found` in the result.
