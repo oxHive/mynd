@@ -87,7 +87,13 @@ curl -fsSL https://get.oxhive.dev/mynd | sh
 
 Downloads the prebuilt binary (includes the dashboard) for your OS/architecture and installs it to `~/.local/bin` (override with `INSTALL_DIR`, pin a version with `VERSION=v0.3.0`). See [get.oxhive.dev](https://get.oxhive.dev) for details.
 
-Alternative: `cargo binstall oxmynd` — the same prebuilt binary, via crates.io.
+Alternatives:
+
+```sh
+brew install oxhive/tap/mynd   # also the only prebuilt option on Intel Macs,
+                                # since no x86_64-apple-darwin binary is published
+cargo binstall oxmynd          # same prebuilt binary, via crates.io
+```
 
 To build from source instead (e.g. for local development, or to bundle a custom dashboard build):
 
