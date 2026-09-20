@@ -1313,8 +1313,8 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
 #[tool_handler]
 #[prompt_handler]
 impl rmcp::ServerHandler for Mynd {
-    fn get_info(&self) -> rmcp::model::ServerInfo {
-        rmcp::model::ServerInfo::new(
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        rmcp::model::ServerConfig::new(
             rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
