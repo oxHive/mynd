@@ -64,10 +64,57 @@ fn default_edge_status() -> String {
     "active".into()
 }
 
+/// Checks every memory in an import the way `store()` will, before any
+/// row is written, so a bad export is rejected whole (422 naming the
+/// offending ids) instead of leaving a half-applied import behind.
+pub(crate) async fn validate_import_memories<'a>(
+    store: &crate::store::SqliteStore,
+    memories: impl Iterator<Item = (&'a str, &'a str, &'a str, &'a str, &'a str)>,
+) -> Result<(), String> {
+    let mut problems = Vec::new();
+    for (id, title, content, layer, memory_type) in memories {
+        if let Err(e) = layer.parse::<crate::model::Layer>() {
+            problems.push(format!("{id}: {e}"));
+        }
+        if let Err(e) = memory_type.parse::<crate::model::MemoryType>() {
+            problems.push(format!("{id}: {e}"));
+        }
+        if let Err(e) = store.check_content_size(title, content).await {
+            problems.push(format!("{id}: {e}"));
+        }
+        if problems.len() >= 10 {
+            problems.push("…".to_string());
+            break;
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "import rejected, nothing was written: {}",
+            problems.join("; ")
+        ))
+    }
+}
+
 pub(super) async fn import(
     State(store): State<Store>,
     Json(b): Json<ImportBody>,
 ) -> Result<Json<Value>, ApiError> {
+    validate_import_memories(
+        &store,
+        b.memories.iter().map(|m| {
+            (
+                m.id.as_str(),
+                m.title.as_str(),
+                m.content.as_str(),
+                m.layer.as_str(),
+                m.memory_type.as_str(),
+            )
+        }),
+    )
+    .await
+    .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     let mut mem_count = 0usize;
     for m in &b.memories {
         store

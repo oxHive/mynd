@@ -26,19 +26,30 @@ const BODY_FRAME_OVERHEAD: u16 = 6;
 const MIN_BOX_WIDTH: u16 = 40;
 const FOOTER_TEXT: &str = "  d detach   ctrl+c stop server";
 
+/// Why the interactive view returned; `http::run_up` acts on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpExit {
+    /// `d`: the caller aborts its listeners, re-execs a background copy of
+    /// the server, and exits so the shell prompt comes back.
+    Detach,
+    /// `Ctrl+C` (raw mode swallows the OS SIGINT, so it arrives as a key)
+    /// or an external SIGTERM: the caller shuts the servers down gracefully
+    /// and returns normally, which also removes the pidfile.
+    Stop,
+}
+
 /// Runs the interactive `mynd up` view: header + a live activity feed fed
-/// by the existing SSE broadcast channel. Returns on `d` — the caller
-/// (`http::run_up`) then actually detaches: aborts its listeners, re-execs a
-/// background copy of the server, and exits so the shell prompt comes back.
-/// `Ctrl+C` exits the process directly (stopping the server for good), since
-/// raw mode swallows the OS SIGINT that would normally do that.
+/// by the existing SSE broadcast channel. Returns when the user presses
+/// `d` or `Ctrl+C`, or when `shutdown` fires (SIGTERM from `systemctl
+/// stop` or `mynd status`'s `k`).
 pub async fn run(
     mut data: StatusData,
     dashboard_url: Option<String>,
     mcp_url: String,
     events: broadcast::Sender<serde_json::Value>,
     store: std::sync::Arc<SqliteStore>,
-) -> Result<()> {
+    shutdown: crate::http::ShutdownSignal,
+) -> Result<UpExit> {
     let guard = TerminalGuard::enter(VIEWPORT_HEIGHT)?;
     let mut terminal = guard.terminal()?;
     let mut rx = events.subscribe();
@@ -72,14 +83,15 @@ pub async fn run(
                     feed.truncate(MAX_FEED_LINES);
                 }
             }
+            _ = crate::http::wait_for_shutdown(shutdown.clone()) => {
+                return Ok(UpExit::Stop);
+            }
             key = poll_key_event() => {
                 if let Some(key) = key {
                     match key.code {
-                        KeyCode::Char('d') => break,
+                        KeyCode::Char('d') => return Ok(UpExit::Detach),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            drop(guard);
-                            let _ = std::fs::remove_file(crate::db::up_pidfile_path());
-                            std::process::exit(0);
+                            return Ok(UpExit::Stop);
                         }
                         _ => {}
                     }
@@ -87,8 +99,6 @@ pub async fn run(
             }
         }
     }
-
-    Ok(())
 }
 
 /// Polls for a key-press event on a blocking thread (crossterm's `poll`/`read`

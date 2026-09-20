@@ -29,6 +29,10 @@ pub struct UpdateState {
     /// mid-update can re-anchor its elapsed-time counter.
     pub update_started_at: Option<i64>,
     pub platform_supported: bool,
+    /// Whether `POST /api/v1/update/apply` is allowed at all
+    /// (`[update] allow_apply_from_api`). Serialised so the dashboard can
+    /// hide the button instead of showing one that 403s.
+    pub apply_enabled: bool,
 }
 
 impl UpdateState {
@@ -44,6 +48,7 @@ impl UpdateState {
             error: None,
             update_started_at: None,
             platform_supported: cfg!(unix),
+            apply_enabled: true,
         }
     }
 }
@@ -80,10 +85,13 @@ impl GitHubVersionSource {
     }
 
     pub fn with_url(api_url: String) -> Self {
-        GitHubVersionSource {
-            client: reqwest::Client::new(),
-            api_url,
-        }
+        // A stalled response would otherwise park the check loop forever
+        // (and hang `mynd update check`): the loop awaits `check_once`.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        GitHubVersionSource { client, api_url }
     }
 
     pub async fn latest(&self) -> Result<ReleaseInfo> {

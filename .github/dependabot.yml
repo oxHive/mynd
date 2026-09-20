@@ -18,3 +18,24 @@ updates:
       - dependencies
     commit-message:
       prefix: "chore(ci)"
+
+  # Dashboard (Vue/Vite, bun.lock) and the OpenCode plugin were not covered:
+  # marked, dompurify and vite are exactly the packages that need timely
+  # security bumps.
+  - package-ecosystem: bun
+    directory: /dashboard
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /plugins/opencode
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"

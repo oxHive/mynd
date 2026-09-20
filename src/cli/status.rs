@@ -3,7 +3,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 use super::init::{
-    GLOBAL_CONFIG, detect_registered_clients, home_dir, with_spinner, write_if_absent,
+    GLOBAL_CONFIG, detect_registered_clients, home_dir, with_spinner, write_private_if_absent,
 };
 
 /// Create the global config file with defaults on first run if it doesn't exist yet.
@@ -13,7 +13,7 @@ pub fn ensure_global_config() {
     if config_path.exists() {
         return;
     }
-    match write_if_absent(&config_path, GLOBAL_CONFIG) {
+    match write_private_if_absent(&config_path, GLOBAL_CONFIG) {
         Ok(_) => {
             eprintln!("note: created default config at {}", config_path.display());
         }
@@ -205,12 +205,21 @@ pub(crate) fn render_session_start(
     if result.loaded.is_empty() && result.skipped.is_empty() {
         return String::new();
     }
+    use crate::prompt_data::{DATA_NOTICE, neutralize_context_tags, single_line};
+    // Titles stay on their heading line and no memory can close the block
+    // early; see prompt_data.
     let mut out = format!(
-        "<mynd-context project=\"{}\" tokens=\"{}/{}\">\n",
-        result.project, result.used_tokens, result.max_tokens
+        "<mynd-context project=\"{}\" tokens=\"{}/{}\">\n{DATA_NOTICE}\n",
+        single_line(&result.project).replace('"', "'"),
+        result.used_tokens,
+        result.max_tokens
     );
     for l in &result.loaded {
-        out.push_str(&format!("\n## {}\n{}\n", l.entry.title, l.entry.content));
+        out.push_str(&format!(
+            "\n## {}\n{}\n",
+            single_line(&neutralize_context_tags(&l.entry.title)),
+            neutralize_context_tags(&l.entry.content)
+        ));
     }
     out.push_str("</mynd-context>\n");
     for s in &result.skipped {
