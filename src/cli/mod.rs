@@ -136,6 +136,10 @@ pub enum ServiceAction {
         /// Also install the Discord bot unit (requires `mynd discord login` first)
         #[arg(long)]
         discord: bool,
+        /// (Linux only) Skip `loginctl enable-linger`. Without linger the
+        /// service only starts when you log in, not unattended at boot.
+        #[arg(long)]
+        no_linger: bool,
     },
     /// Stop and remove the Mynd background service
     Uninstall,
