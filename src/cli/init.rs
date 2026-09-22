@@ -234,6 +234,12 @@ Check if .mynd.toml exists in this project root. If it does, defer to Mynd\n\
 memory (see ~/.claude/CLAUDE.md) for session context and ignore the rest of\n\
 this file.\n";
 
+/// Fixed line from [`project_claude_md`] (name-independent) marking a
+/// project `CLAUDE.md` as one `mynd init` generated itself — such a file
+/// needs no override notice, since it already defers to `.mynd.toml`.
+pub(crate) const PROJECT_CLAUDE_OWNED_MARKER: &str =
+    "Load project context on session start per .mynd.toml.";
+
 /// Set up the project's `CLAUDE.md`: write mynd's own file if none exists,
 /// or, for a pre-existing user file, prepend a notice pointing it at
 /// `.mynd.toml` so mynd memory takes precedence.
@@ -244,6 +250,10 @@ pub(crate) fn ensure_project_claude_md(
     if !path.exists() {
         write_atomic(path, &project_claude_md(project_name))?;
         return Ok((path.to_path_buf(), "created"));
+    }
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    if existing.contains(PROJECT_CLAUDE_OWNED_MARKER) {
+        return Ok((path.to_path_buf(), "exists"));
     }
     prepend_block_if_absent(path, PROJECT_CLAUDE_NOTICE_MARKER, PROJECT_CLAUDE_NOTICE)
 }

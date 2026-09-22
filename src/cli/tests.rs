@@ -368,6 +368,46 @@ fn scaffold_migrates_an_existing_legacy_global_block() {
 }
 
 #[test]
+fn ensure_project_claude_md_prepends_notice_on_foreign_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    fs::write(&path, "# My rules\nAlways write tests first.\n").unwrap();
+
+    let (_, status) = ensure_project_claude_md(&path, "myproj").unwrap();
+    assert_eq!(status, "created");
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.starts_with(PROJECT_CLAUDE_NOTICE_MARKER));
+    assert!(content.contains(".mynd.toml"));
+    assert!(content.contains("Always write tests first."));
+
+    // idempotent: running again does not duplicate the notice
+    let (_, status2) = ensure_project_claude_md(&path, "myproj").unwrap();
+    assert_eq!(status2, "exists");
+    assert_eq!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .matches(PROJECT_CLAUDE_NOTICE_MARKER)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn ensure_project_claude_md_skips_notice_on_own_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+
+    let (_, status) = ensure_project_claude_md(&path, "myproj").unwrap();
+    assert_eq!(status, "created");
+
+    // re-running over mynd's own generated file adds no override notice
+    let (_, status2) = ensure_project_claude_md(&path, "myproj").unwrap();
+    assert_eq!(status2, "exists");
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(!content.contains(PROJECT_CLAUDE_NOTICE_MARKER));
+}
+
+#[test]
 fn scaffold_creates_all_files() {
     let proj = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
