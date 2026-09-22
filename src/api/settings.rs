@@ -36,7 +36,7 @@ pub(super) async fn save_sync_settings(Json(_): Json<Value>) -> Json<Value> {
 /// (the default when absent) keeps it purely advisory. Malformed entries
 /// are rejected outright rather than silently persisted — a bad write here
 /// previously corrupted the registry until the next `unwrap_or_else` reset.
-fn validate_tag_namespaces(body: &Value) -> Result<(), String> {
+pub(crate) fn validate_tag_namespaces(body: &Value) -> Result<(), String> {
     let obj = body
         .as_object()
         .ok_or_else(|| "tag settings must be a JSON object".to_string())?;
@@ -124,6 +124,7 @@ pub(super) async fn get_tag_settings(
 pub(super) async fn save_tag_settings(
     State(store): State<Store>,
     Extension(guard): Extension<GuardPredefinedNamespaces>,
+    Extension(hive): Extension<HivePushConfig>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     validate_tag_namespaces(&body).map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
@@ -132,6 +133,14 @@ pub(super) async fn save_tag_settings(
             .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     }
     store.set_meta("tag_namespaces", &body.to_string()).await?;
+    store
+        .set_meta(
+            "tag_namespaces_updated_at",
+            &chrono::Utc::now().timestamp().to_string(),
+        )
+        .await?;
+    // Finding I3: propagate the tag-namespace change to online hive peers.
+    crate::api::spawn_hive_tag_namespaces_push(&hive, &store);
     Ok(Json(json!({ "saved": true })))
 }
 

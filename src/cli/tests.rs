@@ -635,13 +635,14 @@ async fn build_status_data_matches_render_status_text() {
     let settings = crate::config::ServerSettings {
         host: "127.0.0.1".into(),
         port: 3456,
-        dashboard_port: 3457,
+        dashboard_port: 3459,
         api_url: "http://127.0.0.1:3456".into(),
-        cors_origin: "http://127.0.0.1:3457".into(),
+        cors_origin: "http://127.0.0.1:3459".into(),
         sync: SyncSettings::default(),
         org_sync: None,
         update: crate::config::UpdateSettings::default(),
         agent: crate::config::AgentSettings::default(),
+        hive: crate::config::HiveSettings::default(),
         guard_predefined_namespaces: true,
     };
 
@@ -787,6 +788,7 @@ async fn build_status_data_includes_org_memory_when_org_sync_configured() {
         update: crate::config::UpdateSettings::default(),
         agent: crate::config::AgentSettings::default(),
         guard_predefined_namespaces: true,
+        hive: crate::config::HiveSettings::default(),
     };
 
     let data = build_status_data(
@@ -1980,7 +1982,7 @@ fn conflict_list_and_resolve_lifecycle() {
         common::block_on(async {
             let store = common::open_store().await?;
             store
-                .write_conflict(&mem_id, "remote content", "local content", 100, 200)
+                .write_conflict(&mem_id, "remote content", "local content", 100, 200, None)
                 .await
         })
         .unwrap();

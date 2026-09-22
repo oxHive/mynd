@@ -224,6 +224,7 @@ mod tests {
             update: Default::default(),
             agent: Default::default(),
             guard_predefined_namespaces: true,
+            hive: Default::default(),
         })
     }
 
@@ -307,6 +308,7 @@ mod tests {
             update: Default::default(),
             agent: Default::default(),
             guard_predefined_namespaces: true,
+            hive: Default::default(),
         }
     }
 

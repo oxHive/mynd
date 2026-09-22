@@ -3,6 +3,7 @@ mod dashboard
 import 'recipes/release.just'
 import 'recipes/cargo.just'
 import 'recipes/keyring.just'
+import 'recipes/e2e.just'
 import 'recipes/testenv.just'
 
 _default:

@@ -1,6 +1,7 @@
 use crate::{
     api,
     config::{AgentSettings, ServerSettings, SyncSettings},
+    hive::identity::DeviceIdentity,
     server::Mynd,
     store::SqliteStore,
     suggest_session::SuggestSessionManager,
@@ -36,6 +37,12 @@ pub fn app_router(
     mcp_url: String,
     update_state: SharedUpdateState,
     guard_predefined_namespaces: bool,
+    hive_enabled: bool,
+    hive_identity: Option<DeviceIdentity>,
+    pairing_codes: Arc<crate::hive::pairing::PairingCodeStore>,
+    pairing_window: Option<Arc<crate::hive::pairing_window::PairingWindow>>,
+    hive_sync_port: u16,
+    restart_notify: Arc<tokio::sync::Notify>,
     request_guard: api::guard::GuardConfig,
     shutdown: ShutdownSignal,
 ) -> Router {
@@ -48,6 +55,7 @@ pub fn app_router(
             let org_store = org_store.clone();
             let trigger = notify_on_store.clone();
             let events_tx = events_tx.clone();
+            let hive_identity = hive_identity.clone();
             move || {
                 let mut mynd = match &trigger {
                     Some(t) => Mynd::with_sync(store.clone(), t.clone()),
@@ -56,7 +64,12 @@ pub fn app_router(
                 if let Some(org) = &org_store {
                     mynd = mynd.with_org_store(org.clone());
                 }
-                Ok(mynd.with_events(events_tx.clone()))
+                let mynd = mynd.with_events(events_tx.clone());
+                let mynd = match (hive_enabled, &hive_identity) {
+                    (true, Some(identity)) => mynd.with_hive(identity.clone()),
+                    _ => mynd,
+                };
+                Ok(mynd)
             }
         },
         Arc::new(LocalSessionManager::default()),
@@ -75,6 +88,11 @@ pub fn app_router(
         update_state,
         agent_for_status,
         guard_predefined_namespaces,
+        hive_enabled,
+        hive_identity,
+        pairing_codes,
+        pairing_window,
+        crate::api::HiveSyncPort(hive_sync_port),
     )
     .nest_service("/mcp", mcp)
     // Lets long-lived handlers (the SSE event stream) end when the server
@@ -86,6 +104,15 @@ pub fn app_router(
         request_guard,
         api::guard::guard,
     ))
+    // Layered on the fully-composed outer app (not inside `api::router`): the
+    // `POST /api/v1/hive/enabled` handler lives on `router()`'s merged
+    // loopback-gated sub-router, and an outer Extension layer here reaches it
+    // (unlike extensions layered on the *main* router before the merge). It is
+    // provided at this boundary rather than inside `router()` because the
+    // restart lifecycle it drives is owned by `run_up`, and because an inner
+    // layer would shadow any Notify a `router()` caller supplies from outside
+    // (see `api::tests::set_hive_enabled_persists_override_and_signals_restart`).
+    .layer(axum::Extension(restart_notify))
 }
 
 /// Broadcast "the server is stopping" to every listener, SSE handler and
@@ -298,6 +325,60 @@ pub async fn run_up(
         h => h,
     };
     let mcp_url = format!("http://{}:{}/mcp", mcp_host, settings.port);
+    let pairing_codes = Arc::new(crate::hive::pairing::PairingCodeStore::new());
+    // Fired by `POST /api/v1/hive/enabled` after it persists the DB override;
+    // `run_up`'s tail races it against the normal serve-await and re-execs
+    // this process so the child re-reads the override on a fresh boot.
+    let restart_notify = Arc::new(tokio::sync::Notify::new());
+    // The DB override (set via the dashboard's enable/disable toggle, a
+    // later plan) wins when present; config.toml's [hive] enabled remains
+    // the default otherwise -- same relationship hive_settings_override
+    // already has to config.toml's [hive] interval fields.
+    let hive_enabled = store
+        .hive_enabled_override()
+        .await?
+        .unwrap_or(settings.hive.enabled);
+    // config.toml refuses [sync] + [hive] together at load time, but the DB
+    // override is applied after that check. Don't let it become a bypass:
+    // keep hive off (loudly) rather than running both sync modes at once --
+    // and don't bail, or a stray override would turn into a restart loop.
+    let hive_enabled = if hive_enabled && settings.sync.enabled {
+        tracing::error!(
+            "Hive Mode is enabled (dashboard override) but [sync] cloud sync is also enabled; \
+             they are mutually exclusive, so Hive Mode stays OFF until [sync] is disabled"
+        );
+        false
+    } else {
+        hive_enabled
+    };
+    let (hive_sync_port, hive_pairing_port) = crate::hive::hive_ports(settings.port)?;
+    // Bootstrapped up-front (rather than only inside the `hive_enabled`
+    // block further down) so the REST/MCP write handlers wired into `app_router`
+    // below can spawn push-on-change attempts (Plan 2 Task 11) using this same
+    // identity, instead of each handler needing its own bootstrap call.
+    let hive_identity: Option<DeviceIdentity> = if hive_enabled {
+        let key_store = crate::hive::keyring_store::KeyringHiveKeyStore;
+        Some(crate::hive::bootstrap_self_identity(&store, &key_store).await?)
+    } else {
+        None
+    };
+    // The pairing-window coordinator owns the server-TLS-only pairing listener,
+    // opened lazily (and time-bounded) each time a pairing code is issued via
+    // the plaintext `POST /api/v1/hive/pairing-code` handler. Built up-front so
+    // that handler (wired into `app_router` below) can reach it as an
+    // Extension; only present when hive is enabled.
+    let pairing_window: Option<Arc<crate::hive::pairing_window::PairingWindow>> =
+        if let Some(identity) = hive_identity.clone() {
+            let pairing_router = api::hive_pairing_router(store.clone(), pairing_codes.clone());
+            Some(Arc::new(crate::hive::pairing_window::PairingWindow::new(
+                settings.host.clone(),
+                hive_pairing_port,
+                identity,
+                pairing_router,
+            )))
+        } else {
+            None
+        };
     let (shutdown_tx, shutdown_rx) = shutdown_channel();
     {
         let tx = shutdown_tx.clone();
@@ -318,6 +399,12 @@ pub async fn run_up(
         mcp_url.clone(),
         update_state,
         settings.guard_predefined_namespaces,
+        hive_enabled,
+        hive_identity.clone(),
+        pairing_codes.clone(),
+        pairing_window.clone(),
+        if hive_enabled { hive_sync_port } else { 0 },
+        restart_notify.clone(),
         api::guard::GuardConfig::from_settings(settings),
         shutdown_rx.clone(),
     );
@@ -329,6 +416,19 @@ pub async fn run_up(
              and can call POST /api/v1/suggest-sessions to spawn the configured agent command",
             settings.host
         );
+        if hive_enabled {
+            tracing::warn!(
+                "binding to {}: Hive Mode exposes a mandatory-mTLS sync port ({}) and, only \
+                 while a pairing code is outstanding, a server-TLS-only pairing port ({}); the \
+                 pairing code itself is issued via the local plaintext POST \
+                 /api/v1/hive/pairing-code — anyone who can reach that endpoint can open a \
+                 pairing window and join this device's roster, so only run Hive Mode on a \
+                 network you trust",
+                settings.host,
+                hive_sync_port,
+                hive_pairing_port
+            );
+        }
     }
 
     let listener = bind_with_retry(settings.host.as_str(), settings.port).await?;
@@ -347,13 +447,65 @@ pub async fn run_up(
         tracing::info!("Sync:          enabled → {}", settings.sync.remote_url);
     }
 
+    if hive_enabled {
+        let identity = hive_identity
+            .clone()
+            .expect("hive_identity is Some whenever hive_enabled, bootstrapped above");
+
+        let trusted = store.hive_trusted_networks().await?;
+        let current = crate::hive::network::current_network_key_async().await;
+        let start_now = trusted.is_empty()
+            || current
+                .as_deref()
+                .map(|c| trusted.iter().any(|t| t.id == c))
+                .unwrap_or(false);
+
+        let stack: Arc<tokio::sync::Mutex<Option<crate::hive::network_guard::HiveStackHandle>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        let guard_params = crate::hive::network_guard::HiveStackParams {
+            host: settings.host.clone(),
+            port: settings.port,
+            sync_interval_seconds: settings.hive.sync_interval_seconds,
+            ping_interval_seconds: settings.hive.ping_interval_seconds,
+        };
+        if start_now {
+            let handle = crate::hive::network_guard::spawn_hive_stack(
+                store.clone(),
+                identity.clone(),
+                guard_params.clone(),
+                events_tx.clone(),
+            )
+            .await?;
+            *stack.lock().await = Some(handle);
+        } else {
+            tracing::warn!(
+                "current network is not in the trusted-networks list; Hive Mode starting paused"
+            );
+        }
+
+        tokio::spawn(crate::hive::network_guard::run_guard_loop(
+            store.clone(),
+            identity,
+            guard_params,
+            events_tx.clone(),
+            stack,
+        ));
+    }
+
     let mut dashboard_url = None;
+    // `with_connect_info` makes the real TCP peer address available to
+    // handlers/middleware via the `ConnectInfo` extractor (used by
+    // `api::require_loopback` to gate the trusted-networks endpoints,
+    // issue #27) -- unlike a header, it can't be spoofed by the client.
     let mut api_handle = tokio::spawn({
         let rx = shutdown_rx.clone();
         async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(wait_for_shutdown(rx))
-                .await
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(wait_for_shutdown(rx))
+            .await
         }
     });
 
@@ -408,6 +560,7 @@ pub async fn run_up(
             events_tx,
             store.clone(),
             shutdown_rx.clone(),
+            restart_notify.clone(),
         )
         .await?;
         // Terminal is already restored by up_view's TerminalGuard.
@@ -417,7 +570,10 @@ pub async fn run_up(
                 // re-exec'd child can rebind the same port, hand off the
                 // pidfile, and exit — the shell gets its prompt back
                 // immediately, and the child survives this terminal closing
-                // (new session, stdio off the tty).
+                // (new session, stdio off the tty). Also reached when
+                // `restart_notify` fired instead of a keypress (the
+                // dashboard's Hive enable/disable toggle) -- both cases need
+                // the exact same re-exec sequence.
                 api_handle.abort();
                 if let Some(h) = dash_handle {
                     h.abort();
@@ -438,13 +594,32 @@ pub async fn run_up(
         }
     }
 
-    // Run until either the API listener stops on its own (accept error) or
-    // shutdown is requested; then give both servers a bounded window to
-    // finish in-flight requests. `_pid_guard` drops on return, removing the
-    // pidfile in every path except detach (handled above).
+    // Run until either the API listener stops on its own (accept error),
+    // shutdown is requested, or `restart_notify` fires (the dashboard's Hive
+    // enable/disable toggle -- headless servers never run the TUI branch
+    // above, so this is the only place a non-interactive process ever sees
+    // that signal). The restart path re-execs immediately rather than
+    // joining the graceful-drain path below, mirroring the TUI's detach
+    // sequence exactly. `_pid_guard` drops on return, removing the pidfile
+    // in every path except detach/restart (handled inline).
     let api_result = tokio::select! {
         r = &mut api_handle => Some(r),
         _ = wait_for_shutdown(shutdown_rx.clone()) => None,
+        _ = restart_notify.notified() => {
+            api_handle.abort();
+            if let Some(h) = &dash_handle {
+                h.abort();
+            }
+            for _ in 0..20 {
+                if !crate::cli::probe_server_up(settings) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            drop(_pid_guard);
+            spawn_detached_child(headless)?;
+            std::process::exit(0);
+        }
     };
     let _ = shutdown_tx.send(true);
     let drain = async {
@@ -535,6 +710,46 @@ mod tests {
     use super::*;
     use crate::{config::SyncSettings, db, store::SqliteStore};
 
+    #[test]
+    fn hive_tls_uses_explicit_crypto_provider_not_ambiguous_default() {
+        // Both `ring` and `aws-lc-rs` end up compiled in (our own rustls
+        // feature selects `ring`; axum-server's own rustls dependency pulls
+        // in `aws-lc-rs`), so rustls's implicit per-process default
+        // resolution is genuinely ambiguous. `rustls::ServerConfig::builder()`
+        // panics in that situation -- this test proves the explicit
+        // `builder_with_provider(ring::default_provider())` path used in
+        // `run_up` avoids that panic, which a plain `cargo build`/compile
+        // check can't catch since the panic only fires at runtime.
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let result = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(rustls::DEFAULT_VERSIONS);
+        assert!(result.is_ok(), "explicit provider selection must not fail");
+
+        // Prove the ambiguity is real, not hypothetical: the bare builder()
+        // this fix replaced genuinely panics in this exact build (both
+        // crypto backends compiled in, no process-wide default installed).
+        // Without this assertion, the test above would pass identically
+        // even if only one backend were ever compiled in, and wouldn't
+        // prove anything about the bug it's guarding against.
+        // Note: this prints a panic backtrace to stderr even though the test
+        // passes -- that's expected and benign (it's the panic this test is
+        // proving happens). Not suppressing it via a custom panic hook here,
+        // since std::panic::set_hook/take_hook are process-global and this
+        // test binary runs many tests in parallel threads; swapping the hook
+        // could race with a genuine panic in another concurrently-running
+        // test and swallow its real backtrace.
+        let bare_builder_panics = std::panic::catch_unwind(rustls::ServerConfig::builder).is_err();
+        assert!(
+            bare_builder_panics,
+            "expected the bare ServerConfig::builder() to panic on an ambiguous \
+             default crypto provider -- if this now passes, either the dependency \
+             graph changed to only compile in one backend (fine, but re-check \
+             whether the explicit-provider workaround above is still needed) or \
+             something upstream started installing a process-wide default before \
+             this test runs (also worth understanding before treating this as safe)"
+        );
+    }
+
     #[tokio::test]
     async fn unbundled_dashboard_serves_placeholder() {
         // Only meaningful for a source build without dashboard/dist/assets;
@@ -608,6 +823,12 @@ mod tests {
                 crate::update::UpdateState::new_idle(),
             )),
             true,
+            false,
+            None,
+            std::sync::Arc::new(crate::hive::pairing::PairingCodeStore::new()),
+            None,
+            0,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
             api::guard::GuardConfig::loopback_only(),
             shutdown_channel().1,
         );
@@ -646,6 +867,12 @@ mod tests {
                 crate::update::UpdateState::new_idle(),
             )),
             true,
+            false,
+            None,
+            std::sync::Arc::new(crate::hive::pairing::PairingCodeStore::new()),
+            None,
+            0,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
             api::guard::GuardConfig::loopback_only(),
             shutdown_channel().1,
         );
@@ -689,6 +916,12 @@ mod tests {
                 crate::update::UpdateState::new_idle(),
             )),
             true,
+            false,
+            None,
+            std::sync::Arc::new(crate::hive::pairing::PairingCodeStore::new()),
+            None,
+            0,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
             api::guard::GuardConfig::loopback_only(),
             shutdown_rx,
         );

@@ -3,6 +3,8 @@ use libsql::{Connection, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::hive::roster::{JoinRecord, RevocationRecord, RosterEntry, RosterStatus};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: String,
@@ -72,6 +74,7 @@ pub struct ConflictEntry {
     pub local_updated_at: i64,
     pub status: String,
     pub created_at: i64,
+    pub source_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +95,19 @@ pub struct JournalRow {
     pub memory_id: String,
     pub content: String,
     pub updated_at: i64,
+}
+
+pub struct HiveManifest {
+    pub memories: std::collections::HashMap<String, (String, i64)>,
+    pub tombstones: std::collections::HashMap<String, i64>,
+    pub settings: (String, i64),
+    pub tag_namespaces: (String, i64),
+}
+
+pub struct PeerStatusRow {
+    pub online: bool,
+    pub last_synced_at: Option<i64>,
+    pub pending_conflict_count: i64,
 }
 
 pub struct SqliteStore {
@@ -238,6 +254,29 @@ fn validate_tag_format(tags: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn compute_hive_content_hash(
+    title: &str,
+    content: &str,
+    tags: &[String],
+    layer: &str,
+    memory_type: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut sorted_tags: Vec<&str> = tags.iter().map(String::as_str).collect();
+    sorted_tags.sort_unstable();
+    let mut hasher = Sha256::new();
+    hasher.update(title.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(content.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(sorted_tags.join(",").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(layer.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(memory_type.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Seeded `tag_namespaces` registry, used both as the dashboard's initial
@@ -414,29 +453,47 @@ impl SqliteStore {
     }
 
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        self.store_with_timestamp(m, chrono_now()).await
+    }
+
+    /// Like `store`, but stamps `updated_at` (and `created_at` for a brand-new
+    /// row) with `updated_at` instead of the wall clock. Used by the hive
+    /// apply path so a memory pulled from a peer keeps the *peer's* timestamp:
+    /// last-write-wins only converges across the hive if every device compares
+    /// the same timestamp for the same version of a memory. Stamping `now`
+    /// instead made the pulled copy look newer than the original, so an edit
+    /// the origin made in between was permanently judged "older" and lost.
+    pub(crate) async fn store_with_timestamp(
+        &self,
+        m: &NewMemoryRow<'_>,
+        updated_at: i64,
+    ) -> Result<()> {
         m.layer.parse::<crate::model::Layer>()?;
         m.memory_type.parse::<crate::model::MemoryType>()?;
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
         self.check_content_size(m.title, m.content).await?;
-        let now = chrono_now();
+        let now = updated_at;
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
 
+        let hive_hash =
+            compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
         let _w = self.write().await;
         let tx = self.begin().await?;
         tx.execute(
-            "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                title = excluded.title,
                content = excluded.content,
                updated_at = excluded.updated_at,
                token_count = excluded.token_count,
                layer = excluded.layer,
-               memory_type = excluded.memory_type",
-            params![m.id, m.title, m.content, now, now, token_count, m.layer, m.memory_type],
+               memory_type = excluded.memory_type,
+               hive_content_hash = excluded.hive_content_hash",
+            params![m.id, m.title, m.content, now, now, token_count, m.layer, m.memory_type, hive_hash],
         )
         .await?;
 
@@ -453,6 +510,16 @@ impl SqliteStore {
             )
             .await?;
         }
+
+        // A (re)written memory is alive again: drop any tombstone for its id
+        // so the manifest doesn't advertise both a live row and a deletion,
+        // and so `apply_incoming_memory`'s no-resurrect check doesn't keep
+        // blocking newer versions of it from peers.
+        tx.execute(
+            "DELETE FROM hive_tombstones WHERE memory_id = ?1",
+            params![m.id],
+        )
+        .await?;
 
         sync_relationship_edges(&tx, m.id, m.content, now).await?;
 
@@ -576,15 +643,20 @@ impl SqliteStore {
     ) -> Result<bool> {
         validate_tag_format(tags)?;
         validate_tags_against_registry(self, tags).await?;
+        let Some(current) = self.recall_by_id(id).await? else {
+            return Ok(false);
+        };
         self.check_content_size(title, content).await?;
         let now = chrono_now();
         let token_count = crate::budget::count_entry_tokens(title, content) as i64;
+        let hive_hash =
+            compute_hive_content_hash(title, content, tags, &current.layer, &current.memory_type);
         let _w = self.write().await;
         let tx = self.begin().await?;
         let changed = tx
             .execute(
-                "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4 WHERE id = ?5",
-                params![title, content, now, token_count, id],
+                "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4, hive_content_hash = ?5 WHERE id = ?6",
+                params![title, content, now, token_count, hive_hash, id],
             )
             .await?;
         if changed == 0 {
@@ -636,6 +708,13 @@ impl SqliteStore {
         validate_tags_against_registry(self, &merged).await?;
 
         let now = chrono_now();
+        let hive_hash = compute_hive_content_hash(
+            &current.title,
+            &current.content,
+            &merged,
+            &current.layer,
+            &current.memory_type,
+        );
         let _w = self.write().await;
         let tx = self.begin().await?;
         for t in tags {
@@ -646,8 +725,8 @@ impl SqliteStore {
             .await?;
         }
         tx.execute(
-            "UPDATE memories SET updated_at = ?2 WHERE id = ?1",
-            params![id, now],
+            "UPDATE memories SET updated_at = ?2, hive_content_hash = ?3 WHERE id = ?1",
+            params![id, now, hive_hash],
         )
         .await?;
         tx.execute(
@@ -668,7 +747,21 @@ impl SqliteStore {
         let Some(current) = self.recall_by_id(id).await? else {
             return Ok(false);
         };
+        let removed_lower: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+        let remaining: Vec<String> = current
+            .tags
+            .iter()
+            .filter(|t| !removed_lower.contains(t))
+            .cloned()
+            .collect();
         let now = chrono_now();
+        let hive_hash = compute_hive_content_hash(
+            &current.title,
+            &current.content,
+            &remaining,
+            &current.layer,
+            &current.memory_type,
+        );
         let _w = self.write().await;
         let tx = self.begin().await?;
         for t in tags {
@@ -679,8 +772,8 @@ impl SqliteStore {
             .await?;
         }
         tx.execute(
-            "UPDATE memories SET updated_at = ?2 WHERE id = ?1",
-            params![id, now],
+            "UPDATE memories SET updated_at = ?2, hive_content_hash = ?3 WHERE id = ?1",
+            params![id, now, hive_hash],
         )
         .await?;
         tx.execute(
@@ -696,11 +789,21 @@ impl SqliteStore {
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool> {
+        let now = chrono_now();
         let _w = self.write().await;
-        let changed = self
-            .conn
+        let tx = self.begin().await?;
+        let changed = tx
             .execute("DELETE FROM memories WHERE id = ?1", params![id])
             .await?;
+        if changed > 0 {
+            tx.execute(
+                "INSERT INTO hive_tombstones (memory_id, deleted_at) VALUES (?1, ?2)
+                 ON CONFLICT(memory_id) DO UPDATE SET deleted_at = excluded.deleted_at",
+                params![id, now],
+            )
+            .await?;
+        }
+        tx.commit().await?;
         Ok(changed > 0)
     }
 
@@ -721,8 +824,14 @@ impl SqliteStore {
     /// `session_start_log` (would otherwise keep every wiped memory's
     /// title/content in analytics forever).
     pub async fn delete_all(&self) -> Result<i64> {
+        let now = chrono_now();
         let _w = self.write().await;
         let tx = self.begin().await?;
+        tx.execute(
+            "INSERT OR REPLACE INTO hive_tombstones (memory_id, deleted_at) SELECT id, ? FROM memories",
+            params![now],
+        )
+        .await?;
         let changed = tx.execute("DELETE FROM memories", ()).await?;
         tx.execute("DELETE FROM sync_journal", ()).await?;
         tx.execute("DELETE FROM session_start_log", ()).await?;
@@ -1218,6 +1327,16 @@ impl SqliteStore {
                 params![resolution, id],
             )
             .await?;
+        if changed > 0
+            && let Some(device_id) = &conflict.source_device_id
+        {
+            self.conn
+                .execute(
+                    "UPDATE hive_peer_status SET pending_conflict_count = MAX(0, pending_conflict_count - 1) WHERE device_id = ?1",
+                    params![device_id.as_str()],
+                )
+                .await?;
+        }
         Ok(changed > 0)
     }
 
@@ -1253,6 +1372,7 @@ impl SqliteStore {
                     &j.content,
                     cur.updated_at,
                     j.updated_at,
+                    None,
                 )
                 .await?;
                 found += 1;
@@ -1342,7 +1462,7 @@ impl SqliteStore {
         let mut rows = if let Some(status) = status {
             self.conn
                 .query(
-                    "SELECT id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at
+                    "SELECT id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at, source_device_id
                      FROM conflicts WHERE status = ?1 ORDER BY created_at DESC",
                     params![status],
                 )
@@ -1350,7 +1470,7 @@ impl SqliteStore {
         } else {
             self.conn
                 .query(
-                    "SELECT id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at
+                    "SELECT id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at, source_device_id
                      FROM conflicts ORDER BY created_at DESC",
                     (),
                 )
@@ -1367,6 +1487,7 @@ impl SqliteStore {
                 local_updated_at: row.get(5)?,
                 status: row.get(6)?,
                 created_at: row.get(7)?,
+                source_device_id: row.get(8)?,
             });
         }
         Ok(results)
@@ -1376,7 +1497,7 @@ impl SqliteStore {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at
+                "SELECT id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at, source_device_id
                  FROM conflicts WHERE id = ?1",
                 params![id],
             )
@@ -1391,6 +1512,7 @@ impl SqliteStore {
                 local_updated_at: row.get(5)?,
                 status: row.get(6)?,
                 created_at: row.get(7)?,
+                source_device_id: row.get(8)?,
             }))
         } else {
             Ok(None)
@@ -1404,17 +1526,21 @@ impl SqliteStore {
         local_content: &str,
         remote_updated_at: i64,
         local_updated_at: i64,
+        source_device_id: Option<&str>,
     ) -> Result<ConflictEntry> {
         let id = format!("conflict_{}", uuid::Uuid::new_v4().simple());
         let now = chrono_now();
         let _w = self.write().await;
         self.conn
             .execute(
-                "INSERT INTO conflicts (id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
-                params![id.as_str(), memory_id, remote_content, local_content, remote_updated_at, local_updated_at, now],
+                "INSERT INTO conflicts (id, memory_id, remote_content, local_content, remote_updated_at, local_updated_at, status, created_at, source_device_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
+                params![id.as_str(), memory_id, remote_content, local_content, remote_updated_at, local_updated_at, now, source_device_id],
             )
             .await?;
+        if let Some(device_id) = source_device_id {
+            self.increment_peer_conflict_count(device_id).await?;
+        }
         Ok(ConflictEntry {
             id,
             memory_id: memory_id.to_string(),
@@ -1424,7 +1550,23 @@ impl SqliteStore {
             local_updated_at,
             status: "pending".to_string(),
             created_at: now,
+            source_device_id: source_device_id.map(String::from),
         })
+    }
+
+    /// Upserts `hive_peer_status` if the device has no row yet (e.g. a
+    /// conflict from a peer before its first ping), otherwise increments.
+    async fn increment_peer_conflict_count(&self, device_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO hive_peer_status (device_id, online, last_synced_at, pending_conflict_count)
+                 VALUES (?1, 0, NULL, 1)
+                 ON CONFLICT(device_id) DO UPDATE SET
+                   pending_conflict_count = pending_conflict_count + 1",
+                params![device_id],
+            )
+            .await?;
+        Ok(())
     }
 
     async fn fetch_tags(&self, memory_id: &str) -> Result<Vec<String>> {
@@ -1453,6 +1595,338 @@ impl SqliteStore {
         Ok(row.get(0)?)
     }
 
+    pub async fn hive_list_roster(&self) -> Result<Vec<RosterEntry>> {
+        Self::list_roster_on(&self.conn).await
+    }
+
+    /// Merges a gossiped roster into the persisted one as a single
+    /// read-merge-write transaction and returns the merged result. Every
+    /// caller that used to do `hive_list_roster` → `merge_roster` → N ×
+    /// `hive_upsert_roster_entry` had a window between the read and the
+    /// writes in which a concurrent revoke (the dashboard's revoke handler
+    /// racing the ping loop's gossip refresh) could land and then be
+    /// overwritten by the stale Active snapshot -- silently un-revoking the
+    /// device. Doing all three steps inside one transaction closes that.
+    pub async fn hive_merge_roster(&self, incoming: Vec<RosterEntry>) -> Result<Vec<RosterEntry>> {
+        let tx = self.conn.transaction().await?;
+        let local = Self::list_roster_on(&tx).await?;
+        let merged = crate::hive::gossip::merge_roster(local, incoming);
+        for entry in &merged {
+            Self::upsert_roster_entry_on(&tx, entry).await?;
+        }
+        tx.commit().await?;
+        Ok(merged)
+    }
+
+    async fn list_roster_on(conn: &Connection) -> Result<Vec<RosterEntry>> {
+        let mut rows = conn
+            .query(
+                "SELECT device_id, public_key, name, status, joined_at, revoked_at, revoked_by, \
+                 join_record, revocation_record FROM hive_devices",
+                (),
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let status_str: String = row.get(3)?;
+            let join_record_json: String = row.get(7)?;
+            let revocation_record_json: Option<String> = row.get(8)?;
+            out.push(RosterEntry {
+                device_id: row.get(0)?,
+                public_key: row.get(1)?,
+                name: row.get(2)?,
+                status: if status_str == "revoked" {
+                    RosterStatus::Revoked
+                } else {
+                    RosterStatus::Active
+                },
+                joined_at: row.get(4)?,
+                revoked_at: row.get(5)?,
+                revoked_by: row.get(6)?,
+                join_record: serde_json::from_str::<JoinRecord>(&join_record_json)?,
+                revocation_record: revocation_record_json
+                    .map(|s| serde_json::from_str::<RevocationRecord>(&s))
+                    .transpose()?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn hive_upsert_roster_entry(&self, entry: &RosterEntry) -> Result<()> {
+        Self::upsert_roster_entry_on(&self.conn, entry).await
+    }
+
+    async fn upsert_roster_entry_on(conn: &Connection, entry: &RosterEntry) -> Result<()> {
+        let status_str = match entry.status {
+            RosterStatus::Active => "active",
+            RosterStatus::Revoked => "revoked",
+        };
+        let join_record_json = serde_json::to_string(&entry.join_record)?;
+        let revocation_record_json = entry
+            .revocation_record
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        conn
+            .execute(
+                "INSERT INTO hive_devices \
+                 (device_id, public_key, name, status, joined_at, revoked_at, revoked_by, join_record, revocation_record) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 ON CONFLICT(device_id) DO UPDATE SET \
+                   public_key = excluded.public_key, name = excluded.name, status = excluded.status, \
+                   revoked_at = excluded.revoked_at, revoked_by = excluded.revoked_by, \
+                   join_record = excluded.join_record, revocation_record = excluded.revocation_record",
+                params![
+                    entry.device_id.as_str(),
+                    entry.public_key.as_str(),
+                    entry.name.as_str(),
+                    status_str,
+                    entry.joined_at,
+                    entry.revoked_at,
+                    entry.revoked_by.as_deref(),
+                    join_record_json.as_str(),
+                    revocation_record_json.as_deref(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Backfills `hive_content_hash` for any memory written before that
+    /// column existed (V9 migration added it as nullable; only writes going
+    /// through store()/update()/add_tags()/remove_tags() after that point
+    /// compute it). Without this, a memory created before hive sync was ever
+    /// enabled would keep a NULL hash forever and silently never appear in
+    /// the manifest -- never syncing to any peer. Idempotent and cheap once
+    /// caught up (the WHERE clause finds nothing on subsequent calls).
+    async fn backfill_hive_content_hashes(&self) -> Result<()> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, title, content, layer, memory_type FROM memories WHERE hive_content_hash IS NULL",
+                (),
+            )
+            .await?;
+        let mut to_backfill = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let id: String = row.get(0)?;
+            let title: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            let layer: String = row.get(3)?;
+            let memory_type: String = row.get(4)?;
+            to_backfill.push((id, title, content, layer, memory_type));
+        }
+        if to_backfill.is_empty() {
+            return Ok(());
+        }
+        // Tags are fetched before opening the transaction (fetch_tags reads
+        // via self.conn, not a transaction handle), then every UPDATE runs
+        // inside one transaction -- matching this file's convention
+        // elsewhere (store/update/add_tags/remove_tags all batch their
+        // writes in a single transaction) rather than one implicit
+        // autocommit per row.
+        let mut hashes = Vec::with_capacity(to_backfill.len());
+        for (id, title, content, layer, memory_type) in &to_backfill {
+            let tags = self.fetch_tags(id).await?;
+            hashes.push(compute_hive_content_hash(
+                title,
+                content,
+                &tags,
+                layer,
+                memory_type,
+            ));
+        }
+        let tx = self.conn.transaction().await?;
+        for ((id, ..), hash) in to_backfill.iter().zip(hashes.iter()) {
+            tx.execute(
+                "UPDATE memories SET hive_content_hash = ?2 WHERE id = ?1",
+                params![id.as_str(), hash.as_str()],
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn hive_manifest(&self) -> Result<HiveManifest> {
+        self.backfill_hive_content_hashes().await?;
+        let mut memories = std::collections::HashMap::new();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, hive_content_hash, updated_at FROM memories WHERE hive_content_hash IS NOT NULL",
+                (),
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let id: String = row.get(0)?;
+            let hash: String = row.get(1)?;
+            let updated_at: i64 = row.get(2)?;
+            memories.insert(id, (hash, updated_at));
+        }
+
+        let mut tombstones = std::collections::HashMap::new();
+        let mut rows = self
+            .conn
+            .query("SELECT memory_id, deleted_at FROM hive_tombstones", ())
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let id: String = row.get(0)?;
+            let deleted_at: i64 = row.get(1)?;
+            tombstones.insert(id, deleted_at);
+        }
+
+        let settings_override = self.hive_settings_override().await?;
+        let (sync_s, ping_s, settings_updated_at) = settings_override.unwrap_or((300, 60, 0));
+        let settings_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(sync_s.to_le_bytes());
+            hasher.update(ping_s.to_le_bytes());
+            hex::encode(hasher.finalize())
+        };
+
+        let tag_namespaces_updated_at: i64 = self
+            .get_meta("tag_namespaces_updated_at")
+            .await?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let tag_namespaces_json = self.tag_namespace_registry().await;
+        let tag_namespaces_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(tag_namespaces_json.to_string().as_bytes());
+            hex::encode(hasher.finalize())
+        };
+
+        Ok(HiveManifest {
+            memories,
+            tombstones,
+            settings: (settings_hash, settings_updated_at),
+            tag_namespaces: (tag_namespaces_hash, tag_namespaces_updated_at),
+        })
+    }
+
+    /// Returns the info a caller needs to push a just-changed memory to
+    /// online peers -- call this right after a successful store()/update()/
+    /// add_tags()/remove_tags(), not from inside them.
+    pub async fn hive_push_payload_for(&self, id: &str) -> Result<Option<serde_json::Value>> {
+        let Some(entry) = self.recall_by_id(id).await? else {
+            return Ok(None);
+        };
+        let hash = compute_hive_content_hash(
+            &entry.title,
+            &entry.content,
+            &entry.tags,
+            &entry.layer,
+            &entry.memory_type,
+        );
+        Ok(Some(serde_json::json!({
+            "kind": "memory", "id": entry.id, "title": entry.title, "content": entry.content,
+            "tags": entry.tags, "layer": entry.layer, "memory_type": entry.memory_type,
+            "updated_at": entry.updated_at, "hive_content_hash": hash,
+        })))
+    }
+
+    pub async fn hive_settings_override(&self) -> Result<Option<(u64, u64, i64)>> {
+        let Some(raw) = self.get_meta("hive_settings_override").await? else {
+            return Ok(None);
+        };
+        let parsed: (u64, u64, i64) = serde_json::from_str(&raw)?;
+        Ok(Some(parsed))
+    }
+
+    pub async fn set_hive_settings_override(
+        &self,
+        sync_interval_seconds: u64,
+        ping_interval_seconds: u64,
+        updated_at: i64,
+    ) -> Result<()> {
+        let raw =
+            serde_json::to_string(&(sync_interval_seconds, ping_interval_seconds, updated_at))?;
+        self.set_meta("hive_settings_override", &raw).await
+    }
+
+    pub async fn hive_enabled_override(&self) -> Result<Option<bool>> {
+        let Some(raw) = self.get_meta("hive_enabled_override").await? else {
+            return Ok(None);
+        };
+        Ok(Some(raw == "true"))
+    }
+
+    pub async fn set_hive_enabled_override(&self, enabled: bool) -> Result<()> {
+        self.set_meta(
+            "hive_enabled_override",
+            if enabled { "true" } else { "false" },
+        )
+        .await
+    }
+
+    pub async fn hive_trusted_networks(&self) -> Result<Vec<crate::hive::network::TrustedNetwork>> {
+        let Some(raw) = self.get_meta("hive_trusted_networks").await? else {
+            return Ok(Vec::new());
+        };
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    pub async fn add_hive_trusted_network(&self, id: &str, label: Option<String>) -> Result<()> {
+        let mut current = self.hive_trusted_networks().await?;
+        if !current.iter().any(|n| n.id == id) {
+            current.push(crate::hive::network::TrustedNetwork {
+                id: id.to_string(),
+                label,
+                added_at: chrono::Utc::now().timestamp(),
+            });
+            self.set_meta("hive_trusted_networks", &serde_json::to_string(&current)?)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn remove_hive_trusted_network(&self, id: &str) -> Result<()> {
+        let mut current = self.hive_trusted_networks().await?;
+        current.retain(|n| n.id != id);
+        self.set_meta("hive_trusted_networks", &serde_json::to_string(&current)?)
+            .await
+    }
+
+    pub async fn hive_upsert_peer_status(
+        &self,
+        device_id: &str,
+        online: bool,
+        last_synced_at: Option<i64>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO hive_peer_status (device_id, online, last_synced_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(device_id) DO UPDATE SET
+                   online = excluded.online,
+                   last_synced_at = COALESCE(excluded.last_synced_at, hive_peer_status.last_synced_at)",
+                params![device_id, online, last_synced_at],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn hive_get_peer_status(&self, device_id: &str) -> Result<Option<PeerStatusRow>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT online, last_synced_at, pending_conflict_count FROM hive_peer_status WHERE device_id = ?1",
+                params![device_id],
+            )
+            .await?;
+        Ok(match rows.next().await? {
+            Some(row) => Some(PeerStatusRow {
+                online: row.get::<i64>(0)? != 0,
+                last_synced_at: row.get(1)?,
+                pending_conflict_count: row.get(2)?,
+            }),
+            None => None,
+        })
+    }
+
     fn row_to_entry(&self, row: &libsql::Row) -> Result<MemoryEntry> {
         Ok(MemoryEntry {
             id: row.get(0)?,
@@ -1468,11 +1942,187 @@ impl SqliteStore {
     }
 }
 
-fn chrono_now() -> i64 {
+pub(crate) fn chrono_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ApplyOutcome {
+    Applied,
+    KeptLocal,
+    Conflicted,
+}
+
+pub(crate) const HIVE_CLOCK_SKEW_TOLERANCE_SECONDS: i64 = 300;
+
+/// Whether a peer-supplied timestamp is plausible: not further in the future
+/// than the clock-skew tolerance. A far-future `updated_at`/`deleted_at` on
+/// anything last-write-wins (settings, tag namespaces, tombstones) would
+/// otherwise win every comparison forever, wedging that record against all
+/// legitimate later edits from every device in the hive.
+pub(crate) fn hive_timestamp_is_plausible(ts: i64) -> bool {
+    ts <= chrono_now() + HIVE_CLOCK_SKEW_TOLERANCE_SECONDS
+}
+
+impl SqliteStore {
+    /// The recorded deletion time for `id`, if this device (or a peer whose
+    /// tombstone was merged in) has deleted it.
+    pub async fn hive_tombstone_for(&self, id: &str) -> Result<Option<i64>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT deleted_at FROM hive_tombstones WHERE memory_id = ?1",
+                params![id],
+            )
+            .await?;
+        Ok(match rows.next().await? {
+            Some(row) => Some(row.get(0)?),
+            None => None,
+        })
+    }
+
+    /// Applies a peer's tombstone. The local copy is deleted only if it is
+    /// strictly older than the deletion (an edit or re-creation made after
+    /// the delete wins). Whether or not a row existed, the tombstone is
+    /// recorded locally at the peer's `deleted_at` (keeping the later of the
+    /// two if one already exists) -- so this device won't resurrect the
+    /// memory from a third peer that hasn't caught up yet, and re-advertises
+    /// the deletion with its real time rather than "when I heard about it".
+    /// Returns whether a local row was actually deleted.
+    pub async fn apply_incoming_tombstone(&self, id: &str, deleted_at: i64) -> Result<bool> {
+        if let Some(local) = self.recall_by_id(id).await?
+            && local.updated_at >= deleted_at
+        {
+            return Ok(false);
+        }
+        let tx = self.conn.transaction().await?;
+        let changed = tx
+            .execute("DELETE FROM memories WHERE id = ?1", params![id])
+            .await?;
+        tx.execute(
+            "INSERT INTO hive_tombstones (memory_id, deleted_at) VALUES (?1, ?2)
+             ON CONFLICT(memory_id) DO UPDATE SET
+               deleted_at = MAX(hive_tombstones.deleted_at, excluded.deleted_at)",
+            params![id, deleted_at],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(changed > 0)
+    }
+
+    /// Applies a memory received from a peer (push or pull) under
+    /// last-write-wins with a conflict row for ties and implausible clocks.
+    /// The content hash is recomputed here from the incoming fields rather
+    /// than trusted from the peer's manifest/push body: a peer whose
+    /// advertised hash didn't match its content would otherwise be
+    /// re-fetched and re-applied on every single sync round.
+    pub async fn apply_incoming_memory(
+        &self,
+        incoming: &MemoryEntry,
+        source_device_id: Option<&str>,
+    ) -> Result<ApplyOutcome> {
+        // A memory already deleted here (or deleted on a peer whose
+        // tombstone was merged in) must not come back just because some
+        // other peer hasn't processed the deletion yet: the tombstone wins
+        // unless the incoming version is strictly newer than the deletion.
+        if let Some(deleted_at) = self.hive_tombstone_for(&incoming.id).await?
+            && incoming.updated_at <= deleted_at
+        {
+            return Ok(ApplyOutcome::KeptLocal);
+        }
+
+        let now = chrono_now();
+        let Some(local) = self.recall_by_id(&incoming.id).await? else {
+            // Not present locally at all -- no conflict is possible, this is
+            // a plain new-to-us memory. Apply directly, keeping the peer's
+            // timestamp (clamped to "now" if the peer's clock is implausibly
+            // ahead, so a bad clock can't mint a version nobody can ever
+            // overwrite).
+            let updated_at = if incoming.updated_at > now + HIVE_CLOCK_SKEW_TOLERANCE_SECONDS {
+                now
+            } else {
+                incoming.updated_at
+            };
+            self.store_with_timestamp(
+                &NewMemoryRow {
+                    id: &incoming.id,
+                    title: &incoming.title,
+                    content: &incoming.content,
+                    tags: &incoming.tags,
+                    token_count: incoming.token_count,
+                    layer: &incoming.layer,
+                    memory_type: &incoming.memory_type,
+                },
+                updated_at,
+            )
+            .await?;
+            return Ok(ApplyOutcome::Applied);
+        };
+
+        let local_hash = compute_hive_content_hash(
+            &local.title,
+            &local.content,
+            &local.tags,
+            &local.layer,
+            &local.memory_type,
+        );
+        let incoming_hash = compute_hive_content_hash(
+            &incoming.title,
+            &incoming.content,
+            &incoming.tags,
+            &incoming.layer,
+            &incoming.memory_type,
+        );
+        if local_hash == incoming_hash {
+            return Ok(ApplyOutcome::KeptLocal); // identical, nothing to do
+        }
+
+        if incoming.updated_at > now + HIVE_CLOCK_SKEW_TOLERANCE_SECONDS {
+            self.write_conflict(
+                &incoming.id,
+                &incoming.content,
+                &local.content,
+                incoming.updated_at,
+                local.updated_at,
+                source_device_id,
+            )
+            .await?;
+            return Ok(ApplyOutcome::Conflicted);
+        }
+
+        if incoming.updated_at > local.updated_at {
+            self.store_with_timestamp(
+                &NewMemoryRow {
+                    id: &incoming.id,
+                    title: &incoming.title,
+                    content: &incoming.content,
+                    tags: &incoming.tags,
+                    token_count: incoming.token_count,
+                    layer: &incoming.layer,
+                    memory_type: &incoming.memory_type,
+                },
+                incoming.updated_at,
+            )
+            .await?;
+            Ok(ApplyOutcome::Applied)
+        } else if incoming.updated_at < local.updated_at {
+            Ok(ApplyOutcome::KeptLocal)
+        } else {
+            self.write_conflict(
+                &incoming.id,
+                &incoming.content,
+                &local.content,
+                incoming.updated_at,
+                local.updated_at,
+                source_device_id,
+            )
+            .await?;
+            Ok(ApplyOutcome::Conflicted)
+        }
+    }
 }
 
 #[cfg(test)]

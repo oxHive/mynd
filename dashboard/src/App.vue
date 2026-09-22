@@ -10,6 +10,7 @@ import { useFontScaleStore } from './stores/fontScale.js'
 import { useAnalyticsStore } from './stores/analytics.js'
 import { useSuggestStore } from './stores/suggest.js'
 import { useUpdateStore } from './stores/update.js'
+import { useHiveStore } from './stores/hive.js'
 import { BASE } from './api/client.js'
 import AppSidebar from './components/sidebar/AppSidebar.vue'
 import SuggestPanel from './components/graph/SuggestPanel.vue'
@@ -29,6 +30,7 @@ const tagSettings = useTagSettingsStore()
 const analytics = useAnalyticsStore()
 const suggest = useSuggestStore()
 const update = useUpdateStore()
+const hive = useHiveStore()
 useThemeStore() // applies data-theme to <html> as soon as the store is created
 useFontScaleStore() // applies zoom to <html> as soon as the store is created
 
@@ -60,7 +62,9 @@ onMounted(async () => {
       analytics.fetchSessionLogs(),
       suggest.hydrate(),
       update.refresh(),
+      hive.fetchStatus(),
     ])
+    hive.primeOnlineSnapshot()
   }
 
   pollInterval = setInterval(() => ui.pollServerStatus(), 30_000)
@@ -81,6 +85,7 @@ onMounted(async () => {
       if (data.type === 'update_available' || data.type === 'update_progress' || data.type === 'update_failed') {
         update.handleEvent(data)
       }
+      if (data.type === 'hive_peer_status_changed') hive.handlePeerStatusChanged()
     }
   }
 })

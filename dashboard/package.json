@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --headed --workers=1"
   },
   "dependencies": {
     "@phosphor-icons/vue": "^2.2.1",
@@ -15,9 +17,11 @@
     "dompurify": "^3.4.12",
     "marked": "^18.0.13",
     "pinia": "^2.3.1",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.13"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-vue": "^5.2.3",
     "@vue/test-utils": "^2.5.1",

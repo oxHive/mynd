@@ -358,6 +358,7 @@ async fn conflict_round_trip() {
             "local content",
             entry.updated_at + 1,
             entry.updated_at,
+            None,
         )
         .await
         .unwrap();
@@ -649,6 +650,7 @@ async fn list_conflicts_returns_entries() {
         "local",
         entry.updated_at + 1,
         entry.updated_at,
+        None,
     )
     .await
     .unwrap();
@@ -1194,7 +1196,7 @@ async fn resolve_keep_local_restores_content() {
         .await
         .unwrap();
     let c = s
-        .write_conflict("mem_r", "remote won", "my local text", 20, 10)
+        .write_conflict("mem_r", "remote won", "my local text", 20, 10, None)
         .await
         .unwrap();
     assert!(s.resolve_conflict(&c.id, "keep_local").await.unwrap());
@@ -1286,6 +1288,900 @@ async fn list_session_logs_orders_newest_first() {
     assert_eq!(logs[1].project_name, "first");
 }
 
+#[tokio::test]
+async fn hive_roster_starts_empty() {
+    let (s, _dir) = make_store().await;
+    let roster = s.hive_list_roster().await.unwrap();
+    assert!(roster.is_empty());
+}
+
+#[tokio::test]
+async fn hive_upsert_then_list_round_trips() {
+    let (s, _dir) = make_store().await;
+    let identity = crate::hive::identity::generate();
+    let join_record = crate::hive::roster::create_join_record(&identity, "alice-laptop", 1000);
+    let entry = crate::hive::roster::RosterEntry {
+        device_id: identity.device_id.clone(),
+        public_key: crate::hive::identity::public_key_hex(&identity),
+        name: "alice-laptop".to_string(),
+        status: crate::hive::roster::RosterStatus::Active,
+        joined_at: 1000,
+        revoked_at: None,
+        revoked_by: None,
+        join_record,
+        revocation_record: None,
+    };
+    s.hive_upsert_roster_entry(&entry).await.unwrap();
+    let roster = s.hive_list_roster().await.unwrap();
+    assert_eq!(roster.len(), 1);
+    assert_eq!(roster[0].device_id, identity.device_id);
+    assert_eq!(roster[0].name, "alice-laptop");
+}
+
+#[tokio::test]
+async fn hive_upsert_updates_existing_entry_status() {
+    let (s, _dir) = make_store().await;
+    let identity = crate::hive::identity::generate();
+    let join_record = crate::hive::roster::create_join_record(&identity, "bob-phone", 1000);
+    let mut entry = crate::hive::roster::RosterEntry {
+        device_id: identity.device_id.clone(),
+        public_key: crate::hive::identity::public_key_hex(&identity),
+        name: "bob-phone".to_string(),
+        status: crate::hive::roster::RosterStatus::Active,
+        joined_at: 1000,
+        revoked_at: None,
+        revoked_by: None,
+        join_record,
+        revocation_record: None,
+    };
+    s.hive_upsert_roster_entry(&entry).await.unwrap();
+
+    entry.status = crate::hive::roster::RosterStatus::Revoked;
+    entry.revoked_at = Some(2000);
+    entry.revoked_by = Some("hive_someoneelse00000000".to_string());
+    s.hive_upsert_roster_entry(&entry).await.unwrap();
+
+    let roster = s.hive_list_roster().await.unwrap();
+    assert_eq!(
+        roster.len(),
+        1,
+        "upsert must replace, not duplicate, the existing row"
+    );
+    assert_eq!(roster[0].status, crate::hive::roster::RosterStatus::Revoked);
+    assert_eq!(roster[0].revoked_at, Some(2000));
+}
+
+#[test]
+fn hive_content_hash_is_stable_for_identical_input() {
+    let tags = vec!["topic:sync".to_string()];
+    let a =
+        crate::store::compute_hive_content_hash("Title", "Content", &tags, "workspace", "project");
+    let b =
+        crate::store::compute_hive_content_hash("Title", "Content", &tags, "workspace", "project");
+    assert_eq!(a, b);
+}
+
+#[test]
+fn hive_content_hash_changes_when_tags_change_but_content_does_not() {
+    let with_tag = crate::store::compute_hive_content_hash(
+        "Title",
+        "Content",
+        &["topic:sync".to_string()],
+        "workspace",
+        "project",
+    );
+    let without_tag =
+        crate::store::compute_hive_content_hash("Title", "Content", &[], "workspace", "project");
+    assert_ne!(
+        with_tag, without_tag,
+        "a tag-only change must produce a different hash"
+    );
+}
+
+#[test]
+fn hive_content_hash_is_order_independent_for_tags() {
+    let a = crate::store::compute_hive_content_hash(
+        "Title",
+        "Content",
+        &["a".to_string(), "b".to_string()],
+        "workspace",
+        "project",
+    );
+    let b = crate::store::compute_hive_content_hash(
+        "Title",
+        "Content",
+        &["b".to_string(), "a".to_string()],
+        "workspace",
+        "project",
+    );
+    assert_eq!(
+        a, b,
+        "tag order must not affect the hash, since memory_tags has no defined order"
+    );
+}
+
+#[tokio::test]
+async fn delete_writes_a_tombstone() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&NewMemoryRow {
+            id: "mem_deltest0000000000000000000001",
+            title: "t",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    store
+        .delete("mem_deltest0000000000000000000001")
+        .await
+        .unwrap();
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT deleted_at FROM hive_tombstones WHERE memory_id = ?1",
+            libsql::params!["mem_deltest0000000000000000000001"],
+        )
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn delete_all_writes_a_tombstone_per_memory() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&NewMemoryRow {
+            id: "mem_delalltest000000000000000001",
+            title: "t",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    store.delete_all().await.unwrap();
+    let mut rows = store
+        .conn
+        .query("SELECT COUNT(*) FROM hive_tombstones", ())
+        .await
+        .unwrap();
+    let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn hive_manifest_lists_stored_memories_with_hash_and_updated_at() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&NewMemoryRow {
+            id: "mem_manifesttest0000000000000001",
+            title: "t",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let manifest = store.hive_manifest().await.unwrap();
+    let (hash, _updated_at) = manifest
+        .memories
+        .get("mem_manifesttest0000000000000001")
+        .unwrap();
+    assert!(!hash.is_empty());
+}
+
+#[tokio::test]
+async fn hive_manifest_backfills_hash_for_pre_existing_memories() {
+    let (store, _dir) = make_store().await;
+    // Simulate a memory written before hive_content_hash existed (V9's
+    // migration added the column as nullable; nothing but a real write
+    // through store()/update()/etc. computes it -- a row untouched since
+    // before that point would have NULL here). Bypass store() and insert
+    // directly so hive_content_hash stays NULL, matching a genuinely legacy
+    // row rather than one that's already been backfilled by store()'s own
+    // hashing.
+    store
+        .conn
+        .execute(
+            "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, NULL)",
+            libsql::params![
+                "mem_legacynullhash000000000000001",
+                "legacy title",
+                "legacy content",
+                1000i64,
+                10i64,
+                "workspace",
+                "project",
+            ],
+        )
+        .await
+        .unwrap();
+
+    let manifest = store.hive_manifest().await.unwrap();
+    let (hash, _updated_at) = manifest
+        .memories
+        .get("mem_legacynullhash000000000000001")
+        .expect("legacy memory with a NULL hash must be backfilled and appear in the manifest");
+    assert!(!hash.is_empty());
+
+    let expected = crate::store::compute_hive_content_hash(
+        "legacy title",
+        "legacy content",
+        &[],
+        "workspace",
+        "project",
+    );
+    assert_eq!(hash, &expected);
+}
+
+#[tokio::test]
+async fn hive_manifest_lists_tombstones() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&NewMemoryRow {
+            id: "mem_tombmanifest00000000000000001",
+            title: "t",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    store
+        .delete("mem_tombmanifest00000000000000001")
+        .await
+        .unwrap();
+    let manifest = store.hive_manifest().await.unwrap();
+    assert!(
+        manifest
+            .tombstones
+            .contains_key("mem_tombmanifest00000000000000001")
+    );
+}
+
+#[tokio::test]
+async fn hive_settings_override_round_trips() {
+    let (store, _dir) = make_store().await;
+    assert!(store.hive_settings_override().await.unwrap().is_none());
+    store
+        .set_hive_settings_override(120, 30, 1000)
+        .await
+        .unwrap();
+    let (sync_s, ping_s, updated_at) = store.hive_settings_override().await.unwrap().unwrap();
+    assert_eq!((sync_s, ping_s, updated_at), (120, 30, 1000));
+}
+
+#[tokio::test]
+async fn hive_enabled_override_round_trips() {
+    let (store, _dir) = make_store().await;
+    assert_eq!(store.hive_enabled_override().await.unwrap(), None);
+    store.set_hive_enabled_override(true).await.unwrap();
+    assert_eq!(store.hive_enabled_override().await.unwrap(), Some(true));
+    store.set_hive_enabled_override(false).await.unwrap();
+    assert_eq!(store.hive_enabled_override().await.unwrap(), Some(false));
+}
+
+#[tokio::test]
+async fn hive_trusted_networks_round_trip() {
+    let (store, _dir) = make_store().await;
+    assert!(store.hive_trusted_networks().await.unwrap().is_empty());
+
+    store
+        .add_hive_trusted_network("ssid:home-wifi", Some("Home".to_string()))
+        .await
+        .unwrap();
+    let list = store.hive_trusted_networks().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, "ssid:home-wifi");
+    assert_eq!(list[0].label, Some("Home".to_string()));
+
+    // Adding the same id again does not duplicate it.
+    store
+        .add_hive_trusted_network("ssid:home-wifi", None)
+        .await
+        .unwrap();
+    assert_eq!(store.hive_trusted_networks().await.unwrap().len(), 1);
+
+    store
+        .add_hive_trusted_network("mac:aabbccddeeff", None)
+        .await
+        .unwrap();
+    assert_eq!(store.hive_trusted_networks().await.unwrap().len(), 2);
+
+    store
+        .remove_hive_trusted_network("ssid:home-wifi")
+        .await
+        .unwrap();
+    let list = store.hive_trusted_networks().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, "mac:aabbccddeeff");
+}
+
+#[tokio::test]
+async fn write_conflict_with_source_device_increments_peer_pending_count() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row("mem_srcconf", "SC", "local", &[]))
+        .await
+        .unwrap();
+    let entry = s.recall_by_id("mem_srcconf").await.unwrap().unwrap();
+
+    let conflict = s
+        .write_conflict(
+            "mem_srcconf",
+            "remote",
+            "local",
+            entry.updated_at + 1,
+            entry.updated_at,
+            Some("hive_devicea"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conflict.source_device_id.as_deref(), Some("hive_devicea"));
+
+    let status = s
+        .hive_get_peer_status("hive_devicea")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.pending_conflict_count, 1);
+
+    // A second conflict from the same device increments again.
+    s.write_conflict(
+        "mem_srcconf",
+        "remote2",
+        "local",
+        entry.updated_at + 2,
+        entry.updated_at,
+        Some("hive_devicea"),
+    )
+    .await
+    .unwrap();
+    let status = s
+        .hive_get_peer_status("hive_devicea")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.pending_conflict_count, 2);
+}
+
+#[tokio::test]
+async fn resolving_a_sourced_conflict_decrements_peer_pending_count() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row("mem_resconf", "RC", "local", &[]))
+        .await
+        .unwrap();
+    let entry = s.recall_by_id("mem_resconf").await.unwrap().unwrap();
+    let conflict = s
+        .write_conflict(
+            "mem_resconf",
+            "remote",
+            "local",
+            entry.updated_at + 1,
+            entry.updated_at,
+            Some("hive_deviceb"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        s.hive_get_peer_status("hive_deviceb")
+            .await
+            .unwrap()
+            .unwrap()
+            .pending_conflict_count,
+        1
+    );
+
+    assert!(
+        s.resolve_conflict(&conflict.id, "keep_local")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        s.hive_get_peer_status("hive_deviceb")
+            .await
+            .unwrap()
+            .unwrap()
+            .pending_conflict_count,
+        0
+    );
+}
+
+#[tokio::test]
+async fn resolving_an_unsourced_conflict_touches_no_peer_status() {
+    // The cloud-sync ([sync]) path's conflicts have no source device --
+    // resolving one must not panic or create a spurious hive_peer_status row.
+    let (s, _dir) = make_store().await;
+    s.store(&test_row("mem_nosrc", "NS", "local", &[]))
+        .await
+        .unwrap();
+    let entry = s.recall_by_id("mem_nosrc").await.unwrap().unwrap();
+    let conflict = s
+        .write_conflict(
+            "mem_nosrc",
+            "remote",
+            "local",
+            entry.updated_at + 1,
+            entry.updated_at,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(conflict.source_device_id.is_none());
+    assert!(
+        s.resolve_conflict(&conflict.id, "keep_local")
+            .await
+            .unwrap()
+    );
+    // No panic, and no phantom peer-status row for an empty device id.
+    assert!(s.hive_get_peer_status("").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_applies_when_remote_is_newer() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_applytest0000000000000000001",
+            title: "old",
+            content: "old content",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let mut incoming = store
+        .recall_by_id("mem_applytest0000000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    incoming.title = "new".to_string();
+    incoming.content = "new content".to_string();
+    incoming.updated_at += 100;
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
+    let after = store
+        .recall_by_id("mem_applytest0000000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.title, "new");
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_keeps_local_when_local_is_newer() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_applytest0000000000000000002",
+            title: "local",
+            content: "local content",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let local = store
+        .recall_by_id("mem_applytest0000000000000000002")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut incoming = local.clone();
+    incoming.title = "stale remote".to_string();
+    incoming.updated_at -= 100;
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::KeptLocal));
+    let after = store
+        .recall_by_id("mem_applytest0000000000000000002")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.title, "local");
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_conflicts_on_equal_timestamps() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_applytest0000000000000000003",
+            title: "local",
+            content: "local content",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let local = store
+        .recall_by_id("mem_applytest0000000000000000003")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut incoming = local.clone();
+    incoming.title = "conflicting remote".to_string();
+    // same updated_at as local -- ambiguous, must conflict rather than pick a winner
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Conflicted));
+    assert_eq!(store.pending_conflict_count().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_conflicts_on_implausible_future_skew() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_applytest0000000000000000004",
+            title: "local",
+            content: "local content",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let local = store
+        .recall_by_id("mem_applytest0000000000000000004")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut incoming = local.clone();
+    incoming.title = "clock-skewed remote".to_string();
+    incoming.updated_at = crate::store::chrono_now() + 301; // just past the 300s skew threshold
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Conflicted));
+}
+
+#[tokio::test]
+async fn hive_upsert_peer_status_round_trips() {
+    let (store, _dir) = make_store().await;
+    store
+        .hive_upsert_peer_status("hive_peertest0001", true, Some(1000))
+        .await
+        .unwrap();
+    let status = store
+        .hive_get_peer_status("hive_peertest0001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status.online);
+    assert_eq!(status.last_synced_at, Some(1000));
+}
+
+#[tokio::test]
+async fn hive_upsert_peer_status_updates_existing_row() {
+    let (store, _dir) = make_store().await;
+    store
+        .hive_upsert_peer_status("hive_peertest0002", true, Some(1000))
+        .await
+        .unwrap();
+    store
+        .hive_upsert_peer_status("hive_peertest0002", false, Some(1000))
+        .await
+        .unwrap();
+    let status = store
+        .hive_get_peer_status("hive_peertest0002")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!status.online);
+}
+
+#[tokio::test]
+async fn hive_upsert_peer_status_none_preserves_existing_last_synced_at() {
+    // This is the exact case ping_once relies on: marking a peer offline
+    // (online: false) after a failed contact attempt must not erase the
+    // last known-good sync timestamp, only flip the online flag.
+    let (store, _dir) = make_store().await;
+    store
+        .hive_upsert_peer_status("hive_peertest0003", true, Some(1000))
+        .await
+        .unwrap();
+    store
+        .hive_upsert_peer_status("hive_peertest0003", false, None)
+        .await
+        .unwrap();
+    let status = store
+        .hive_get_peer_status("hive_peertest0003")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!status.online);
+    assert_eq!(status.last_synced_at, Some(1000));
+}
+
+#[tokio::test]
+async fn hive_push_payload_for_returns_none_for_missing_memory() {
+    let (store, _dir) = make_store().await;
+    assert!(
+        store
+            .hive_push_payload_for("mem_doesnotexist00000000000001")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn hive_push_payload_for_includes_current_hash() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&NewMemoryRow {
+            id: "mem_pushpayload0000000000000001",
+            title: "t",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let payload = store
+        .hive_push_payload_for("mem_pushpayload0000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(payload["kind"], "memory");
+    assert!(!payload["hive_content_hash"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_preserves_the_remote_timestamp() {
+    // LWW only converges if every device compares the same timestamp for
+    // the same version; stamping "now" on a pulled copy made it look newer
+    // than the origin, so the origin's next edit could be judged stale.
+    let (store, _dir) = make_store().await;
+    let remote_ts = crate::store::chrono_now() - 1000;
+    let incoming = crate::store::MemoryEntry {
+        id: "mem_tsapply00000000000000000001".to_string(),
+        title: "from peer".to_string(),
+        content: "c".to_string(),
+        tags: vec![],
+        created_at: remote_ts,
+        updated_at: remote_ts,
+        token_count: None,
+        layer: "workspace".to_string(),
+        memory_type: "project".to_string(),
+    };
+    let outcome = store.apply_incoming_memory(&incoming, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
+    let stored = store
+        .recall_by_id("mem_tsapply00000000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.updated_at, remote_ts);
+    assert_eq!(stored.created_at, remote_ts);
+
+    // Overwriting an existing, older local copy keeps the remote timestamp too.
+    let mut newer = incoming.clone();
+    newer.title = "edited on peer".to_string();
+    newer.updated_at = remote_ts + 10;
+    let outcome = store.apply_incoming_memory(&newer, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
+    let stored = store
+        .recall_by_id("mem_tsapply00000000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.updated_at, remote_ts + 10);
+}
+
+#[tokio::test]
+async fn apply_incoming_memory_does_not_resurrect_a_tombstoned_memory() {
+    let (store, _dir) = make_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_noresurrect0000000000000001",
+            title: "t",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let original = store
+        .recall_by_id("mem_noresurrect0000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .delete("mem_noresurrect0000000000000001")
+            .await
+            .unwrap()
+    );
+    let deleted_at = store
+        .hive_tombstone_for("mem_noresurrect0000000000000001")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // A peer that hasn't processed the tombstone still advertises the old
+    // version: it must stay deleted here.
+    let stale = crate::store::MemoryEntry {
+        updated_at: original.updated_at.min(deleted_at),
+        ..original.clone()
+    };
+    let outcome = store.apply_incoming_memory(&stale, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::KeptLocal));
+    assert!(
+        store
+            .recall_by_id("mem_noresurrect0000000000000001")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A genuinely newer version (edited after the deletion) does come back,
+    // and clears the tombstone so it isn't advertised alongside a live row.
+    let revived = crate::store::MemoryEntry {
+        title: "recreated".to_string(),
+        updated_at: deleted_at + 1,
+        ..original
+    };
+    let outcome = store.apply_incoming_memory(&revived, None).await.unwrap();
+    assert!(matches!(outcome, crate::store::ApplyOutcome::Applied));
+    assert!(
+        store
+            .hive_tombstone_for("mem_noresurrect0000000000000001")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn apply_incoming_tombstone_records_deletion_and_respects_newer_local_edit() {
+    let (store, _dir) = make_store().await;
+    // Unknown id: nothing to delete, but the tombstone is recorded at the
+    // peer's time so a third peer's stale copy can't resurrect it later.
+    assert!(
+        !store
+            .apply_incoming_tombstone("mem_tombrec00000000000000000001", 5000)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .hive_tombstone_for("mem_tombrec00000000000000000001")
+            .await
+            .unwrap(),
+        Some(5000)
+    );
+    // A later deletion time wins; an earlier one doesn't regress it.
+    store
+        .apply_incoming_tombstone("mem_tombrec00000000000000000001", 6000)
+        .await
+        .unwrap();
+    store
+        .apply_incoming_tombstone("mem_tombrec00000000000000000001", 4000)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .hive_tombstone_for("mem_tombrec00000000000000000001")
+            .await
+            .unwrap(),
+        Some(6000)
+    );
+
+    // A local copy edited at or after the deletion time survives it.
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_tombrec00000000000000000002",
+            title: "edited later",
+            content: "c",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let local = store
+        .recall_by_id("mem_tombrec00000000000000000002")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !store
+            .apply_incoming_tombstone("mem_tombrec00000000000000000002", local.updated_at - 1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .recall_by_id("mem_tombrec00000000000000000002")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .hive_tombstone_for("mem_tombrec00000000000000000002")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn hive_merge_roster_persists_merge_and_keeps_revocations_sticky() {
+    let (store, _dir) = make_store().await;
+    let a = crate::hive::identity::generate();
+    let b = crate::hive::identity::generate();
+    let entry_for = |who: &crate::hive::identity::DeviceIdentity, name: &str| {
+        crate::hive::roster::RosterEntry {
+            device_id: who.device_id.clone(),
+            public_key: crate::hive::identity::public_key_hex(who),
+            name: name.to_string(),
+            status: crate::hive::roster::RosterStatus::Active,
+            joined_at: 1000,
+            revoked_at: None,
+            revoked_by: None,
+            join_record: crate::hive::roster::create_join_record(who, name, 1000),
+            revocation_record: None,
+        }
+    };
+
+    let merged = store
+        .hive_merge_roster(vec![entry_for(&a, "a"), entry_for(&b, "b")])
+        .await
+        .unwrap();
+    assert_eq!(merged.len(), 2);
+    assert_eq!(store.hive_list_roster().await.unwrap().len(), 2);
+
+    // A revokes B; the merged result is what's persisted.
+    let mut b_revoked = entry_for(&b, "b");
+    b_revoked.revocation_record = Some(crate::hive::roster::create_revocation_record(
+        &a,
+        &b.device_id,
+        2000,
+    ));
+    store.hive_merge_roster(vec![b_revoked]).await.unwrap();
+    let b_row = store
+        .hive_list_roster()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.device_id == b.device_id)
+        .unwrap();
+    assert_eq!(b_row.status, crate::hive::roster::RosterStatus::Revoked);
+
+    // A later gossip of B's plain Active entry must not un-revoke it.
+    store
+        .hive_merge_roster(vec![entry_for(&b, "b")])
+        .await
+        .unwrap();
+    let b_row = store
+        .hive_list_roster()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.device_id == b.device_id)
+        .unwrap();
+    assert_eq!(b_row.status, crate::hive::roster::RosterStatus::Revoked);
+}
 /// All handlers share one libsql connection, and a libsql transaction is
 /// just `BEGIN` on that connection. Without the store's write lock, two
 /// tasks that both reach `BEGIN` fail with "cannot start a transaction

@@ -348,6 +348,8 @@ mynd matrix status            Show Matrix bot login/sync/session state
 mynd discord login           Log into a Discord bot account (once); token saved to OS keyring
 mynd discord run              Run the Discord bot daemon
 mynd discord status           Show Discord bot login/sync/session state
+mynd hive pair                Issue a pairing code on this device (headless-friendly)
+mynd hive join <code> <addr> <key>  Redeem a pairing code from another device
 mynd dashboard --open        Open the dashboard (requires server running)
 ```
 
@@ -452,9 +454,9 @@ host = "127.0.0.1"
 port = 3456
 
 [dashboard]
-port = 3457
+port = 3459
 # api_url = "http://127.0.0.1:3456"      # override if the server isn't on the default host/port
-# cors_origin = "http://127.0.0.1:3457"  # override if you run the dashboard separately (e.g. `bun run dev` on :5173)
+# cors_origin = "http://127.0.0.1:3459"  # override if you run the dashboard separately (e.g. `bun run dev` on :5173)
 
 [sync]
 enabled = false
@@ -537,6 +539,12 @@ sync_on_startup = true
 Org-layer memories are visible and editable everywhere personal/workspace memories are — MCP tools, the REST API, and the dashboard (Memories list, Graph view, and the layer picker, which disables "org" until `[org_sync]` is configured). They live in a separate local database (`org.db`, next to `memories.db`) and sync independently of `[sync]`. `memory_store` accepts `layer: "personal" | "workspace" | "org"` (default `workspace`).
 
 Mynd ships with no access control of its own — org CRUD is as open as personal/workspace. Multi-user access control for a shared org store is `hivemind-gateway`'s job, not yet built.
+
+---
+
+## Hive Mode (optional)
+
+Syncs memories directly between your own devices over mutual TLS. No central server, and no third party ever holds your data. Mutually exclusive with `[sync]`. Enable with `[hive] enabled = true` in `~/.config/mynd/config.toml`, then pair devices from the dashboard's Settings > Hive tab, or from the CLI (`mynd hive pair` / `mynd hive join`) on a headless box with no display: [docs/HIVE_PAIRING.md](docs/HIVE_PAIRING.md).
 
 ---
 

@@ -61,6 +61,11 @@ async fn test_app() -> (axum::Router, TempDir) {
         update_state,
         oxmynd::config::AgentSettings::default(),
         true,
+        false,
+        None,
+        Arc::new(oxmynd::hive::pairing::PairingCodeStore::new()),
+        None,
+        oxmynd::api::HiveSyncPort(0),
     );
     (router, dir)
 }

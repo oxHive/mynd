@@ -24,9 +24,10 @@ fn main() -> Result<()> {
             ServiceAction::Install {
                 dashboard,
                 matrix,
+                hive,
                 discord,
                 no_linger,
-            } => cli::cmd_service_install(dashboard, matrix, discord, no_linger),
+            } => cli::cmd_service_install(dashboard, matrix, hive, discord, no_linger),
             ServiceAction::Uninstall => cli::cmd_service_uninstall(),
             ServiceAction::Status => cli::cmd_service_status(),
         },
@@ -41,6 +42,14 @@ fn main() -> Result<()> {
             cli::DiscordAction::Run { debug } => run_discord(debug),
             cli::DiscordAction::Status => cli::cmd_discord_status(),
             cli::DiscordAction::Send { user_id, message } => run_discord_send(user_id, message),
+        },
+        Some(Command::Hive { action }) => match action {
+            cli::HiveAction::Pair => cli::cmd_hive_pair(),
+            cli::HiveAction::Join {
+                code,
+                peer_address,
+                peer_public_key,
+            } => cli::cmd_hive_join(code, peer_address, peer_public_key),
         },
         Some(Command::Migrate) => cli::cmd_migrate(),
         Some(Command::SessionStart { json }) => cli::cmd_session_start(json),
@@ -105,14 +114,15 @@ async fn run_server() -> Result<()> {
             config::ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 3456,
-                dashboard_port: 3457,
+                dashboard_port: 3459,
                 api_url: "http://127.0.0.1:3456".into(),
-                cors_origin: "http://127.0.0.1:3457".into(),
+                cors_origin: "http://127.0.0.1:3459".into(),
                 sync: config::SyncSettings::default(),
                 org_sync: None,
                 update: config::UpdateSettings::default(),
                 agent: config::AgentSettings::default(),
                 guard_predefined_namespaces: true,
+                hive: config::HiveSettings::default(),
             }
         });
     let (store, database) = open_store(&settings.sync, &db::resolve_db_path()).await?;

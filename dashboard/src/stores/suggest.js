@@ -15,9 +15,13 @@ export const useSuggestStore = defineStore('suggest', () => {
     error.value = null
     try {
       await api.startSession()
-      active.value = true
-      phase.value = 'suggesting'
-      suggestingStartedAt.value = Date.now()
+      // Don't set active/phase/suggestingStartedAt here: for a fast-failing
+      // agent (e.g. a bad `[agent] command`), the worker can emit its
+      // 'started' *and* 'error' SSE events before this request even
+      // resolves, and setting them here would clobber that already-applied
+      // 'error' state back to 'suggesting' with no further event to correct
+      // it. The 'started' SSE event (handleEvent below) is the sole source
+      // of truth for those fields.
       panelOpen.value = true
     } catch (e) {
       error.value = e.status === 409 ? 'A suggest session is already running.' : String(e.message)

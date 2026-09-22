@@ -26,26 +26,30 @@ const LEGACY_UNITS: [&str; 2] = ["hivemind", "hivemind-matrix"];
 pub fn cmd_service_install(
     dashboard: bool,
     matrix: bool,
+    hive: bool,
     discord: bool,
     no_linger: bool,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let _ = no_linger; // launchd has no linger equivalent — see service_install_macos.
-        println!("{}", service_install_macos(dashboard, matrix, discord)?);
+        println!(
+            "{}",
+            service_install_macos(dashboard, matrix, hive, discord)?
+        );
         Ok(())
     }
     #[cfg(target_os = "linux")]
     {
         println!(
             "{}",
-            service_install_linux(dashboard, matrix, discord, !no_linger)?
+            service_install_linux(dashboard, matrix, hive, discord, !no_linger)?
         );
         Ok(())
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (dashboard, matrix, discord, no_linger);
+        let _ = (dashboard, matrix, hive, discord, no_linger);
         bail!("mynd service install is only supported on Linux and macOS");
     }
 }
@@ -312,6 +316,7 @@ fn linger_status_line() -> String {
 fn service_install_linux(
     dashboard: bool,
     matrix: bool,
+    hive: bool,
     discord: bool,
     enable_linger: bool,
 ) -> Result<String> {
@@ -339,6 +344,23 @@ fn service_install_linux(
             "Mynd Matrix chat bot",
             &["matrix", "run"],
         )?);
+    }
+
+    if hive {
+        let configured = crate::config::load_server_settings(&crate::config::global_config_path())
+            .map(|s| s.hive.enabled)
+            .unwrap_or(false);
+        if !configured {
+            bail!(
+                "--hive was passed but Hive Mode is not enabled.\n\
+                 Set [hive] enabled = true in ~/.config/mynd/config.toml first, \
+                 then re-run `mynd service install --hive`."
+            );
+        }
+        // Hive sync runs inside the main `mynd up` process (unlike the Matrix
+        // bot, which is a wholly separate daemon) -- no separate systemd unit to
+        // install here. This block exists purely as the same fail-fast precondition
+        // check the --matrix flag already does, for consistency.
     }
 
     if discord {
@@ -539,7 +561,12 @@ fn launch_agent_path(label: &str) -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn launch_agent_plist_content(label: &str, exe: &Path, exec_args: &[&str]) -> String {
+fn launch_agent_plist_content(
+    label: &str,
+    exe: &Path,
+    exec_args: &[&str],
+    path_env: &str,
+) -> String {
     let mut program_arguments = format!("<string>{}</string>\n", exe.display());
     for arg in exec_args {
         program_arguments.push_str("             <string>");
@@ -559,6 +586,11 @@ fn launch_agent_plist_content(label: &str, exe: &Path, exec_args: &[&str]) -> St
            <array>\n\
              {program_arguments}\
            </array>\n\
+           <key>EnvironmentVariables</key>\n\
+           <dict>\n\
+             <key>PATH</key>\n\
+             <string>{path_env}</string>\n\
+           </dict>\n\
            <key>RunAtLoad</key>\n\
            <true/>\n\
            <key>KeepAlive</key>\n\
@@ -585,7 +617,12 @@ fn service_install_unit_macos(
 ) -> Result<String> {
     let exe = std::env::current_exe().context("locating the mynd binary")?;
     let plist_path = launch_agent_path(label);
-    let plist = launch_agent_plist_content(label, &exe, exec_args);
+    // See the systemd path_env comment in service_install_unit_linux: launchd
+    // agents get the same minimal-PATH problem, so bake in the PATH from this
+    // (interactive) invocation.
+    let path_env =
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
+    let plist = launch_agent_plist_content(label, &exe, exec_args, &path_env);
 
     if let Some(parent) = plist_path.parent() {
         std::fs::create_dir_all(parent)
@@ -663,7 +700,12 @@ fn remove_legacy_units_macos() {
 }
 
 #[cfg(target_os = "macos")]
-fn service_install_macos(dashboard: bool, matrix: bool, discord: bool) -> Result<String> {
+fn service_install_macos(
+    dashboard: bool,
+    matrix: bool,
+    hive: bool,
+    discord: bool,
+) -> Result<String> {
     remove_legacy_units_macos();
     let (args, desc): (&[&str], &str) = if dashboard {
         (&["up"], "Mynd server (API + dashboard)")
@@ -688,6 +730,23 @@ fn service_install_macos(dashboard: bool, matrix: bool, discord: bool) -> Result
             &["matrix", "run"],
             "Mynd Matrix chat bot",
         )?);
+    }
+
+    if hive {
+        let configured = crate::config::load_server_settings(&crate::config::global_config_path())
+            .map(|s| s.hive.enabled)
+            .unwrap_or(false);
+        if !configured {
+            bail!(
+                "--hive was passed but Hive Mode is not enabled.\n\
+                 Set [hive] enabled = true in ~/.config/mynd/config.toml first, \
+                 then re-run `mynd service install --hive`."
+            );
+        }
+        // Hive sync runs inside the main `mynd up` process (unlike the Matrix
+        // bot, which is a wholly separate daemon) -- no separate systemd unit to
+        // install here. This block exists purely as the same fail-fast precondition
+        // check the --matrix flag already does, for consistency.
     }
 
     if discord {

@@ -29,8 +29,12 @@ const FOOTER_TEXT: &str = "  d detach   ctrl+c stop server";
 /// Why the interactive view returned; `http::run_up` acts on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpExit {
-    /// `d`: the caller aborts its listeners, re-execs a background copy of
-    /// the server, and exits so the shell prompt comes back.
+    /// `d`, or `restart_notify` firing (the dashboard's Hive enable/disable
+    /// toggle requesting a restart, since this TUI loop -- not
+    /// `http::run_up`'s own `select!` -- owns the process while it's running
+    /// interactively): the caller aborts its listeners, re-execs a
+    /// background copy of the server, and exits so the shell prompt comes
+    /// back.
     Detach,
     /// `Ctrl+C` (raw mode swallows the OS SIGINT, so it arrives as a key)
     /// or an external SIGTERM: the caller shuts the servers down gracefully
@@ -40,8 +44,9 @@ pub enum UpExit {
 
 /// Runs the interactive `mynd up` view: header + a live activity feed fed
 /// by the existing SSE broadcast channel. Returns when the user presses
-/// `d` or `Ctrl+C`, or when `shutdown` fires (SIGTERM from `systemctl
-/// stop` or `mynd status`'s `k`).
+/// `d` or `Ctrl+C`, when `shutdown` fires (SIGTERM from `systemctl stop` or
+/// `mynd status`'s `k`), or when `restart_notify` fires (the dashboard's
+/// Hive enable/disable toggle).
 pub async fn run(
     mut data: StatusData,
     dashboard_url: Option<String>,
@@ -49,6 +54,7 @@ pub async fn run(
     events: broadcast::Sender<serde_json::Value>,
     store: std::sync::Arc<SqliteStore>,
     shutdown: crate::http::ShutdownSignal,
+    restart_notify: std::sync::Arc<tokio::sync::Notify>,
 ) -> Result<UpExit> {
     let guard = TerminalGuard::enter(VIEWPORT_HEIGHT)?;
     let mut terminal = guard.terminal()?;
@@ -97,6 +103,7 @@ pub async fn run(
                     }
                 }
             }
+            _ = restart_notify.notified() => return Ok(UpExit::Detach),
         }
     }
 }

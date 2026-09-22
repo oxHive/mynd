@@ -99,7 +99,7 @@ struct RawDashboard {
     api_url: Option<String>,
     /// The origin the browser sends when loading the dashboard.
     /// Set this when the dashboard is accessed via a hostname other than
-    /// 127.0.0.1 / localhost (e.g. `http://pi.local:3457`).
+    /// 127.0.0.1 / localhost (e.g. `http://pi.local:3459`).
     cors_origin: Option<String>,
 }
 
@@ -130,6 +130,13 @@ struct RawAgent {
 #[derive(Debug, Default, Deserialize)]
 struct RawTags {
     guard_predefined_namespaces: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawHive {
+    enabled: Option<bool>,
+    sync_interval_seconds: Option<u64>,
+    ping_interval_seconds: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -209,6 +216,35 @@ impl Default for UpdateSettings {
             enabled: true,
             check_interval_seconds: 600,
             allow_apply_from_api: true,
+        }
+    }
+}
+
+/// NOTE (Plan 2, Task 7): these two interval fields are resolved from TOML
+/// only, at config-load time, before the DB is opened — there is no
+/// `SqliteStore` handle available yet here. But `SqliteStore::hive_settings_override`
+/// / `set_hive_settings_override` let a device persist a runtime override to
+/// `_meta`, and `SqliteStore::hive_manifest` hashes whichever value is
+/// currently in effect (override if present, else these TOML defaults) for
+/// sync comparison. Whatever loop actually *uses* these intervals (sync loop:
+/// Task 10, ping loop: Task 12) MUST check `hive_settings_override()` first
+/// and fall back to `settings.hive.sync_interval_seconds` /
+/// `ping_interval_seconds` at the point it reads the interval — not rely on
+/// these TOML-sourced fields alone — or a device-side override saved via the
+/// API will silently have no effect on the loop's actual cadence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HiveSettings {
+    pub enabled: bool,
+    pub sync_interval_seconds: u64,
+    pub ping_interval_seconds: u64,
+}
+
+impl Default for HiveSettings {
+    fn default() -> Self {
+        HiveSettings {
+            enabled: false,
+            sync_interval_seconds: 300,
+            ping_interval_seconds: 60,
         }
     }
 }
@@ -335,6 +371,8 @@ struct RawGlobal {
     discord: RawDiscord,
     #[serde(default)]
     tags: RawTags,
+    #[serde(default)]
+    hive: RawHive,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -489,7 +527,7 @@ pub struct ServerSettings {
     /// when the dashboard page makes requests to the API. Defaults to
     /// `http://127.0.0.1:<dashboard_port>` so both `127.0.0.1` and `localhost`
     /// variants work out of the box. Override when the dashboard is accessed
-    /// via a custom hostname (e.g. `http://pi.local:3457`).
+    /// via a custom hostname (e.g. `http://pi.local:3459`).
     pub cors_origin: String,
     pub sync: SyncSettings,
     /// The org-layer sync connection, if `[org_sync]` is configured and
@@ -498,6 +536,7 @@ pub struct ServerSettings {
     pub org_sync: Option<SyncSettings>,
     pub update: UpdateSettings,
     pub agent: AgentSettings,
+    pub hive: HiveSettings,
     /// Whether predefined tag namespaces (project, topic, status, lang, kind,
     /// scope, part) can be deleted or modified via the dashboard/API. On by
     /// default; set `[tags] guard_predefined_namespaces = false` in the
@@ -588,7 +627,10 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
     }
     let host = raw.server.host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = raw.server.port.unwrap_or(3456);
-    let dashboard_port = raw.dashboard.port.unwrap_or(3457);
+    // Not 3457/3458: those are `port + 1` (hive mTLS sync) and `port + 2`
+    // (hive pairing listener) at the default `port` of 3456 -- both bind
+    // whenever hive is enabled, and this default must not collide with them.
+    let dashboard_port = raw.dashboard.port.unwrap_or(3459);
     // Wildcard bind addresses (0.0.0.0 / ::) are not something a browser can
     // dial, so every browser-facing default — the dashboard's own origin
     // (cors_origin) and the URL it's told to call the API at (api_url) —
@@ -648,6 +690,17 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
         kind: agent_kind,
     };
     let guard_predefined_namespaces = raw.tags.guard_predefined_namespaces.unwrap_or(true);
+    let hive = HiveSettings {
+        enabled: raw.hive.enabled.unwrap_or(false),
+        sync_interval_seconds: raw.hive.sync_interval_seconds.unwrap_or(300),
+        ping_interval_seconds: raw.hive.ping_interval_seconds.unwrap_or(60),
+    };
+    if sync.enabled && hive.enabled {
+        anyhow::bail!(
+            "[sync] and [hive] are mutually exclusive - enable only one. \
+             A device runs either cloud sync (hub-and-spoke) or Hive Mode (LAN peer-to-peer), not both."
+        );
+    }
     Ok(ServerSettings {
         host,
         port,
@@ -658,6 +711,7 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
         org_sync,
         update,
         agent,
+        hive,
         guard_predefined_namespaces,
     })
 }
@@ -992,9 +1046,9 @@ mod tests {
         let s = load_server_settings(&tmp.path().join("no-global.toml")).unwrap();
         assert_eq!(s.host, "127.0.0.1");
         assert_eq!(s.port, 3456);
-        assert_eq!(s.dashboard_port, 3457);
+        assert_eq!(s.dashboard_port, 3459);
         assert_eq!(s.api_url, "http://127.0.0.1:3456");
-        assert_eq!(s.cors_origin, "http://127.0.0.1:3457");
+        assert_eq!(s.cors_origin, "http://127.0.0.1:3459");
     }
 
     #[test]
@@ -1142,6 +1196,41 @@ mod tests {
         let s = load_server_settings(&tmp.path().join("config.toml")).unwrap();
         assert!(!s.update.enabled);
         assert_eq!(s.update.check_interval_seconds, 120);
+    }
+
+    #[test]
+    fn hive_settings_defaults_when_global_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load_server_settings(&tmp.path().join("no-global.toml")).unwrap();
+        assert!(!s.hive.enabled);
+        assert_eq!(s.hive.sync_interval_seconds, 300);
+        assert_eq!(s.hive.ping_interval_seconds, 60);
+    }
+
+    #[test]
+    fn hive_settings_reads_from_global_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[hive]\nenabled=true\nsync_interval_seconds=120\nping_interval_seconds=30\n",
+        );
+        let s = load_server_settings(&tmp.path().join("config.toml")).unwrap();
+        assert!(s.hive.enabled);
+        assert_eq!(s.hive.sync_interval_seconds, 120);
+        assert_eq!(s.hive.ping_interval_seconds, 30);
+    }
+
+    #[test]
+    fn hive_and_sync_both_enabled_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[sync]\nenabled=true\nremote_url=\"http://example.com\"\n[hive]\nenabled=true\n",
+        );
+        let err = load_server_settings(&tmp.path().join("config.toml")).unwrap_err();
+        assert!(err.to_string().contains("hive") && err.to_string().contains("sync"));
     }
 
     #[test]

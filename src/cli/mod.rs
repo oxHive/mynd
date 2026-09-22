@@ -56,6 +56,11 @@ pub enum Command {
         #[command(subcommand)]
         action: DiscordAction,
     },
+    /// Pair this device into a Hive without the dashboard (for headless boxes)
+    Hive {
+        #[command(subcommand)]
+        action: HiveAction,
+    },
     /// Migrate the database from the legacy ~/.hivemind/ path to XDG data dir
     Migrate,
     /// Print the session-start memory context for the current project (for hooks and scripts)
@@ -133,6 +138,9 @@ pub enum ServiceAction {
         /// Also install the Matrix bot unit (requires `mynd matrix login` first)
         #[arg(long)]
         matrix: bool,
+        /// Enable Hive Mode (requires [hive] enabled = true in the global config first)
+        #[arg(long)]
+        hive: bool,
         /// Also install the Discord bot unit (requires `mynd discord login` first)
         #[arg(long)]
         discord: bool,
@@ -190,6 +198,21 @@ pub enum DiscordAction {
 }
 
 #[derive(Subcommand)]
+pub enum HiveAction {
+    /// Issue a pairing code on this device (run on the inviter, e.g. a headless box)
+    Pair,
+    /// Redeem a pairing code issued by another device (run on the joiner)
+    Join {
+        /// The pairing code shown by `mynd hive pair` on the other device
+        code: String,
+        /// The other device's `host:port` (printed alongside the code)
+        peer_address: String,
+        /// The other device's public key (printed alongside the code)
+        peer_public_key: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum McpAction {
     /// Register Mynd as an MCP server in a supported AI coding client
     Install {
@@ -204,6 +227,7 @@ mod data;
 mod discord_cmds;
 mod edge;
 mod feedback;
+mod hive_cmds;
 mod init;
 mod limits;
 mod matrix_cmds;
@@ -222,6 +246,7 @@ pub use data::*;
 pub use discord_cmds::*;
 pub use edge::*;
 pub use feedback::*;
+pub use hive_cmds::*;
 pub use init::*;
 pub use limits::*;
 pub use matrix_cmds::*;

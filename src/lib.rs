@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod dir_migrate;
 pub mod discord;
+pub mod hive;
 pub mod http;
 pub mod matrix;
 pub mod model;
