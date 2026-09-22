@@ -1455,7 +1455,14 @@ async fn resolve_conflict_retries_against_org_when_not_found_in_primary() {
         .await
         .unwrap();
     let conflict = org_store
-        .write_conflict("mem_org_resolve", "remote content", "local content", 2, 1, None)
+        .write_conflict(
+            "mem_org_resolve",
+            "remote content",
+            "local content",
+            2,
+            1,
+            None,
+        )
         .await
         .unwrap();
 
@@ -1498,7 +1505,14 @@ async fn list_conflicts_includes_org_conflicts_stamped_with_layer() {
         .await
         .unwrap();
     org_store
-        .write_conflict("mem_org_conflict", "remote content", "local content", 2, 1, None)
+        .write_conflict(
+            "mem_org_conflict",
+            "remote content",
+            "local content",
+            2,
+            1,
+            None,
+        )
         .await
         .unwrap();
 

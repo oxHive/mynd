@@ -43,6 +43,14 @@ fn main() -> Result<()> {
             cli::DiscordAction::Status => cli::cmd_discord_status(),
             cli::DiscordAction::Send { user_id, message } => run_discord_send(user_id, message),
         },
+        Some(Command::Hive { action }) => match action {
+            cli::HiveAction::Pair => cli::cmd_hive_pair(),
+            cli::HiveAction::Join {
+                code,
+                peer_address,
+                peer_public_key,
+            } => cli::cmd_hive_join(code, peer_address, peer_public_key),
+        },
         Some(Command::Migrate) => cli::cmd_migrate(),
         Some(Command::SessionStart { json }) => cli::cmd_session_start(json),
         Some(Command::Memory { action }) => cli::cmd_memory(action),
