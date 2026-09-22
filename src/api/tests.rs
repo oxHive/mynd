@@ -73,7 +73,9 @@ async fn test_router_with_guard(guard_predefined_namespaces: bool) -> (Router, T
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
+        None,
         SyncSettings::default(),
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -89,13 +91,39 @@ async fn test_router_with_guard(guard_predefined_namespaces: bool) -> (Router, T
     (r, dir)
 }
 
+async fn test_router_with_update_state(update_state: SharedUpdateState) -> (Router, TempDir) {
+    let (store, dir) = test_store().await;
+    let (events, _) = broadcast::channel(16);
+    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let r = router(
+        store,
+        None,
+        SyncSettings::default(),
+        None,
+        "http://127.0.0.1:3457",
+        events,
+        suggest,
+        update_state,
+        test_agent_settings(),
+        true,
+        false,
+        None,
+        Arc::new(crate::hive::pairing::PairingCodeStore::new()),
+        None,
+        crate::api::HiveSyncPort(0),
+    );
+    (r, dir)
+}
+
 async fn test_router_with_events() -> (Router, broadcast::Receiver<Value>, TempDir) {
     let (store, dir) = test_store().await;
     let (events, rx) = broadcast::channel(16);
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
+        None,
         SyncSettings::default(),
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -117,7 +145,9 @@ async fn test_router_with_store() -> (Router, Arc<SqliteStore>, TempDir) {
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         Arc::clone(&store),
+        None,
         SyncSettings::default(),
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -145,7 +175,9 @@ async fn test_router_with_hive_identity(
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         Arc::clone(&store),
+        None,
         SyncSettings::default(),
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -159,6 +191,38 @@ async fn test_router_with_hive_identity(
         crate::api::HiveSyncPort(4570),
     );
     (r, store, dir)
+}
+
+async fn test_router_with_org() -> (Router, TempDir, TempDir) {
+    let (store, dir) = test_store().await;
+    let (org_store, org_dir) = test_store().await;
+    let (events, _) = broadcast::channel(16);
+    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let r = router(
+        store,
+        Some(org_store),
+        SyncSettings::default(),
+        Some(SyncSettings {
+            enabled: true,
+            remote_url: "https://gateway.example/org".into(),
+            api_key: "hm_org_x".into(),
+            interval_seconds: 60,
+            sync_on_store: true,
+            sync_on_startup: true,
+        }),
+        "http://127.0.0.1:3457",
+        events,
+        suggest,
+        test_update_state(),
+        test_agent_settings(),
+        true,
+        false,
+        None,
+        Arc::new(crate::hive::pairing::PairingCodeStore::new()),
+        None,
+        crate::api::HiveSyncPort(0),
+    );
+    (r, dir, org_dir)
 }
 
 async fn test_router_with_pairing_code(dir: &std::path::Path) -> (Router, String) {
@@ -406,6 +470,78 @@ async fn status_reports_version_and_count() {
 }
 
 #[tokio::test]
+async fn status_reports_org_not_configured_when_absent() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org"]["configured"], false);
+    assert!(json["org"].get("last_synced_at").is_none() || json["org"]["last_synced_at"].is_null());
+}
+
+#[tokio::test]
+async fn status_reports_org_configured_and_counts_when_present() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org"]["configured"], true);
+    assert_eq!(json["org"]["enabled"], true);
+    assert_eq!(json["org"]["conflict_count"], 0);
+    assert_eq!(json["org"]["count"], 0);
+}
+
+#[tokio::test]
+async fn status_degrades_gracefully_when_org_store_is_broken() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+    // Break the org db out from under the router's already-open connection
+    // by dropping tables that server_status's org block queries depend on.
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    conn.execute_batch("DROP TABLE _meta; DROP TABLE conflicts; DROP TABLE memories;")
+        .await
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org"]["configured"], true);
+    assert_eq!(json["org"]["conflict_count"], 0);
+    assert_eq!(json["org"]["count"], 0);
+}
+
+#[tokio::test]
 async fn settings_sync_returns_defaults() {
     let (app, _dir) = test_router().await;
     let (status, body) = req(app, "GET", "/api/v1/settings/sync", None).await;
@@ -415,10 +551,92 @@ async fn settings_sync_returns_defaults() {
 }
 
 #[tokio::test]
+async fn sync_settings_reports_org_sync_null_when_absent() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/settings/sync")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["org_sync"].is_null());
+}
+
+#[tokio::test]
+async fn sync_settings_reports_org_sync_fields_when_present() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/settings/sync")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["org_sync"]["enabled"], true);
+    assert_eq!(
+        json["org_sync"]["remote_url"],
+        "https://gateway.example/org"
+    );
+}
+
+#[tokio::test]
 async fn delete_memory_returns_404_when_not_found() {
     let (app, _dir) = test_router().await;
     let (status, _) = req(app, "DELETE", "/api/v1/memories/mem_nonexistent", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_memory_falls_back_to_org_store() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+    // Reopen the same org.db this router was built with, to seed a memory
+    // directly — router() takes ownership of the Arc<SqliteStore>, so the
+    // test writes through a fresh connection to the same file.
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    db::run_migrations(&conn).await.unwrap(); // idempotent — also sets this connection's pragmas
+    let org_store = SqliteStore::new(conn);
+    org_store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_org1",
+            title: "org title",
+            content: "org content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/memories/mem_org1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["title"], "org title");
 }
 
 #[tokio::test]
@@ -454,6 +672,47 @@ async fn save_tag_settings_rejects_malformed_body() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn save_tag_settings_rejects_missing_values_array() {
+    let (app, _dir) = test_router().await;
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(json!({ "area": { "color": "#fff" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn save_tag_settings_rejects_non_bool_single_value() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(json!({ "area": { "color": "#fff", "values": [], "single_value": "yes" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("single_value"));
+}
+
+#[tokio::test]
+async fn save_tag_settings_rejects_non_string_description() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(json!({ "area": { "color": "#fff", "values": [], "description": 5 } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("description"));
 }
 
 #[tokio::test]
@@ -715,6 +974,114 @@ fn localhost_origins_with_empty_string() {
 }
 
 #[tokio::test]
+async fn get_memory_returns_404_for_missing_id() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(app, "GET", "/api/v1/memories/mem_missing", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no memory"));
+}
+
+#[tokio::test]
+async fn rest_create_and_patch_enforce_max_content_tokens() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store.set_meta("max_content_tokens", "5").await.unwrap();
+    let long = "word ".repeat(50);
+    let (status, body) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "t", "content": long })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("max_content_tokens")
+    );
+    assert_eq!(store.count().await.unwrap(), 0, "nothing stored");
+
+    let (status, body) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "t", "content": "ok" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["id"].as_str().unwrap().to_string();
+    let (status, _) = req(
+        app,
+        "PATCH",
+        &format!("/api/v1/memories/{id}"),
+        Some(json!({ "content": "word ".repeat(50) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        store.recall_by_id(&id).await.unwrap().unwrap().content,
+        "ok",
+        "patch must not have applied"
+    );
+}
+
+#[tokio::test]
+async fn import_rejects_invalid_entries_without_writing_anything() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_good", "title": "a", "content": "b" },
+            { "id": "mem_bad", "title": "a", "content": "b", "layer": "galactic" },
+            { "id": "mem_bad2", "title": "a", "content": "b", "memory_type": "rumour" },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let err = body["error"].as_str().unwrap();
+    assert!(
+        err.contains("mem_bad:") && err.contains("mem_bad2:"),
+        "got: {err}"
+    );
+    assert_eq!(
+        store.count().await.unwrap(),
+        0,
+        "valid entries must not be written either"
+    );
+}
+
+#[tokio::test]
+async fn create_memory_rejects_invalid_memory_type() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "t", "content": "c", "memory_type": "bogus" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn create_feedback_404s_for_unknown_memory() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/feedback",
+        Some(json!({ "memory_id": "mem_nope", "signal": "incorrect" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no memory"));
+}
+
+#[tokio::test]
 async fn create_and_list_feedback() {
     let (app, _dir) = test_router().await;
 
@@ -779,6 +1146,187 @@ async fn list_edges_filtered() {
 }
 
 #[tokio::test]
+async fn create_edge_retries_against_org_on_missing_endpoint() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    // Two org-layer memories — primary store has neither, so primary's
+    // create_edge returns MissingEndpoint and this should retry in org.
+    let mut ids = vec![];
+    for title in ["a", "b"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/memories")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "title": title, "content": "c", "layer": "org" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        ids.push(json["id"].as_str().unwrap().to_string());
+    }
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/edges")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "source_id": ids[0],
+                        "target_id": ids[1],
+                        "relationship": "sibling"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn list_edges_includes_org_edges_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let mut ids = vec![];
+    for title in ["a", "b"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/memories")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "title": title, "content": "c", "layer": "org" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        ids.push(json["id"].as_str().unwrap().to_string());
+    }
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/edges")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "source_id": ids[0], "target_id": ids[1], "relationship": "sibling" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/edges")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["count"], 1);
+}
+
+#[tokio::test]
+async fn create_edge_rejects_duplicate_missing_endpoint_and_bad_relationship() {
+    let (app, _dir) = test_router().await;
+    let (_, ma) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(memory_body("A", "a", &[])),
+    )
+    .await;
+    let (_, mb) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(memory_body("B", "b", &[])),
+    )
+    .await;
+    let id_a = ma["id"].as_str().unwrap().to_string();
+    let id_b = mb["id"].as_str().unwrap().to_string();
+
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/edges",
+        Some(json!({"source_id": id_a, "target_id": id_b, "relationship": "sibling"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    // Duplicate
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/edges",
+        Some(json!({"source_id": id_a, "target_id": id_b, "relationship": "sibling"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // Missing endpoint (no org configured to retry against)
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/edges",
+        Some(
+            json!({"source_id": id_a, "target_id": "mem_does_not_exist", "relationship": "parent"}),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Invalid relationship
+    let (st, body) = req(
+        app,
+        "POST",
+        "/api/v1/edges",
+        Some(json!({"source_id": id_a, "target_id": id_b, "relationship": "bogus"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid relationship")
+    );
+}
+
+#[tokio::test]
+async fn patch_edge_status_not_found_when_no_org_configured() {
+    let (app, _dir) = test_router().await;
+    let (st, body) = req(
+        app,
+        "PATCH",
+        "/api/v1/edges/edge_does_not_exist",
+        Some(json!({"status": "active"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no edge"));
+}
+
+#[tokio::test]
 async fn resolve_conflict_success() {
     let (app, store, _dir) = test_router_with_store().await;
 
@@ -812,6 +1360,64 @@ async fn resolve_conflict_success() {
 }
 
 #[tokio::test]
+async fn resolve_conflict_rejects_invalid_resolution() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/conflicts/cfl_whatever/resolve",
+        Some(json!({ "resolution": "bogus" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("keep_local"));
+}
+
+#[tokio::test]
+async fn patch_feedback_rejects_invalid_status_and_missing_id() {
+    let (app, _dir) = test_router().await;
+    let (_, ma) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(memory_body("A", "a", &[])),
+    )
+    .await;
+    let (_, fb) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/feedback",
+        Some(json!({ "memory_id": ma["id"], "signal": "outdated" })),
+    )
+    .await;
+
+    let (st, body) = req(
+        app.clone(),
+        "PATCH",
+        &format!("/api/v1/feedback/{}", fb["id"].as_str().unwrap()),
+        Some(json!({"status": "bogus"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("pending|resolved|dismissed")
+    );
+
+    let (st, body) = req(
+        app,
+        "PATCH",
+        "/api/v1/feedback/fb_missing",
+        Some(json!({"status": "resolved"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("no feedback"));
+}
+
+#[tokio::test]
 async fn resolve_conflict_returns_404_for_missing() {
     let (app, _dir) = test_router().await;
     let (status, _) = req(
@@ -822,6 +1428,117 @@ async fn resolve_conflict_returns_404_for_missing() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn resolve_conflict_retries_against_org_when_not_found_in_primary() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    db::run_migrations(&conn).await.unwrap();
+    let org_store = SqliteStore::new(conn);
+    org_store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_org_resolve",
+            title: "org resolve memory",
+            content: "content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let conflict = org_store
+        .write_conflict("mem_org_resolve", "remote content", "local content", 2, 1, None)
+        .await
+        .unwrap();
+
+    let (status, body) = req(
+        app,
+        "POST",
+        &format!("/api/v1/conflicts/{}/resolve", conflict.id),
+        Some(json!({ "resolution": "keep_local" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["resolved"], true);
+}
+
+#[tokio::test]
+async fn list_conflicts_includes_org_conflicts_stamped_with_layer() {
+    let (app, _dir, org_dir) = test_router_with_org().await;
+
+    // Seed a conflict directly into the org db (router() already holds the
+    // org store; this reopens a fresh connection to the same file, same
+    // pattern as get_memory_falls_back_to_org_store).
+    let org_path = org_dir.path().join("test.db");
+    let sync = SyncSettings::default();
+    let database = db::open_database(&sync, org_path.to_str().unwrap())
+        .await
+        .unwrap();
+    let conn = database.connect().unwrap();
+    db::run_migrations(&conn).await.unwrap();
+    let org_store = SqliteStore::new(conn);
+    org_store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_org_conflict",
+            title: "org conflict memory",
+            content: "content",
+            tags: &[],
+            token_count: None,
+            layer: "org",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    org_store
+        .write_conflict("mem_org_conflict", "remote content", "local content", 2, 1, None)
+        .await
+        .unwrap();
+
+    let (status, body) = req(app, "GET", "/api/v1/conflicts", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["conflicts"][0]["layer"], "org");
+}
+
+#[tokio::test]
+async fn list_conflicts_primary_entries_have_no_layer_field() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_primary_conflict",
+            title: "primary conflict memory",
+            content: "content",
+            tags: &[],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    store
+        .write_conflict(
+            "mem_primary_conflict",
+            "remote content",
+            "local content",
+            2,
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = req(app, "GET", "/api/v1/conflicts", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["count"], 1);
+    assert!(body["conflicts"][0].get("layer").is_none());
 }
 
 #[tokio::test]
@@ -868,6 +1585,36 @@ async fn export_import_roundtrip() {
     assert_eq!(res["imported_memories"], 1);
     let (_, list) = req(app2, "GET", "/api/v1/memories", None).await;
     assert_eq!(list["memories"][0]["title"], "m1");
+}
+
+#[tokio::test]
+async fn import_applies_defaults_for_omitted_layer_type_and_edge_status() {
+    let (app, _dir) = test_router().await;
+    let (st, res) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/import",
+        Some(json!({
+            "memories": [
+                { "id": "mem_a", "title": "A", "content": "a" },
+                { "id": "mem_b", "title": "B", "content": "b" }
+            ],
+            "edges": [
+                { "source_id": "mem_a", "target_id": "mem_b", "relationship": "sibling" }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(res["imported_memories"], 2);
+    assert_eq!(res["imported_edges"], 1);
+
+    let (_, mem) = req(app.clone(), "GET", "/api/v1/memories/mem_a", None).await;
+    assert_eq!(mem["layer"], "workspace");
+    assert_eq!(mem["memory_type"], "project");
+
+    let (_, edges) = req(app, "GET", "/api/v1/edges", None).await;
+    assert_eq!(edges["edges"][0]["status"], "active");
 }
 
 #[tokio::test]
@@ -981,6 +1728,7 @@ async fn patch_edge_and_feedback_status() {
     let fb = store
         .create_feedback("mem_a", "outdated", None)
         .await
+        .unwrap()
         .unwrap();
     let (st, body) = req(
         app,
@@ -2190,10 +2938,12 @@ async fn set_hive_enabled_refuses_when_cloud_sync_is_enabled() {
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let app = router(
         Arc::clone(&store),
+        None,
         SyncSettings {
             enabled: true,
             ..SyncSettings::default()
         },
+        None,
         "http://127.0.0.1:3457",
         events,
         suggest,
@@ -2262,4 +3012,239 @@ async fn hive_pair_refuses_a_revoked_device_and_keeps_it_revoked() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let roster = store.hive_list_roster().await.unwrap();
     assert_eq!(roster[0].status, crate::hive::roster::RosterStatus::Revoked);
+}
+
+#[tokio::test]
+async fn create_memory_with_org_layer_routes_to_org_store_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "title": "t", "content": "c", "layer": "org" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let id = json["id"].as_str().unwrap().to_string();
+
+    // Confirm it landed in org, not primary, by checking it's retrievable
+    // (get_memory's org fallback from Task 3 makes this ambiguous on its
+    // own, so this test instead directly inspects the response's layer).
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/memories/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let get_body = get_resp.into_body().collect().await.unwrap().to_bytes();
+    let get_json: Value = serde_json::from_slice(&get_body).unwrap();
+    assert_eq!(get_json["layer"], "org");
+}
+
+#[tokio::test]
+async fn create_memory_with_org_layer_errors_when_not_configured() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "title": "t", "content": "c", "layer": "org" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"],
+        "org layer not configured — set [org_sync] in the global config"
+    );
+}
+
+#[tokio::test]
+async fn list_memories_includes_org_entries_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    // Create one workspace memory and one org memory via the API itself.
+    for layer in ["workspace", "org"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/memories")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "title": layer, "content": "c", "layer": layer }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/memories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let titles: Vec<&str> = json["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["title"].as_str().unwrap())
+        .collect();
+    assert!(titles.contains(&"workspace"));
+    assert!(titles.contains(&"org"));
+}
+
+#[tokio::test]
+async fn search_includes_org_entries_when_configured() {
+    let (app, _dir, _org_dir) = test_router_with_org().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "title": "orgsearchable", "content": "unique org content", "layer": "org" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/search?q=orgsearchable")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["count"], 1);
+    assert_eq!(json["results"][0]["title"], "orgsearchable");
+}
+
+// POST /api/v1/update/apply spawns a real `cargo binstall` + process-replacing
+// restart on success (see update::do_update), which must never run inside a
+// test — only its refusal paths are exercised here.
+#[tokio::test]
+async fn apply_update_refuses_without_explicit_confirmation() {
+    let (app, _dir) = test_router().await;
+    // No body at all: the Json extractor rejects it before the handler runs.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/update/apply")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_client_error(),
+        "bodyless apply must fail, got {}",
+        resp.status()
+    );
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/update/apply",
+        Some(json!({ "confirm": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["error"].as_str().unwrap().contains("confirm"));
+}
+
+#[tokio::test]
+async fn apply_update_refuses_when_disabled_in_config() {
+    let update_state = test_update_state();
+    update_state.write().await.apply_enabled = false;
+    let (app, _dir) = test_router_with_update_state(update_state).await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/update/apply",
+        Some(json!({ "confirm": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("allow_apply_from_api")
+    );
+}
+
+#[tokio::test]
+async fn get_update_state_reports_idle_by_default() {
+    let (app, _dir) = test_router().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/update")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "idle");
+    assert_eq!(json["available"], false);
+}
+
+#[tokio::test]
+async fn sse_events_endpoint_responds_with_event_stream_headers() {
+    let (app, _dir) = test_router().await;
+    // Only check status/headers — the body is an infinite keep-alive stream,
+    // so it must never be collected/awaited to completion in a test.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/event-stream");
 }

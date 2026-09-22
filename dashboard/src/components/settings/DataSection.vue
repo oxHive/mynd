@@ -13,7 +13,7 @@ async function handleExport() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `hivemind-export-${new Date().toISOString().slice(0,10)}.json`
+    a.download = `mynd-export-${new Date().toISOString().slice(0,10)}.json`
     a.click()
     URL.revokeObjectURL(url)
   } catch {
@@ -42,14 +42,14 @@ async function handleImport(e) {
       <div class="flex items-center justify-between gap-4">
         <div>
           <p style="font-size:13px; font-weight:500; color:var(--hm-text-primary)" class="mb-1.5">Export to JSON</p>
-          <p style="font-size:12px; color:var(--hm-text-tertiary)">Download all memories as a JSON file</p>
+          <p style="font-size:12px; color:var(--hm-text-tertiary)">Download personal and workspace memories as a JSON file (org-layer memories are not included)</p>
         </div>
         <button class="hm-btn hm-btn-default shrink-0" @click="handleExport">Export</button>
       </div>
       <div class="flex items-center justify-between gap-4">
         <div>
           <p style="font-size:13px; font-weight:500; color:var(--hm-text-primary)" class="mb-1.5">Import from JSON</p>
-          <p style="font-size:12px; color:var(--hm-text-tertiary)">Restore from a previous HiveMind export</p>
+          <p style="font-size:12px; color:var(--hm-text-tertiary)">Restore personal and workspace memories from a previous export</p>
         </div>
         <button class="hm-btn hm-btn-default shrink-0" @click="fileInput.click()">Import</button>
         <input ref="fileInput" type="file" accept=".json" class="hidden" @change="handleImport" />

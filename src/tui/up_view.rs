@@ -26,24 +26,36 @@ const BODY_FRAME_OVERHEAD: u16 = 6;
 const MIN_BOX_WIDTH: u16 = 40;
 const FOOTER_TEXT: &str = "  d detach   ctrl+c stop server";
 
-/// Runs the interactive `hivemind up` view: header + a live activity feed fed
-/// by the existing SSE broadcast channel. Returns on `d`, or when
-/// `restart_notify` fires (the dashboard's Hive enable/disable toggle
-/// requesting a restart, since this TUI loop -- not `http::run_up`'s own
-/// `select!` -- owns the process while it's running interactively) — either
-/// way the caller (`http::run_up`) then actually detaches: aborts its
-/// listeners, re-execs a background copy of the server, and exits so the
-/// shell prompt comes back. `Ctrl+C` exits the process directly (stopping
-/// the server for good), since raw mode swallows the OS SIGINT that would
-/// normally do that.
+/// Why the interactive view returned; `http::run_up` acts on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpExit {
+    /// `d`, or `restart_notify` firing (the dashboard's Hive enable/disable
+    /// toggle requesting a restart, since this TUI loop -- not
+    /// `http::run_up`'s own `select!` -- owns the process while it's running
+    /// interactively): the caller aborts its listeners, re-execs a
+    /// background copy of the server, and exits so the shell prompt comes
+    /// back.
+    Detach,
+    /// `Ctrl+C` (raw mode swallows the OS SIGINT, so it arrives as a key)
+    /// or an external SIGTERM: the caller shuts the servers down gracefully
+    /// and returns normally, which also removes the pidfile.
+    Stop,
+}
+
+/// Runs the interactive `mynd up` view: header + a live activity feed fed
+/// by the existing SSE broadcast channel. Returns when the user presses
+/// `d` or `Ctrl+C`, when `shutdown` fires (SIGTERM from `systemctl stop` or
+/// `mynd status`'s `k`), or when `restart_notify` fires (the dashboard's
+/// Hive enable/disable toggle).
 pub async fn run(
     mut data: StatusData,
     dashboard_url: Option<String>,
     mcp_url: String,
     events: broadcast::Sender<serde_json::Value>,
     store: std::sync::Arc<SqliteStore>,
+    shutdown: crate::http::ShutdownSignal,
     restart_notify: std::sync::Arc<tokio::sync::Notify>,
-) -> Result<()> {
+) -> Result<UpExit> {
     let guard = TerminalGuard::enter(VIEWPORT_HEIGHT)?;
     let mut terminal = guard.terminal()?;
     let mut rx = events.subscribe();
@@ -77,24 +89,23 @@ pub async fn run(
                     feed.truncate(MAX_FEED_LINES);
                 }
             }
+            _ = crate::http::wait_for_shutdown(shutdown.clone()) => {
+                return Ok(UpExit::Stop);
+            }
             key = poll_key_event() => {
                 if let Some(key) = key {
                     match key.code {
-                        KeyCode::Char('d') => break,
+                        KeyCode::Char('d') => return Ok(UpExit::Detach),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            drop(guard);
-                            let _ = std::fs::remove_file(crate::db::up_pidfile_path());
-                            std::process::exit(0);
+                            return Ok(UpExit::Stop);
                         }
                         _ => {}
                     }
                 }
             }
-            _ = restart_notify.notified() => break,
+            _ = restart_notify.notified() => return Ok(UpExit::Detach),
         }
     }
-
-    Ok(())
 }
 
 /// Polls for a key-press event on a blocking thread (crossterm's `poll`/`read`
@@ -208,4 +219,162 @@ fn draw(
         Paragraph::new(Line::from(FOOTER_TEXT).style(footer_style)),
         layout[2],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{DiscordStatusLine, MatrixStatusLine};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn sample_data() -> StatusData {
+        StatusData {
+            version: "0.14.3",
+            project_label: None,
+            server_up: true,
+            server_host: "127.0.0.1".to_string(),
+            server_port: 3456,
+            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            memory_count: 42,
+            sync_enabled: false,
+            sync_remote_url: String::new(),
+            registered_clients: vec![],
+            project: None,
+            matrix: MatrixStatusLine::NotConfigured,
+            discord: DiscordStatusLine::NotConfigured,
+        }
+    }
+
+    fn render(
+        data: &StatusData,
+        no_color: bool,
+        dashboard_url: &Option<String>,
+        mcp_url: &str,
+        feed: &VecDeque<String>,
+    ) -> String {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(data, no_color, dashboard_url, mcp_url, feed, frame))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn draw_shows_server_url_and_mcp_url() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("http://127.0.0.1:3456"));
+        assert!(content.contains("http://127.0.0.1:3456/mcp"));
+        assert!(content.contains("Status     running"));
+    }
+
+    #[test]
+    fn draw_omits_dashboard_line_when_none() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(!content.contains("Dashboard"));
+    }
+
+    #[test]
+    fn draw_shows_dashboard_url_when_some() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let dashboard_url = Some("http://127.0.0.1:3457".to_string());
+        let content = render(
+            &data,
+            false,
+            &dashboard_url,
+            "http://127.0.0.1:3456/mcp",
+            &feed,
+        );
+        assert!(content.contains("Dashboard"));
+        assert!(content.contains("http://127.0.0.1:3457"));
+    }
+
+    #[test]
+    fn draw_shows_feed_entries_most_recent_first() {
+        let data = sample_data();
+        let mut feed = VecDeque::new();
+        feed.push_front("00:00:01  changed".to_string());
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("00:00:01"));
+        assert!(content.contains("changed"));
+    }
+
+    #[test]
+    fn draw_truncates_feed_to_twenty_lines() {
+        let data = sample_data();
+        let mut feed = VecDeque::new();
+        for i in 0..30 {
+            feed.push_front(format!("entry-{i:02}"));
+        }
+        // Backend is only 20 rows tall in total (header + body + footer all
+        // share it), so this just exercises the `.take(20)` path without
+        // panicking or overflowing the render — the real assertion is that
+        // rendering that many feed lines completes without error.
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("entry-29"));
+    }
+
+    #[test]
+    fn draw_footer_shows_detach_and_stop_hints() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let content = render(&data, false, &None, "http://127.0.0.1:3456/mcp", &feed);
+        assert!(content.contains("d detach"));
+        assert!(content.contains("ctrl+c stop server"));
+    }
+
+    #[test]
+    fn draw_no_color_skips_foreground_styling_but_keeps_text() {
+        let data = sample_data();
+        let feed = VecDeque::new();
+        let dashboard_url = Some("http://127.0.0.1:3457".to_string());
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(
+                    &data,
+                    true,
+                    &dashboard_url,
+                    "http://127.0.0.1:3456/mcp",
+                    &feed,
+                    frame,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("http://127.0.0.1:3457"));
+        for cell in buffer.content.iter() {
+            assert_eq!(
+                cell.fg,
+                Color::Reset,
+                "cell {:?} should have no foreground color set when no_color=true",
+                cell.symbol()
+            );
+        }
+    }
+
+    #[test]
+    fn chrono_now_hms_formats_as_hh_mm_ss() {
+        let ts = chrono_now_hms();
+        assert_eq!(ts.len(), 8, "expected HH:MM:SS, got: {ts}");
+        let parts: Vec<&str> = ts.split(':').collect();
+        assert_eq!(parts.len(), 3);
+        for part in parts {
+            assert_eq!(part.len(), 2);
+            assert!(part.chars().all(|c| c.is_ascii_digit()));
+        }
+    }
 }

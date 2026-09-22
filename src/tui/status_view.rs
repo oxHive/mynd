@@ -1,4 +1,4 @@
-use crate::cli::{MatrixStatusLine, StatusData, build_status_data};
+use crate::cli::{DiscordStatusLine, MatrixStatusLine, StatusData, build_status_data};
 use crate::store::SqliteStore;
 use crate::tui::{TerminalGuard, header::render_header};
 use anyhow::Result;
@@ -19,7 +19,7 @@ const WARNING: Color = Color::Rgb(0xf5, 0xa5, 0x24);
 /// shell prompt rather than taking over the full screen.
 const VIEWPORT_HEIGHT: u16 = 12;
 
-/// Runs the interactive `hivemind status` view: header + a key-value panel
+/// Runs the interactive `mynd status` view: header + a key-value panel
 /// that auto-refreshes every 5s, with `r` for an immediate manual refresh.
 /// `q` / Ctrl+C exits. Returns once the user quits.
 #[allow(clippy::too_many_arguments)]
@@ -144,7 +144,7 @@ pub async fn run(
     Ok(())
 }
 
-/// Sends SIGTERM to the PID recorded in `hivemind up`'s pidfile and waits
+/// Sends SIGTERM to the PID recorded in `mynd up`'s pidfile and waits
 /// briefly for it to exit. Shells out to `kill` rather than adding a signal
 /// crate dependency — matches the project's existing Unix-only assumptions
 /// (XDG paths, $HOME, the `open`/`xdg-open` dashboard launcher). Always
@@ -162,6 +162,15 @@ fn kill_server() -> String {
     if !process_alive(pid) {
         let _ = std::fs::remove_file(&path);
         return "server was already stopped; removed stale pidfile".to_string();
+    }
+    if !process_is_mynd(pid) {
+        // The pidfile outlived the server (crash, SIGKILL, reboot) and the
+        // PID now belongs to something else. Signalling it would kill an
+        // unrelated process.
+        let _ = std::fs::remove_file(&path);
+        return format!(
+            "pid {pid} in the pidfile is not a mynd process (stale pidfile); removed it, nothing signalled"
+        );
     }
     let sent = std::process::Command::new("kill")
         .arg("-TERM")
@@ -186,6 +195,40 @@ fn kill_server() -> String {
     } else {
         format!("stopped server (pid {pid})")
     }
+}
+
+/// True if `name` (an executable's file name) is this program. After an
+/// in-place self-update the running binary's original inode is unlinked
+/// and Linux reports it as `mynd (deleted)`, which is still ours.
+fn exe_name_is_mynd(name: &str) -> bool {
+    name == "mynd" || name.starts_with("mynd ")
+}
+
+/// Best-effort check that `pid` is a `mynd` process before we signal it:
+/// `/proc/<pid>/exe` on Linux, `ps -o comm=` elsewhere. Unknown (neither
+/// source answers) counts as "not ours" — refusing to signal is the safe
+/// failure.
+fn process_is_mynd(pid: u32) -> bool {
+    let from_proc = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let name = from_proc.or_else(|| {
+        std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                std::path::Path::new(&s)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(s)
+            })
+    });
+    name.is_some_and(|n| exe_name_is_mynd(&n))
 }
 
 /// `kill -0` (and `-TERM` above) inherit stdio by default, so an unsilenced
@@ -285,11 +328,26 @@ fn draw(
             )));
         }
     }
+    match &data.discord {
+        DiscordStatusLine::NotConfigured => {}
+        DiscordStatusLine::NotRunning => {
+            lines.push(Line::from("Discord    configured, not running"));
+        }
+        DiscordStatusLine::Running {
+            application_id,
+            sync_state,
+            channel_count,
+            active_sessions,
+        } => {
+            lines.push(Line::from(format!(
+                "Discord    {application_id} ({sync_state}), {channel_count} channel(s), \
+                 {active_sessions} active session(s)"
+            )));
+        }
+    }
     if data.project.is_none() {
         lines.push(Line::from(""));
-        lines.push(Line::from(
-            "No .hivemind.toml found in this directory tree.",
-        ));
+        lines.push(Line::from("No .mynd.toml found in this directory tree."));
     }
 
     // Error takes priority over an info message when both are somehow set;
@@ -352,4 +410,327 @@ fn draw(
         Paragraph::new(Line::from(footer_text).style(footer_style)),
         layout[3],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::ProjectStatus;
+
+    #[test]
+    fn exe_name_matching_accepts_mynd_and_deleted_suffix_only() {
+        assert!(exe_name_is_mynd("mynd"));
+        assert!(exe_name_is_mynd("mynd (deleted)"));
+        assert!(!exe_name_is_mynd("myndx"));
+        assert!(!exe_name_is_mynd("bash"));
+        assert!(!exe_name_is_mynd(""));
+    }
+
+    #[test]
+    fn process_identity_check_refuses_other_processes() {
+        // This test binary is not named `mynd`, and no process has this pid.
+        assert!(
+            !process_is_mynd(std::process::id())
+                || exe_name_is_mynd(
+                    &std::env::current_exe()
+                        .unwrap()
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                )
+        );
+        assert!(!process_is_mynd(u32::MAX));
+    }
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn sample_data() -> StatusData {
+        StatusData {
+            version: "0.14.3",
+            project_label: None,
+            server_up: true,
+            server_host: "127.0.0.1".to_string(),
+            server_port: 3456,
+            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            memory_count: 42,
+            sync_enabled: false,
+            sync_remote_url: String::new(),
+            registered_clients: vec![],
+            project: None,
+            matrix: MatrixStatusLine::NotConfigured,
+            discord: DiscordStatusLine::NotConfigured,
+        }
+    }
+
+    fn render(data: &StatusData, last_error: Option<&str>, last_message: Option<&str>) -> String {
+        render_no_color(data, last_error, last_message, false)
+    }
+
+    fn render_no_color(
+        data: &StatusData,
+        last_error: Option<&str>,
+        last_message: Option<&str>,
+        no_color: bool,
+    ) -> String {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(data, last_error, last_message, no_color, frame))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn draw_shows_server_running_and_storage_path() {
+        let data = sample_data();
+        let content = render(&data, None, None);
+        assert!(content.contains("running at http://127.0.0.1:3456"));
+        assert!(content.contains("~/.local/share/hivemind/memories.db"));
+    }
+
+    #[test]
+    fn draw_shows_server_not_running() {
+        let mut data = sample_data();
+        data.server_up = false;
+        let content = render(&data, None, None);
+        assert!(content.contains("not running"));
+    }
+
+    #[test]
+    fn draw_shows_sync_enabled_and_url() {
+        let mut data = sample_data();
+        data.sync_enabled = true;
+        data.sync_remote_url = "https://sync.example.com".to_string();
+        let content = render(&data, None, None);
+        assert!(content.contains("enabled -> https://sync.example.com"));
+    }
+
+    #[test]
+    fn draw_shows_sync_disabled_by_default() {
+        let data = sample_data();
+        let content = render(&data, None, None);
+        assert!(content.contains("disabled"));
+    }
+
+    #[test]
+    fn draw_shows_registered_clients_when_present() {
+        let mut data = sample_data();
+        data.registered_clients = vec!["claude".to_string(), "opencode".to_string()];
+        let content = render(&data, None, None);
+        assert!(content.contains("claude"));
+        assert!(content.contains("opencode"));
+    }
+
+    #[test]
+    fn draw_shows_none_registered_when_empty() {
+        let data = sample_data();
+        let content = render(&data, None, None);
+        assert!(content.contains("none registered"));
+    }
+
+    #[test]
+    fn draw_shows_not_running_and_missing_project_notice() {
+        let mut data = sample_data();
+        data.server_up = false;
+        data.registered_clients = vec!["claude".to_string()];
+        let content = render(&data, None, None);
+        assert!(content.contains("not running"));
+        assert!(!content.contains("none registered")); // has one client
+        assert!(content.contains("No .mynd.toml found in this directory tree."));
+        assert!(content.contains("q quit"));
+        assert!(!content.contains("k kill server"));
+    }
+
+    #[test]
+    fn draw_shows_running_server_and_kill_hint() {
+        let mut data = sample_data();
+        data.server_up = true;
+        data.registered_clients = vec![];
+        let content = render(&data, None, None);
+        assert!(content.contains("running at http://127.0.0.1:3456"));
+        assert!(content.contains("k kill server"));
+    }
+
+    #[test]
+    fn draw_omits_matrix_and_discord_lines_when_not_configured() {
+        let data = sample_data();
+        let content = render(&data, None, None);
+        assert!(!content.contains("Matrix"));
+        assert!(!content.contains("Discord"));
+    }
+
+    #[test]
+    fn draw_shows_matrix_not_running() {
+        let mut data = sample_data();
+        data.matrix = MatrixStatusLine::NotRunning;
+        let content = render(&data, None, None);
+        assert!(content.contains("Matrix"));
+        assert!(content.contains("configured, not running"));
+    }
+
+    #[test]
+    fn draw_shows_matrix_running_details() {
+        let mut data = sample_data();
+        data.matrix = MatrixStatusLine::Running {
+            user_id: "@bot:matrix.org".to_string(),
+            sync_state: "synced".to_string(),
+            room_count: 3,
+            active_sessions: 1,
+        };
+        let content = render(&data, None, None);
+        assert!(content.contains("@bot:matrix.org"));
+        assert!(content.contains("synced"));
+        assert!(content.contains("3 room(s)"));
+        assert!(content.contains("1 active session(s)"));
+    }
+
+    #[test]
+    fn draw_shows_matrix_not_running_and_running_states() {
+        let mut data = sample_data();
+        data.matrix = MatrixStatusLine::NotRunning;
+        let content = render(&data, None, None);
+        assert!(content.contains("Matrix     configured, not running"));
+
+        data.matrix = MatrixStatusLine::Running {
+            user_id: "@bot:example.com".to_string(),
+            sync_state: "synced".to_string(),
+            room_count: 3,
+            active_sessions: 1,
+        };
+        let content = render(&data, None, None);
+        assert!(content.contains("@bot:example.com"));
+        assert!(content.contains("3 room(s)"));
+        assert!(content.contains("1 active session(s)"));
+    }
+
+    #[test]
+    fn draw_shows_discord_not_running() {
+        let mut data = sample_data();
+        data.discord = DiscordStatusLine::NotRunning;
+        let content = render(&data, None, None);
+        assert!(content.contains("Discord"));
+        assert!(content.contains("configured, not running"));
+    }
+
+    #[test]
+    fn draw_shows_discord_running_details() {
+        let mut data = sample_data();
+        data.discord = DiscordStatusLine::Running {
+            application_id: "123456789012345678".to_string(),
+            sync_state: "connected".to_string(),
+            channel_count: 2,
+            active_sessions: 1,
+        };
+        let content = render(&data, None, None);
+        assert!(content.contains("123456789012345678"));
+        assert!(content.contains("connected"));
+        assert!(content.contains("2 channel(s)"));
+    }
+
+    #[test]
+    fn draw_shows_no_project_message_when_project_is_none() {
+        let data = sample_data();
+        let content = render(&data, None, None);
+        assert!(content.contains("No .mynd.toml found in this directory tree."));
+    }
+
+    #[test]
+    fn draw_omits_no_project_message_when_project_is_some() {
+        let mut data = sample_data();
+        data.project = Some(ProjectStatus {
+            project_name: "hivemind".to_string(),
+            has_local_config: false,
+            file_open_rule_count: 0,
+            mention_trigger_count: 0,
+            loaded: vec![],
+            skipped: vec![],
+            used_tokens: 0,
+            max_tokens: 1000,
+            truncated: false,
+        });
+        let content = render(&data, None, None);
+        assert!(!content.contains("No .mynd.toml found in this directory tree."));
+    }
+
+    #[test]
+    fn draw_shows_error_notice_when_last_error_set() {
+        let data = sample_data();
+        let content = render(&data, Some("connection refused"), None);
+        assert!(content.contains("refresh failed: connection refused"));
+    }
+
+    #[test]
+    fn draw_shows_info_message_when_last_message_set_and_no_error() {
+        let data = sample_data();
+        let content = render(&data, None, Some("stopped server (pid 123)"));
+        assert!(content.contains("stopped server (pid 123)"));
+    }
+
+    #[test]
+    fn draw_error_takes_priority_over_last_message() {
+        let data = sample_data();
+        let content = render(&data, Some("boom"), Some("should not appear"));
+        assert!(content.contains("refresh failed: boom"));
+        assert!(!content.contains("should not appear"));
+    }
+
+    #[test]
+    fn draw_prioritizes_error_notice_over_message() {
+        let data = sample_data();
+        let content = render(&data, Some("boom"), Some("all good"));
+        assert!(content.contains("refresh failed: boom"));
+        assert!(!content.contains("all good"));
+    }
+
+    #[test]
+    fn draw_shows_kill_shortcut_when_server_up() {
+        let data = sample_data();
+        let content = render(&data, None, None);
+        assert!(content.contains("k kill server"));
+    }
+
+    #[test]
+    fn draw_omits_kill_shortcut_when_server_down() {
+        let mut data = sample_data();
+        data.server_up = false;
+        let content = render(&data, None, None);
+        assert!(!content.contains("k kill server"));
+        assert!(content.contains("q quit"));
+    }
+
+    #[test]
+    fn draw_no_color_skips_foreground_styling_but_keeps_text() {
+        let data = sample_data();
+        let content = render_no_color(&data, Some("boom"), None, true);
+        assert!(content.contains("refresh failed: boom"));
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(&data, Some("boom"), None, true, frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        for cell in buffer.content.iter() {
+            assert_eq!(
+                cell.fg,
+                Color::Reset,
+                "cell {:?} should have no foreground color set when no_color=true",
+                cell.symbol()
+            );
+        }
+    }
+
+    #[test]
+    fn draw_widens_box_for_long_storage_path() {
+        let mut data = sample_data();
+        data.db_path =
+            "/a/very/long/path/that/should/widen/the/overview/box/memories.db".to_string();
+        let content = render(&data, None, None);
+        assert!(content.contains(&data.db_path));
+    }
 }

@@ -18,8 +18,8 @@ const fb = useFeedbackStore()
         @click="fb.activeTab = tab"
         class="px-3 pb-2.5 font-mono capitalize"
         :style="fb.activeTab===tab
-          ? 'font-size:12px; color:var(--hm-text-primary); border-bottom:2px solid var(--hm-personal)'
-          : 'font-size:12px; color:var(--hm-text-tertiary); border-bottom:2px solid transparent'">
+          ? 'font-size:12px; color:var(--hm-text-primary); border-bottom:2px solid var(--hm-personal); cursor:pointer'
+          : 'font-size:12px; color:var(--hm-text-tertiary); border-bottom:2px solid transparent; cursor:pointer'">
         {{ tab }}
         <span v-if="tab==='conflicts' && fb.conflicts.length" class="ml-1.5 font-mono"
           style="font-size:10px; background:var(--hm-warning-bg); color:var(--hm-warning); padding:1px 5px; border-radius:3px">

@@ -1,0 +1,40 @@
+# cargo-audit configuration.
+#
+# rustls-webpki 0.102.8 is pulled in transitively via libsql 0.9.30's
+# default "tls" feature (hyper-rustls 0.25 -> rustls 0.22 -> rustls-webpki
+# 0.102), used for the remote-replica sync path (Builder::new_remote_replica,
+# see src/db.rs). It cannot be bumped without a breaking change:
+#
+# - No patched 0.102.x release of rustls-webpki exists; the fixes only
+#   landed in the 0.103 line, which requires rustls 0.23 (hyper-rustls 0.27).
+# - libsql 0.9.30 is the latest stable release and hard-pins hyper-rustls to
+#   "0.25", so it cannot resolve to a hyper-rustls/rustls/rustls-webpki
+#   combination that includes the fix. The only newer libsql release is the
+#   0.10.0-pre.4 prerelease.
+# - Disabling libsql's "tls" feature to drop the dependency entirely is not
+#   viable either: libsql's HTTPS connector for remote-replica sync is
+#   feature-gated on "tls" and panics at runtime without it
+#   ("The `tls` feature is disabled, you must provide your own http
+#   connector" — src/database.rs in the libsql crate), which would break
+#   sync.enabled deployments.
+#
+# All four advisories require a misissued/compromised CA certificate to be
+# exploitable (they're bugs in post-signature-verification name-constraint
+# and CRL matching logic), so the practical exposure here is low. Revisit
+# once libsql ships a stable release on rustls 0.23+.
+#
+# RUSTSEC-2026-0258 (h2 unbounded empty DATA frames) is the same story: h2
+# 0.3.27 comes from the same libsql 0.9.30 "replication" feature (hyper 0.14
+# -> tonic 0.11 -> hyper 0.14's h2 ^0.3.24), used for remote-replica sync. No
+# patched release exists on the 0.3.x line (fix only landed in 0.4.16, a
+# breaking bump hyper 0.14 can't take), and libsql 0.9.30 is still the latest
+# stable release. Low severity DoS (unbounded memory growth from undrained
+# streams), same revisit condition as above.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0098", # rustls-webpki: URI name constraints incorrectly accepted
+    "RUSTSEC-2026-0049", # rustls-webpki: CRL distributionPoint matching bug
+    "RUSTSEC-2026-0099", # rustls-webpki: wildcard name constraint bypass
+    "RUSTSEC-2026-0104", # rustls-webpki: reachable panic parsing CRLs
+    "RUSTSEC-2026-0258", # h2: unbounded empty DATA frames (libsql's old hyper 0.14 stack)
+]

@@ -1,34 +1,114 @@
 use super::init::home_dir;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 // ── service management ────────────────────────────────────────────────────────
+// Unit / agent names carry the `mynd` name (launchd labels use reverse-DNS of
+// oxhive.dev). Older names are kept only so `install` / `uninstall` can tear
+// down units left behind by a previous build (see remove_legacy_units_* below).
+//
+// Structured the same way as wardn's `service` module: each unit-level
+// operation is a pure function returning `Result<String>` — a hard error on
+// a real failure (`run_ok`), a composed human-readable message on success —
+// and the `cmd_service_*` entry points below print the composed result once,
+// instead of the individual steps printing (or warning) as they go.
 
-pub fn cmd_service_install(dashboard: bool, matrix: bool, hive: bool) -> Result<()> {
+#[cfg(target_os = "linux")]
+const CURRENT_UNIT: &str = "mynd";
+#[cfg(target_os = "linux")]
+const CURRENT_MATRIX_UNIT: &str = "mynd-matrix";
+#[cfg(target_os = "linux")]
+const CURRENT_DISCORD_UNIT: &str = "mynd-discord";
+#[cfg(target_os = "linux")]
+const LEGACY_UNITS: [&str; 2] = ["hivemind", "hivemind-matrix"];
+
+pub fn cmd_service_install(
+    dashboard: bool,
+    matrix: bool,
+    hive: bool,
+    discord: bool,
+    no_linger: bool,
+) -> Result<()> {
     #[cfg(target_os = "macos")]
-    return service_install_macos(dashboard, matrix, hive);
+    {
+        let _ = no_linger; // launchd has no linger equivalent — see service_install_macos.
+        println!(
+            "{}",
+            service_install_macos(dashboard, matrix, hive, discord)?
+        );
+        Ok(())
+    }
     #[cfg(target_os = "linux")]
-    return service_install_linux(dashboard, matrix, hive);
+    {
+        println!(
+            "{}",
+            service_install_linux(dashboard, matrix, hive, discord, !no_linger)?
+        );
+        Ok(())
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    anyhow::bail!("hivemind service install is only supported on Linux and macOS");
+    {
+        let _ = (dashboard, matrix, hive, discord, no_linger);
+        bail!("mynd service install is only supported on Linux and macOS");
+    }
 }
 
 pub fn cmd_service_uninstall() -> Result<()> {
     #[cfg(target_os = "macos")]
-    return service_uninstall_macos();
+    {
+        println!("{}", service_uninstall_macos()?);
+        Ok(())
+    }
     #[cfg(target_os = "linux")]
-    return service_uninstall_linux();
+    {
+        println!("{}", service_uninstall_linux()?);
+        Ok(())
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    anyhow::bail!("hivemind service uninstall is only supported on Linux and macOS");
+    bail!("mynd service uninstall is only supported on Linux and macOS");
 }
 
 pub fn cmd_service_status() -> Result<()> {
     #[cfg(target_os = "macos")]
-    return service_status_macos();
+    {
+        println!("{}", service_status_macos()?);
+        Ok(())
+    }
     #[cfg(target_os = "linux")]
-    return service_status_linux();
+    {
+        println!("{}", service_status_linux()?);
+        Ok(())
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    anyhow::bail!("hivemind service status is only supported on Linux and macOS");
+    bail!("mynd service status is only supported on Linux and macOS");
+}
+
+// ── shared helpers ──────────────────────────────────────────────────────────
+
+/// Runs `cmd`, hard-failing with its stderr on a non-zero exit — ported from
+/// wardn's `service::run_ok` so a failed `systemctl`/`launchctl` call aborts
+/// the command instead of printing a warning and silently continuing.
+#[allow(dead_code)]
+fn run_ok(cmd: &mut Command) -> Result<()> {
+    let program = format!("{cmd:?}");
+    let output = cmd.output().with_context(|| format!("running {program}"))?;
+    if !output.status.success() {
+        bail!(
+            "{program} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn command_stdout(cmd: &mut Command) -> Option<String> {
+    let text = cmd
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    (!text.is_empty()).then_some(text)
 }
 
 // ── Linux / systemd user unit ─────────────────────────────────────────────────
@@ -48,17 +128,17 @@ fn systemd_unit_path(unit_name: &str) -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn systemd_unit_content(
-    description: &str,
-    exe: &Path,
-    exec_args: &[&str],
-    path_env: &str,
-) -> String {
+fn systemd_unit_content(description: &str, exe: &Path, exec_args: &[&str]) -> String {
     let mut exec = exe.display().to_string();
     for arg in exec_args {
         exec.push(' ');
         exec.push_str(arg);
     }
+    // Carry over the installing shell's PATH — systemd user services start
+    // with a bare PATH that omits ~/.cargo/bin, ~/.local/bin, etc., which
+    // breaks self-update (it shells out to `cargo binstall`) and any other
+    // subprocess the daemon spawns by name.
+    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
     format!(
         "[Unit]\n\
          Description={description}\n\
@@ -66,7 +146,7 @@ fn systemd_unit_content(
          \n\
          [Service]\n\
          Type=simple\n\
-         Environment=PATH={path_env}\n\
+         Environment=PATH={path}\n\
          ExecStart={exec}\n\
          Restart=on-failure\n\
          RestartSec=5\n\
@@ -81,100 +161,172 @@ fn service_install_unit_linux(
     unit_name: &str,
     description: &str,
     exec_args: &[&str],
-) -> Result<()> {
-    let exe = std::env::current_exe()?;
-    // systemd user services start with their own minimal PATH (no
-    // ~/.local/bin, ~/.cargo/bin, etc.), unlike an interactive shell --
-    // baking in the PATH from *this* invocation (run interactively, when the
-    // user has their real shell environment) means every subprocess this
-    // service spawns (the suggest-session agent, opencode, ...) resolves the
-    // same bare command names that work in the user's terminal.
-    let path_env =
-        std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
-    let unit = systemd_unit_content(description, &exe, exec_args, &path_env);
+) -> Result<String> {
+    let exe = std::env::current_exe().context("locating the mynd binary")?;
+    let unit = systemd_unit_content(description, &exe, exec_args);
 
     let unit_path = systemd_unit_path(unit_name);
-    std::fs::create_dir_all(unit_path.parent().unwrap())?;
-    std::fs::write(&unit_path, &unit)?;
-    println!("Unit file written: {}", unit_path.display());
-
-    // daemon-reload so systemd sees the new unit.
-    let reload = std::process::Command::new("systemctl")
-        .args(["--user", "daemon-reload"])
-        .status();
-    match reload {
-        Ok(s) if s.success() => {}
-        _ => {
-            println!("Warning: systemctl --user daemon-reload failed — run it manually.");
-        }
+    if let Some(parent) = unit_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
+    std::fs::write(&unit_path, &unit)
+        .with_context(|| format!("writing {}", unit_path.display()))?;
 
-    let enable = std::process::Command::new("systemctl")
-        .args(["--user", "enable", unit_name])
-        .status();
-    if !matches!(enable, Ok(s) if s.success()) {
-        println!("Warning: could not enable {unit_name} automatically.");
-        println!("Run: systemctl --user enable {unit_name}");
-    }
+    run_ok(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
+    run_ok(Command::new("systemctl").args(["--user", "enable", "--now", unit_name]))?;
+    // `enable --now` only starts the unit if it wasn't already running, so a
+    // reinstall (e.g. after `--dashboard` changed) needs an explicit restart
+    // to pick up the rewritten ExecStart/Environment lines.
+    run_ok(Command::new("systemctl").args(["--user", "restart", unit_name]))?;
 
-    // `restart` (rather than `enable --now`) so a unit that's already active
-    // with different ExecStart args (e.g. re-running install --dashboard
-    // after a headless install) actually picks up the rewritten unit file
-    // instead of systemd treating `start` on an active unit as a no-op.
-    let restart = std::process::Command::new("systemctl")
-        .args(["--user", "restart", unit_name])
-        .status();
-    match restart {
-        Ok(s) if s.success() => {
-            println!("{unit_name} service enabled and started.");
-        }
-        _ => {
-            println!("Warning: could not start {unit_name} automatically.");
-            println!("Run: systemctl --user restart {unit_name}");
-        }
-    }
-    Ok(())
+    Ok(format!(
+        "Installed {} and started it (enabled to run on login).",
+        unit_path.display()
+    ))
 }
 
 #[cfg(target_os = "linux")]
-fn service_uninstall_unit_linux(unit_name: &str) -> Result<()> {
-    let _ = std::process::Command::new("systemctl")
+fn service_uninstall_unit_linux(unit_name: &str) -> Result<String> {
+    let unit_path = systemd_unit_path(unit_name);
+    if !unit_path.exists() {
+        return Ok(format!(
+            "{} is not installed — nothing to do",
+            unit_path.display()
+        ));
+    }
+    // Best-effort: an already-stopped or half-broken unit shouldn't block
+    // removing its file.
+    let _ = Command::new("systemctl")
         .args(["--user", "disable", "--now", unit_name])
-        .status();
-
-    let unit_path = systemd_unit_path(unit_name);
-    if unit_path.exists() {
-        std::fs::remove_file(&unit_path)?;
-        println!("Removed: {}", unit_path.display());
-    } else {
-        println!("Unit file for {unit_name} not found — nothing to remove.");
-    }
-
-    let _ = std::process::Command::new("systemctl")
+        .output();
+    std::fs::remove_file(&unit_path)
+        .with_context(|| format!("removing {}", unit_path.display()))?;
+    let _ = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
-        .status();
-    Ok(())
+        .output();
+    Ok(format!("Stopped and removed {}", unit_path.display()))
 }
 
 #[cfg(target_os = "linux")]
-fn service_status_unit_linux(unit_name: &str) -> Result<()> {
-    let status = std::process::Command::new("systemctl")
-        .args(["--user", "status", unit_name])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("{unit_name} is not running or not installed");
+fn service_status_unit_linux(unit_name: &str) -> Result<String> {
+    let unit_path = systemd_unit_path(unit_name);
+    if !unit_path.exists() {
+        return Ok(format!(
+            "{unit_name}: not installed (expected {})",
+            unit_path.display()
+        ));
     }
-    Ok(())
+    let enabled =
+        command_stdout(Command::new("systemctl").args(["--user", "is-enabled", unit_name]));
+    let active = command_stdout(Command::new("systemctl").args(["--user", "is-active", unit_name]));
+    Ok(format!(
+        "{unit_name}: installed ({}) — enabled={} active={}",
+        unit_path.display(),
+        enabled.as_deref().unwrap_or("unknown"),
+        active.as_deref().unwrap_or("unknown"),
+    ))
+}
+
+/// Best-effort teardown of units written by a pre-rename (`hivemind`) build, so
+/// an upgraded machine does not end up with two competing services.
+#[cfg(target_os = "linux")]
+fn remove_legacy_units_linux() {
+    for unit in LEGACY_UNITS {
+        if systemd_unit_path(unit).exists() {
+            let _ = service_uninstall_unit_linux(unit);
+        }
+    }
+}
+
+/// Whether `loginctl enable-linger` ran, and how it went — mirrors wardn's
+/// `service::LingerOutcome`, kept the same shape across both products since
+/// the underlying systemd behavior (and the message a user reads) is
+/// identical.
+#[cfg(target_os = "linux")]
+enum LingerOutcome {
+    Skipped,
+    Enabled,
+    Failed(String),
+}
+
+/// `WantedBy=default.target` alone only starts a systemd --user unit when
+/// this user logs in — a `systemd --user` manager doesn't run at boot
+/// unless lingering is on. Without it, a headless box that reboots stays
+/// down until someone logs in again.
+#[cfg(target_os = "linux")]
+fn enable_linger_now() -> LingerOutcome {
+    match std::process::Command::new("loginctl")
+        .arg("enable-linger")
+        .output()
+    {
+        Ok(out) if out.status.success() => LingerOutcome::Enabled,
+        Ok(out) => LingerOutcome::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        Err(e) => LingerOutcome::Failed(e.to_string()),
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn service_install_linux(dashboard: bool, matrix: bool, hive: bool) -> Result<()> {
+fn linger_note(outcome: &LingerOutcome) -> String {
+    match outcome {
+        LingerOutcome::Enabled => {
+            "Linger enabled — this also starts the service at boot, without needing a login."
+                .to_string()
+        }
+        LingerOutcome::Skipped => {
+            "Linger not enabled (--no-linger) — the service starts on login, not at boot. \
+             Enable it later with `loginctl enable-linger $USER`."
+                .to_string()
+        }
+        LingerOutcome::Failed(err) => format!(
+            "Could not enable linger automatically ({err}) — the service still starts on \
+             login, but not at boot until you run `loginctl enable-linger $USER` yourself."
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linger_status_line() -> String {
+    let username = std::process::Command::new("whoami")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let linger = username.and_then(|user| {
+        std::process::Command::new("loginctl")
+            .args(["show-user", "--value", "-p", "Linger", &user])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    match linger.as_deref() {
+        Some("yes") => {
+            "linger: enabled — this service also starts at boot, without needing a login"
+                .to_string()
+        }
+        Some("no") => "linger: disabled — starts on login only (`loginctl enable-linger $USER` \
+                        to also start at boot)"
+            .to_string(),
+        _ => "linger: unknown".to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn service_install_linux(
+    dashboard: bool,
+    matrix: bool,
+    hive: bool,
+    discord: bool,
+    enable_linger: bool,
+) -> Result<String> {
+    remove_legacy_units_linux();
     let (args, desc): (&[&str], &str) = if dashboard {
-        (&["up"], "HiveMind server (API + dashboard)")
+        (&["up"], "Mynd server (API + dashboard)")
     } else {
-        (&["up", "--headless"], "HiveMind server (API only)")
+        (&["up", "--headless"], "Mynd server (API only)")
     };
-    service_install_unit_linux("hivemind", desc, args)?;
+    let mut messages = vec![service_install_unit_linux(CURRENT_UNIT, desc, args)?];
 
     if matrix {
         let configured = crate::config::load_matrix_settings(&crate::config::global_config_path())
@@ -182,16 +334,16 @@ fn service_install_linux(dashboard: bool, matrix: bool, hive: bool) -> Result<()
             .flatten()
             .is_some();
         if !configured {
-            anyhow::bail!(
+            bail!(
                 "--matrix was passed but Matrix is not configured.\n\
-                 Run `hivemind matrix login` first, then re-run `hivemind service install --matrix`."
+                 Run `mynd matrix login` first, then re-run `mynd service install --matrix`."
             );
         }
-        service_install_unit_linux(
-            "hivemind-matrix",
-            "HiveMind Matrix chat bot",
+        messages.push(service_install_unit_linux(
+            CURRENT_MATRIX_UNIT,
+            "Mynd Matrix chat bot",
             &["matrix", "run"],
-        )?;
+        )?);
     }
 
     if hive {
@@ -199,48 +351,76 @@ fn service_install_linux(dashboard: bool, matrix: bool, hive: bool) -> Result<()
             .map(|s| s.hive.enabled)
             .unwrap_or(false);
         if !configured {
-            anyhow::bail!(
+            bail!(
                 "--hive was passed but Hive Mode is not enabled.\n\
-                 Set [hive] enabled = true in ~/.config/hivemind/config.toml first, \
-                 then re-run `hivemind service install --hive`."
+                 Set [hive] enabled = true in ~/.config/mynd/config.toml first, \
+                 then re-run `mynd service install --hive`."
             );
         }
-        // Hive sync runs inside the main `hivemind up` process (unlike the Matrix
+        // Hive sync runs inside the main `mynd up` process (unlike the Matrix
         // bot, which is a wholly separate daemon) -- no separate systemd unit to
         // install here. This block exists purely as the same fail-fast precondition
         // check the --matrix flag already does, for consistency.
     }
 
-    println!();
-    println!("HiveMind will now start automatically on login.");
+    if discord {
+        let configured = crate::config::load_discord_settings(&crate::config::global_config_path())
+            .ok()
+            .flatten()
+            .is_some();
+        if !configured {
+            bail!(
+                "--discord was passed but Discord is not configured.\n\
+                 Run `mynd discord login` first, then re-run `mynd service install --discord`."
+            );
+        }
+        messages.push(service_install_unit_linux(
+            CURRENT_DISCORD_UNIT,
+            "Mynd Discord chat bot",
+            &["discord", "run"],
+        )?);
+    }
+
+    let linger = if enable_linger {
+        enable_linger_now()
+    } else {
+        LingerOutcome::Skipped
+    };
+
+    messages.push(String::new());
+    messages.push("Mynd will now start automatically on login.".to_string());
+    messages.push(linger_note(&linger));
     if dashboard {
         let port = crate::config::load_server_settings(&crate::config::global_config_path())
             .map(|s| s.dashboard_port)
-            .unwrap_or(3459);
-        println!("Dashboard: http://127.0.0.1:{port}");
+            .unwrap_or(3457);
+        messages.push(format!("Dashboard: http://127.0.0.1:{port}"));
     }
-    println!("Check status: hivemind service status");
-    Ok(())
+    messages.push("Check on it any time with `mynd service status`.".to_string());
+
+    Ok(messages.join("\n"))
 }
 
 #[cfg(target_os = "linux")]
-fn service_uninstall_linux() -> Result<()> {
-    service_uninstall_unit_linux("hivemind")?;
-    if systemd_unit_path("hivemind-matrix").exists() {
-        service_uninstall_unit_linux("hivemind-matrix")?;
-    }
-
-    println!("HiveMind service uninstalled.");
-    Ok(())
+fn service_uninstall_linux() -> Result<String> {
+    remove_legacy_units_linux();
+    let messages = [
+        service_uninstall_unit_linux(CURRENT_UNIT)?,
+        service_uninstall_unit_linux(CURRENT_MATRIX_UNIT)?,
+        service_uninstall_unit_linux(CURRENT_DISCORD_UNIT)?,
+    ];
+    Ok(messages.join("\n"))
 }
 
 #[cfg(target_os = "linux")]
-fn service_status_linux() -> Result<()> {
-    service_status_unit_linux("hivemind")?;
-    if systemd_unit_path("hivemind-matrix").exists() {
-        service_status_unit_linux("hivemind-matrix")?;
-    }
-    Ok(())
+fn service_status_linux() -> Result<String> {
+    let mut messages = vec![
+        service_status_unit_linux(CURRENT_UNIT)?,
+        service_status_unit_linux(CURRENT_MATRIX_UNIT)?,
+        service_status_unit_linux(CURRENT_DISCORD_UNIT)?,
+    ];
+    messages.push(linger_status_line());
+    Ok(messages.join("\n"))
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -250,13 +430,24 @@ mod matrix_service_tests {
     #[test]
     fn systemd_unit_content_for_matrix_names_the_unit_and_subcommand() {
         let content = systemd_unit_content(
-            "HiveMind Matrix chat bot",
-            &std::path::PathBuf::from("/usr/local/bin/hivemind"),
+            "Mynd Matrix chat bot",
+            &std::path::PathBuf::from("/usr/local/bin/mynd"),
             &["matrix", "run"],
-            "/usr/bin:/bin",
         );
-        assert!(content.contains("Description=HiveMind Matrix chat bot"));
-        assert!(content.contains("ExecStart=/usr/local/bin/hivemind matrix run"));
+        assert!(content.contains("Description=Mynd Matrix chat bot"));
+        assert!(content.contains("ExecStart=/usr/local/bin/mynd matrix run"));
+        assert!(content.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn systemd_unit_content_for_discord_names_the_unit_and_subcommand() {
+        let content = systemd_unit_content(
+            "Mynd Discord chat bot",
+            &std::path::PathBuf::from("/usr/local/bin/mynd"),
+            &["discord", "run"],
+        );
+        assert!(content.contains("Description=Mynd Discord chat bot"));
+        assert!(content.contains("ExecStart=/usr/local/bin/mynd discord run"));
         assert!(content.contains("WantedBy=default.target"));
     }
 
@@ -267,38 +458,99 @@ mod matrix_service_tests {
         // one might expect. Not this task's job to change that; just don't
         // silently break it while adding the parameterization.
         let content = systemd_unit_content(
-            "HiveMind MCP memory server",
-            &std::path::PathBuf::from("/usr/local/bin/hivemind"),
+            "Mynd MCP memory server",
+            &std::path::PathBuf::from("/usr/local/bin/mynd"),
             &[],
-            "/usr/bin:/bin",
         );
-        assert!(content.contains("ExecStart=/usr/local/bin/hivemind\n"));
+        assert!(content.contains("ExecStart=/usr/local/bin/mynd\n"));
     }
 
     #[test]
-    fn systemd_unit_content_bakes_in_the_given_path() {
-        // A bare `[agent] command = "claude"` (the default) only resolves if
-        // the service's PATH includes wherever `claude` actually lives --
-        // systemd user services don't inherit the interactive shell's PATH,
-        // so without this the agent spawn fails with ENOENT even though
-        // `claude` works fine in a terminal.
-        let content = systemd_unit_content(
-            "HiveMind MCP memory server",
-            &std::path::PathBuf::from("/usr/local/bin/hivemind"),
-            &[],
-            "/home/user/.local/bin:/usr/bin:/bin",
+    fn linger_note_enabled_mentions_boot() {
+        assert!(linger_note(&LingerOutcome::Enabled).contains("boot"));
+    }
+
+    #[test]
+    fn linger_note_skipped_explains_how_to_enable_it_later() {
+        let note = linger_note(&LingerOutcome::Skipped);
+        assert!(note.contains("--no-linger"));
+        assert!(note.contains("loginctl enable-linger $USER"));
+    }
+
+    #[test]
+    fn linger_note_failed_surfaces_the_underlying_error() {
+        let note = linger_note(&LingerOutcome::Failed(
+            "Interactive authentication required.".into(),
+        ));
+        assert!(note.contains("Interactive authentication required."));
+        assert!(note.contains("loginctl enable-linger $USER"));
+    }
+
+    #[test]
+    fn service_uninstall_unit_linux_reports_when_nothing_is_installed() {
+        // systemd_unit_path resolves under XDG_CONFIG_HOME/systemd/user, so
+        // pointing it at an empty temp dir guarantees "not installed" without
+        // touching the real machine's systemd user config.
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        }
+        let message = service_uninstall_unit_linux("definitely-not-a-real-mynd-unit").unwrap();
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        assert!(message.contains("is not installed — nothing to do"));
+    }
+
+    #[test]
+    fn service_status_unit_linux_reports_when_nothing_is_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        }
+        let message = service_status_unit_linux("definitely-not-a-real-mynd-unit").unwrap();
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        assert!(message.contains("not installed (expected"));
+    }
+
+    #[test]
+    fn unit_names_carry_the_mynd_name_and_legacy_names_are_the_hivemind_ones() {
+        assert_eq!(CURRENT_UNIT, "mynd");
+        assert_eq!(CURRENT_MATRIX_UNIT, "mynd-matrix");
+        assert_eq!(CURRENT_DISCORD_UNIT, "mynd-discord");
+        assert!(
+            systemd_unit_path(CURRENT_UNIT).ends_with("mynd.service"),
+            "unit path: {}",
+            systemd_unit_path(CURRENT_UNIT).display()
         );
-        assert!(content.contains("Environment=PATH=/home/user/.local/bin:/usr/bin:/bin\n"));
+        assert_eq!(LEGACY_UNITS, ["hivemind", "hivemind-matrix"]);
     }
 }
 
 // ── macOS / launchd ───────────────────────────────────────────────────────────
 
+// Reverse-DNS of the domain oxHive controls (oxhive.dev).
 #[cfg(target_os = "macos")]
-const LAUNCH_AGENT_LABEL: &str = "com.oxhive.hivemind";
+const LAUNCH_AGENT_LABEL: &str = "dev.oxhive.mynd";
 
 #[cfg(target_os = "macos")]
-const MATRIX_LAUNCH_AGENT_LABEL: &str = "com.oxhive.hivemind-matrix";
+const MATRIX_LAUNCH_AGENT_LABEL: &str = "dev.oxhive.mynd-matrix";
+
+/// Labels written by older builds, torn down on install/uninstall so an
+/// upgraded machine does not keep an orphaned LaunchAgent loaded. Covers the
+/// pre-rename name and the earlier `com.oxhive.*` prefix.
+#[cfg(target_os = "macos")]
+const LEGACY_LAUNCH_AGENT_LABELS: [&str; 4] = [
+    "com.oxhive.hivemind",
+    "com.oxhive.hivemind-matrix",
+    "com.oxhive.mynd",
+    "com.oxhive.mynd-matrix",
+];
+
+#[cfg(target_os = "macos")]
+const DISCORD_LAUNCH_AGENT_LABEL: &str = "dev.oxhive.mynd-discord";
 
 #[cfg(target_os = "macos")]
 fn launch_agent_path(label: &str) -> PathBuf {
@@ -344,18 +596,26 @@ fn launch_agent_plist_content(
            <key>KeepAlive</key>\n\
            <true/>\n\
            <key>StandardOutPath</key>\n\
-           <string>{log_dir}/hivemind.log</string>\n\
+           <string>{log_dir}/mynd.log</string>\n\
            <key>StandardErrorPath</key>\n\
-           <string>{log_dir}/hivemind.log</string>\n\
+           <string>{log_dir}/mynd.log</string>\n\
          </dict>\n\
          </plist>\n",
         log_dir = log_dir.display(),
     )
 }
 
+/// Unlike a systemd --user unit, a LaunchAgent has no lingering equivalent:
+/// it only ever starts when this user's launchd session starts, which
+/// happens on login, never unattended at boot — matches wardn's launchd
+/// install, which skips the linger flag entirely for the same reason.
 #[cfg(target_os = "macos")]
-fn service_install_unit_macos(label: &str, exec_args: &[&str], description: &str) -> Result<()> {
-    let exe = std::env::current_exe()?;
+fn service_install_unit_macos(
+    label: &str,
+    exec_args: &[&str],
+    description: &str,
+) -> Result<String> {
+    let exe = std::env::current_exe().context("locating the mynd binary")?;
     let plist_path = launch_agent_path(label);
     // See the systemd path_env comment in service_install_unit_linux: launchd
     // agents get the same minimal-PATH problem, so bake in the PATH from this
@@ -364,73 +624,95 @@ fn service_install_unit_macos(label: &str, exec_args: &[&str], description: &str
         std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
     let plist = launch_agent_plist_content(label, &exe, exec_args, &path_env);
 
-    std::fs::create_dir_all(plist_path.parent().unwrap())?;
-    std::fs::write(&plist_path, &plist)?;
-    println!("Plist written: {}", plist_path.display());
-
-    // Unload first (ignore failure — fine if it wasn't loaded) so re-running
-    // install with different args (e.g. --dashboard after a headless install)
-    // actually restarts the job with the rewritten plist, instead of
-    // `launchctl load` no-op'ing against an already-loaded label.
-    let _ = std::process::Command::new("launchctl")
-        .args(["unload", "-w", plist_path.to_str().unwrap()])
-        .status();
-
-    let load = std::process::Command::new("launchctl")
-        .args(["load", "-w", plist_path.to_str().unwrap()])
-        .status();
-    match load {
-        Ok(s) if s.success() => {
-            println!("{description} loaded and started.");
-        }
-        _ => {
-            println!("Warning: launchctl load failed — run manually:");
-            println!("  launchctl load -w {}", plist_path.display());
-        }
+    if let Some(parent) = plist_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
-    Ok(())
+    std::fs::write(&plist_path, &plist)
+        .with_context(|| format!("writing {}", plist_path.display()))?;
+
+    // Best-effort: unload any stale copy (e.g. from a previous install)
+    // before loading the fresh one, so a reinstall actually picks up
+    // changed args instead of `launchctl load` no-op'ing against an
+    // already-loaded label.
+    let _ = Command::new("launchctl")
+        .args(["unload", "-w", plist_path.to_str().unwrap()])
+        .output();
+    run_ok(Command::new("launchctl").args(["load", "-w", plist_path.to_str().unwrap()]))?;
+
+    Ok(format!(
+        "Installed {} ({description}) and started it (enabled to run on login).",
+        plist_path.display()
+    ))
 }
 
 #[cfg(target_os = "macos")]
-fn service_uninstall_unit_macos(label: &str) -> Result<()> {
+fn service_uninstall_unit_macos(label: &str) -> Result<String> {
     let plist_path = launch_agent_path(label);
-
-    let _ = std::process::Command::new("launchctl")
+    if !plist_path.exists() {
+        return Ok(format!(
+            "{} is not installed — nothing to do",
+            plist_path.display()
+        ));
+    }
+    let _ = Command::new("launchctl")
         .args(["unload", "-w", plist_path.to_str().unwrap()])
-        .status();
-
-    if plist_path.exists() {
-        std::fs::remove_file(&plist_path)?;
-        println!("Removed: {}", plist_path.display());
-    } else {
-        println!("Plist for {label} not found — nothing to remove.");
-    }
-    Ok(())
+        .output();
+    std::fs::remove_file(&plist_path)
+        .with_context(|| format!("removing {}", plist_path.display()))?;
+    Ok(format!("Stopped and removed {}", plist_path.display()))
 }
 
 #[cfg(target_os = "macos")]
-fn service_status_unit_macos(label: &str) -> Result<()> {
-    let output = std::process::Command::new("launchctl")
-        .args(["list", label])
-        .output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if output.status.success() && !stdout.trim().is_empty() {
-        print!("{stdout}");
-    } else {
-        println!("{label} is not loaded.");
-        println!("Run: hivemind service install");
+fn service_status_unit_macos(label: &str) -> Result<String> {
+    let plist_path = launch_agent_path(label);
+    if !plist_path.exists() {
+        return Ok(format!(
+            "{label}: not installed (expected {})",
+            plist_path.display()
+        ));
     }
-    Ok(())
+    match Command::new("launchctl").args(["list", label]).output() {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            Ok(format!(
+                "{label}: installed ({}) — loaded\n{}",
+                plist_path.display(),
+                text.trim()
+            ))
+        }
+        _ => Ok(format!(
+            "{label}: installed ({}) but not loaded — run `mynd service install` again",
+            plist_path.display()
+        )),
+    }
+}
+
+/// Best-effort teardown of LaunchAgents written by a pre-rename (`hivemind`)
+/// build, so an upgraded machine does not run two competing agents.
+#[cfg(target_os = "macos")]
+fn remove_legacy_units_macos() {
+    for label in LEGACY_LAUNCH_AGENT_LABELS {
+        if launch_agent_path(label).exists() {
+            let _ = service_uninstall_unit_macos(label);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn service_install_macos(dashboard: bool, matrix: bool, hive: bool) -> Result<()> {
+fn service_install_macos(
+    dashboard: bool,
+    matrix: bool,
+    hive: bool,
+    discord: bool,
+) -> Result<String> {
+    remove_legacy_units_macos();
     let (args, desc): (&[&str], &str) = if dashboard {
-        (&["up"], "HiveMind server (API + dashboard)")
+        (&["up"], "Mynd server (API + dashboard)")
     } else {
-        (&["up", "--headless"], "HiveMind server (API only)")
+        (&["up", "--headless"], "Mynd server (API only)")
     };
-    service_install_unit_macos(LAUNCH_AGENT_LABEL, args, desc)?;
+    let mut messages = vec![service_install_unit_macos(LAUNCH_AGENT_LABEL, args, desc)?];
 
     if matrix {
         let configured = crate::config::load_matrix_settings(&crate::config::global_config_path())
@@ -438,16 +720,16 @@ fn service_install_macos(dashboard: bool, matrix: bool, hive: bool) -> Result<()
             .flatten()
             .is_some();
         if !configured {
-            anyhow::bail!(
+            bail!(
                 "--matrix was passed but Matrix is not configured.\n\
-                 Run `hivemind matrix login` first, then re-run `hivemind service install --matrix`."
+                 Run `mynd matrix login` first, then re-run `mynd service install --matrix`."
             );
         }
-        service_install_unit_macos(
+        messages.push(service_install_unit_macos(
             MATRIX_LAUNCH_AGENT_LABEL,
             &["matrix", "run"],
-            "HiveMind Matrix chat bot",
-        )?;
+            "Mynd Matrix chat bot",
+        )?);
     }
 
     if hive {
@@ -455,47 +737,72 @@ fn service_install_macos(dashboard: bool, matrix: bool, hive: bool) -> Result<()
             .map(|s| s.hive.enabled)
             .unwrap_or(false);
         if !configured {
-            anyhow::bail!(
+            bail!(
                 "--hive was passed but Hive Mode is not enabled.\n\
-                 Set [hive] enabled = true in ~/.config/hivemind/config.toml first, \
-                 then re-run `hivemind service install --hive`."
+                 Set [hive] enabled = true in ~/.config/mynd/config.toml first, \
+                 then re-run `mynd service install --hive`."
             );
         }
-        // Hive sync runs inside the main `hivemind up` process (unlike the Matrix
+        // Hive sync runs inside the main `mynd up` process (unlike the Matrix
         // bot, which is a wholly separate daemon) -- no separate systemd unit to
         // install here. This block exists purely as the same fail-fast precondition
         // check the --matrix flag already does, for consistency.
     }
 
-    println!();
-    println!("HiveMind will now start automatically on login.");
+    if discord {
+        let configured = crate::config::load_discord_settings(&crate::config::global_config_path())
+            .ok()
+            .flatten()
+            .is_some();
+        if !configured {
+            bail!(
+                "--discord was passed but Discord is not configured.\n\
+                 Run `mynd discord login` first, then re-run `mynd service install --discord`."
+            );
+        }
+        messages.push(service_install_unit_macos(
+            DISCORD_LAUNCH_AGENT_LABEL,
+            &["discord", "run"],
+            "Mynd Discord chat bot",
+        )?);
+    }
+
+    messages.push(String::new());
+    messages.push("Mynd will now start automatically on login.".to_string());
+    messages.push(
+        "This starts again on login, not unattended at boot — see auto-login if this needs \
+         to survive a reboot with nobody signed in."
+            .to_string(),
+    );
     if dashboard {
         let port = crate::config::load_server_settings(&crate::config::global_config_path())
             .map(|s| s.dashboard_port)
-            .unwrap_or(3459);
-        println!("Dashboard: http://127.0.0.1:{port}");
+            .unwrap_or(3457);
+        messages.push(format!("Dashboard: http://127.0.0.1:{port}"));
     }
-    println!("Logs: ~/Library/Logs/hivemind.log");
-    println!("Check status: hivemind service status");
-    Ok(())
+    messages.push("Logs: ~/Library/Logs/mynd.log".to_string());
+    messages.push("Check on it any time with `mynd service status`.".to_string());
+
+    Ok(messages.join("\n"))
 }
 
 #[cfg(target_os = "macos")]
-fn service_uninstall_macos() -> Result<()> {
-    service_uninstall_unit_macos(LAUNCH_AGENT_LABEL)?;
-    if launch_agent_path(MATRIX_LAUNCH_AGENT_LABEL).exists() {
-        service_uninstall_unit_macos(MATRIX_LAUNCH_AGENT_LABEL)?;
-    }
-
-    println!("HiveMind service uninstalled.");
-    Ok(())
+fn service_uninstall_macos() -> Result<String> {
+    remove_legacy_units_macos();
+    let messages = [
+        service_uninstall_unit_macos(LAUNCH_AGENT_LABEL)?,
+        service_uninstall_unit_macos(MATRIX_LAUNCH_AGENT_LABEL)?,
+        service_uninstall_unit_macos(DISCORD_LAUNCH_AGENT_LABEL)?,
+    ];
+    Ok(messages.join("\n"))
 }
 
 #[cfg(target_os = "macos")]
-fn service_status_macos() -> Result<()> {
-    service_status_unit_macos(LAUNCH_AGENT_LABEL)?;
-    if launch_agent_path(MATRIX_LAUNCH_AGENT_LABEL).exists() {
-        service_status_unit_macos(MATRIX_LAUNCH_AGENT_LABEL)?;
-    }
-    Ok(())
+fn service_status_macos() -> Result<String> {
+    let messages = [
+        service_status_unit_macos(LAUNCH_AGENT_LABEL)?,
+        service_status_unit_macos(MATRIX_LAUNCH_AGENT_LABEL)?,
+        service_status_unit_macos(DISCORD_LAUNCH_AGENT_LABEL)?,
+    ];
+    Ok(messages.join("\n"))
 }

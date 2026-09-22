@@ -13,7 +13,7 @@ post {
 body:json {
   {
     "enabled": true,
-    "remote_url": "http://remote-hivemind:3456",
+    "remote_url": "http://remote-mynd:3456",
     "api_key": "your-api-key",
     "interval_seconds": 300,
     "sync_on_store": true,
@@ -23,5 +23,5 @@ body:json {
 
 docs {
   NOTE: In v1, sync settings are read from config.toml — this endpoint always
-  returns saved: false. Edit ~/.config/hivemind/config.toml and restart hivemind.
+  returns saved: false. Edit ~/.config/mynd/config.toml and restart mynd.
 }

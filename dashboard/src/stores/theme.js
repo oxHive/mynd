@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
+import { readStored } from '../lib/localStore'
 
-const STORAGE_KEY = 'hivemind.theme'
+const STORAGE_KEY = 'mynd.theme'
 const MODES = ['system', 'light', 'dark']
 
 export const useThemeStore = defineStore('theme', () => {
-  const stored = localStorage.getItem(STORAGE_KEY)
+  const stored = readStored(STORAGE_KEY)
   const mode = ref(MODES.includes(stored) ? stored : 'system')
 
   const media = window.matchMedia('(prefers-color-scheme: light)')

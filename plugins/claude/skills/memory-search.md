@@ -1,9 +1,9 @@
 ---
 name: memory-search
-description: Search HiveMind memories by keyword. Returns matching memories with snippets. Use when you need to find something stored previously.
+description: Search Mynd memories by keyword. Returns matching memories with snippets. Use when you need to find something stored previously.
 ---
 
-Search HiveMind for memories matching the query in $ARGUMENTS.
+Search Mynd for memories matching the query in $ARGUMENTS.
 
 ## Process
 

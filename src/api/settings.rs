@@ -2,19 +2,29 @@ use super::*;
 
 // --- sync settings (read-only from file in v1) ---
 
-pub(super) async fn get_sync_settings(Extension(sync): Extension<SyncSettings>) -> Json<Value> {
+pub(super) async fn get_sync_settings(
+    Extension(sync): Extension<SyncSettings>,
+    Extension(org_sync): Extension<Option<SyncSettings>>,
+) -> Json<Value> {
     Json(json!({
         "enabled": sync.enabled,
         "remote_url": sync.remote_url,
         "interval_seconds": sync.interval_seconds,
         "sync_on_store": sync.sync_on_store,
         "sync_on_startup": sync.sync_on_startup,
+        "org_sync": org_sync.map(|s| json!({
+            "enabled": s.enabled,
+            "remote_url": s.remote_url,
+            "interval_seconds": s.interval_seconds,
+            "sync_on_store": s.sync_on_store,
+            "sync_on_startup": s.sync_on_startup,
+        })),
     }))
 }
 
 pub(super) async fn save_sync_settings(Json(_): Json<Value>) -> Json<Value> {
     Json(
-        json!({ "saved": false, "message": "Sync settings are managed via config.toml — restart hivemind after editing." }),
+        json!({ "saved": false, "message": "Sync settings are managed via config.toml — restart mynd after editing." }),
     )
 }
 
@@ -86,7 +96,7 @@ fn validate_predefined_namespaces_unchanged(body: &Value) -> Result<(), String> 
             return Err(format!(
                 "namespace {name:?} is predefined and cannot be deleted or modified. \
                  Disable this guard with [tags] guard_predefined_namespaces = false \
-                 in the global hivemind config to allow it."
+                 in the global mynd config to allow it."
             ));
         }
     }

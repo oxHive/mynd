@@ -3,7 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import * as d3 from 'd3'
 import { useMemoriesStore } from '../../stores/memories.js'
 import { useGraphStore } from '../../stores/graph.js'
-import { clusterOutline } from '../../graph/blob.js'
+import { readStored } from '../../lib/localStore.js'
 
 const emit = defineEmits(['node-click', 'node-hover', 'edge-hover'])
 const memories = useMemoriesStore()
@@ -11,27 +11,20 @@ const graph = useGraphStore()
 
 const canvasEl = ref(null)
 const panMode = ref(false)
+const hoveredNodeId = ref(null)
 let sim = null
 let rafId = null
 let nodes = []
 let links = []
 let panning = false
-// While a node is actively being dragged, its directly linked neighbors
-// intentionally ease toward it (via the `link` force) -- but that motion
-// shifts the connected-node centroid forceClusterAnchor/forceProjectCluster
-// anchor everything to, and those forces apply to EVERY node (including
-// edgeless, unrelated ones), not just the ones near the drag. Left alone,
-// a drag's ripple through the shared centroid visibly tugs the whole
-// canvas. Freezing both forces for the drag's duration keeps the tug
-// local to the physics that's supposed to react to it (link/charge/
-// collision) instead of broadcasting it through the anchor forces too.
-let isDraggingNode = false
+let middlePanning = false
+let lastMid = [0, 0]
 
-const CAMERA_KEY = 'hivemind.graph.camera'
+const CAMERA_KEY = 'mynd.graph.camera'
 
 function loadCamera() {
   try {
-    const raw = localStorage.getItem(CAMERA_KEY)
+    const raw = readStored(CAMERA_KEY)
     if (raw) {
       const p = JSON.parse(raw)
       if (typeof p.x === 'number' && typeof p.y === 'number' && typeof p.k === 'number') return p
@@ -44,11 +37,11 @@ function saveCamera() {
   localStorage.setItem(CAMERA_KEY, JSON.stringify(transform))
 }
 
-const PINNED_KEY = 'hivemind.graph.pinned'
+const PINNED_KEY = 'mynd.graph.pinned'
 
 function loadPinned() {
   try {
-    const raw = localStorage.getItem(PINNED_KEY)
+    const raw = readStored(PINNED_KEY)
     return raw ? JSON.parse(raw) : {}
   } catch {
     return {}
@@ -80,6 +73,7 @@ function getThemeColors() {
     themeColors = {
       text: cs.getPropertyValue('--hm-text-primary').trim(),
       draft: cs.getPropertyValue('--hm-warning').trim(),
+      halo: cs.getPropertyValue('--hm-bg-base').trim(),
     }
   }
   return themeColors
@@ -87,6 +81,24 @@ function getThemeColors() {
 
 function toWorld(px, py) {
   return [(px - transform.x) / transform.k, (py - transform.y) / transform.k]
+}
+
+// clientX/Y → canvas CSS-px coords via the bounding-rect ratio. offsetX/Y is
+// wrong here whenever layout scale ≠ visual scale — the app applies CSS zoom
+// on <html> (font-scale setting), which shifted every hitbox by the zoom
+// factor. The rect ratio is correct under CSS zoom and any devicePixelRatio.
+function clientToCanvas(clientX, clientY) {
+  const el = canvasEl.value
+  const rect = el.getBoundingClientRect()
+  return [
+    (clientX - rect.left) / rect.width * el.offsetWidth,
+    (clientY - rect.top) / rect.height * el.offsetHeight,
+  ]
+}
+
+function clientToWorld(clientX, clientY) {
+  const [px, py] = clientToCanvas(clientX, clientY)
+  return toWorld(px, py)
 }
 
 function isEditableTarget(el) {
@@ -120,6 +132,7 @@ const LABEL_MIN_SCALE = 0.55
 const COLORS = {
   personal: '#1d9e75',
   workspace: '#7f77dd',
+  org: '#3d84d9',
   pending: '#ba7517',
 }
 
@@ -144,49 +157,62 @@ const DEFAULT_EDGE_COLOR = '#9a9488'
 // change) instead of scanning `links` on every call — nodeRadius runs once
 // per node per animation frame plus once per node per collision-force tick,
 // so an O(links) scan there was the main cause of drag-time jank.
-// Anchors every node — including edgeless ones — toward the live centroid
-// of the *connected* nodes (the visual cluster), instead of the fixed
-// canvas center. A fixed-center anchor pulls edgeless nodes toward canvas
-// middle even when the cluster itself has drifted elsewhere, which reads as
-// the edgeless nodes "escaping" the cluster.
-function forceClusterAnchor(strength) {
-  let nodesRef = []
-  function force(alpha) {
-    if (isDraggingNode) return
-    let cx = 0, cy = 0, count = 0
-    for (const n of nodesRef) {
-      // A pinned node (dragged, or manually placed) shouldn't pull the
-      // centroid to itself -- otherwise dragging one node drags this
-      // force's target along with it, and every other unpinned node
-      // visibly drifts toward wherever the dragged node currently is.
-      if (n.fx != null && n.fy != null) continue
-      if (n.__degree > 0) { cx += n.x; cy += n.y; count++ }
-    }
-    if (count === 0) return
-    cx /= count
-    cy /= count
-    for (const n of nodesRef) {
-      if (n.fx != null && n.fy != null) continue
-      n.vx += (cx - n.x) * strength * alpha
-      n.vy += (cy - n.y) * strength * alpha
-    }
-  }
-  force.initialize = (ns) => { nodesRef = ns }
-  return force
-}
-
 function nodeRadius(n) {
   return Math.max(10, 10 + (n.__degree || 0) * 1.5)
 }
 
+// Half the on-screen width of a node's label (10px mono ≈ 6px/char, capped
+// at the 20-char truncation draw() applies). Collision must reserve this
+// space or labels stack on top of each other even when the hexes don't touch.
+function labelHalfWidth(n) {
+  return Math.min(n.title?.length || 0, 20) * 3
+}
+
+function collideRadius(n) {
+  return Math.max(nodeRadius(n), labelHalfWidth(n)) + 14
+}
+
+// Non-overlapping cluster centers, one circle per project plus one for
+// un-projected nodes (keyed null). d3.packSiblings guarantees the circles
+// don't intersect, which is what keeps whole clusters from landing on top
+// of each other — per-node forces alone can't prevent that.
+const CLUSTER_NODE_SPACING = 65
+let clusterCenters = new Map()
+
+function computeClusterCenters(nodeList, w, h) {
+  const groups = new Map()
+  for (const n of nodeList) {
+    const key = n.__project ?? null
+    if (!groups.has(key)) groups.set(key, 0)
+    groups.set(key, groups.get(key) + 1)
+  }
+  const circles = [...groups.entries()].map(([key, count]) => ({
+    key,
+    r: CLUSTER_NODE_SPACING * Math.sqrt(count) + 80,
+  }))
+  d3.packSiblings(circles)
+  const centers = new Map()
+  for (const c of circles) centers.set(c.key, { x: w / 2 + c.x, y: h / 2 + c.y })
+  return centers
+}
+
+function centerFor(n) {
+  return clusterCenters.get(n.__project ?? null) || { x: 0, y: 0 }
+}
+
 function hitTestNode(wx, wy) {
+  // Hit padding is specified in screen px and converted to world units via
+  // the current zoom — a fixed world-space padding would shrink to a couple
+  // screen pixels when zoomed out (world coords get compressed on screen),
+  // making the hitbox feel inaccurate at low zoom.
+  const pad = 6 / transform.k
   // Reverse order: nodes later in the array draw on top, so when hexes
   // overlap the click should land on the visible (topmost) one.
   for (let i = nodes.length - 1; i >= 0; i--) {
     const node = nodes[i]
-    const r = nodeRadius(node)
+    const r = nodeRadius(node) + pad
     const dx = wx - node.x, dy = wy - node.y
-    if (dx * dx + dy * dy <= (r + 4) * (r + 4)) return node
+    if (dx * dx + dy * dy <= r * r) return node
   }
   return null
 }
@@ -200,6 +226,19 @@ function projectOf(node) {
 // belongs to — no need to repeat it as a per-node title prefix.
 function nodeLabel(node) {
   return { isDraft: memories.isDraft(node.id), text: node.title }
+}
+
+// Truncates at the last word boundary at or before `max` instead of
+// slicing mid-word — a hard character cut reads as a cut-off word
+// ("preferen…"), a word-boundary cut reads as an intentionally shortened
+// phrase. Falls back to a hard cut only if there's no space to break on
+// (e.g. one long unbroken token).
+function truncateLabel(text, max) {
+  if (text.length <= max) return text
+  const slice = text.slice(0, max)
+  const lastSpace = slice.lastIndexOf(' ')
+  const cut = lastSpace > max * 0.4 ? slice.slice(0, lastSpace) : slice
+  return cut + '…'
 }
 
 // Stable pastel color per project name — same string always hashes to the
@@ -227,110 +266,49 @@ function groupByProject(list) {
   return groups
 }
 
-// Pulls nodes sharing the same project: tag toward their group's centroid,
-// so project clusters visually separate from each other on the canvas.
-function forceProjectCluster(strength) {
-  let nodesRef = []
-  function force(alpha) {
-    if (isDraggingNode) return
-    const groups = groupByProject(nodesRef)
-    for (const members of groups.values()) {
-      if (members.length < 2) continue
-      // Same reasoning as forceClusterAnchor: exclude pinned members from
-      // the centroid itself, not just from receiving the force, or dragging
-      // one member drags the whole project cluster's anchor point with it.
-      let cx = 0, cy = 0, count = 0
-      for (const n of members) {
-        if (n.fx != null && n.fy != null) continue
-        cx += n.x; cy += n.y; count++
-      }
-      if (count === 0) continue
-      cx /= count
-      cy /= count
-      for (const n of members) {
-        if (n.fx != null && n.fy != null) continue
-        n.vx += (cx - n.x) * strength * alpha
-        n.vy += (cy - n.y) * strength * alpha
-      }
-    }
+// Draws the cluster as an axis-aligned rounded rect (dashed border) around a
+// project's nodes, with the project name + count inside the top-left corner —
+// a calculated bounding box instead of a hull-fitted blob, so it reads as a
+// deliberate "group boundary" rather than an organic shape.
+function drawClusterBox(ctx, name, members, hue, scale) {
+  const pad = 30
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity
+  for (const n of members) {
+    const r = nodeRadius(n)
+    minx = Math.min(minx, n.x - r)
+    miny = Math.min(miny, n.y - r)
+    maxx = Math.max(maxx, n.x + r)
+    maxy = Math.max(maxy, n.y + r)
   }
-  force.initialize = (ns) => { nodesRef = ns }
-  return force
-}
+  minx -= pad; miny -= pad; maxx += pad; maxy += pad
 
-// Draws a soft, rounded blob behind a project's nodes — a closed Catmull-Rom-
-// style spline through the padded hull so corners look organic rather than
-// polygonal. Geometry itself (which outline to draw) comes from
-// `clusterOutline` (src/graph/blob.js) so it's unit-testable without canvas.
-function drawClusterBlob(ctx, members, hue) {
-  const pts = members.map(n => [n.x, n.y])
-  const outline = clusterOutline(pts, i => nodeRadius(members[i]))
-  if (!outline) return
-
+  const radius = 14
   ctx.beginPath()
-  if (outline.kind === 'circle') {
-    const [cx, cy] = outline.center
-    ctx.arc(cx, cy, outline.radius, 0, Math.PI * 2)
-  } else if (outline.kind === 'capsule') {
-    const [ax, ay] = outline.a
-    const [bx, by] = outline.b
-    const r = outline.radius
-    const dx = bx - ax, dy = by - ay
-    const len = Math.hypot(dx, dy) || 1
-    const nx = -dy / len, ny = dx / len
-    ctx.moveTo(ax + nx * r, ay + ny * r)
-    ctx.lineTo(bx + nx * r, by + ny * r)
-    ctx.arc(bx, by, r, Math.atan2(ny, nx), Math.atan2(-ny, -nx), true)
-    ctx.lineTo(ax - nx * r, ay - ny * r)
-    ctx.arc(ax, ay, r, Math.atan2(-ny, -nx), Math.atan2(ny, nx), true)
-  } else {
-    const padded = outline.points
-    const n = padded.length
-    for (let i = 0; i < n; i++) {
-      const p0 = padded[(i - 1 + n) % n]
-      const p1 = padded[i]
-      const p2 = padded[(i + 1) % n]
-      const p3 = padded[(i + 2) % n]
-      const cp1x = p1[0] + (p2[0] - p0[0]) / 6
-      const cp1y = p1[1] + (p2[1] - p0[1]) / 6
-      const cp2x = p2[0] - (p3[0] - p1[0]) / 6
-      const cp2y = p2[1] - (p3[1] - p1[1]) / 6
-      if (i === 0) ctx.moveTo(p1[0], p1[1])
-      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2[0], p2[1])
-    }
-  }
+  ctx.moveTo(minx + radius, miny)
+  ctx.arcTo(maxx, miny, maxx, maxy, radius)
+  ctx.arcTo(maxx, maxy, minx, maxy, radius)
+  ctx.arcTo(minx, maxy, minx, miny, radius)
+  ctx.arcTo(minx, miny, maxx, miny, radius)
   ctx.closePath()
+
   ctx.fillStyle = `hsla(${hue}, 65%, 55%, 0.12)`
+  ctx.fill()
   ctx.strokeStyle = `hsla(${hue}, 65%, 55%, 0.4)`
   ctx.lineWidth = 1.5
-  ctx.fill()
+  ctx.setLineDash([5, 4])
   ctx.stroke()
-}
+  ctx.setLineDash([])
 
-// Labels the cluster with its project name, sitting just above the blob so
-// it doesn't collide with node hexes/titles at any zoom level. Drawn at
-// every zoom (not just zoomed-out), since node titles no longer repeat the
-// project name — this is the only place it appears now.
-function drawClusterLabel(ctx, name, members, hue, scale) {
-  let cx = 0, top = Infinity
-  for (const n of members) {
-    cx += n.x
-    top = Math.min(top, n.y - nodeRadius(n))
-  }
-  cx /= members.length
   // Counter-scale the font against the camera zoom so the label stays a
   // roughly constant, readable size on screen as the user scrolls in/out,
   // instead of shrinking or growing along with everything else in world space.
-  const screenPx = 17
-  const worldPx = Math.min(48, screenPx / Math.max(scale, 0.05))
+  const screenPx = 12
+  const worldPx = Math.min(32, screenPx / Math.max(scale, 0.05))
   ctx.font = `bold ${worldPx}px "IBM Plex Mono", monospace`
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'bottom'
-  ctx.fillStyle = `hsla(${hue}, 70%, 40%, 0.9)`
-  // 30 clears the blob's hull padding (see drawClusterBlob), 14 is a small gap above it.
-  ctx.fillText(name, cx, top - 30 - 14)
   ctx.textAlign = 'left'
   ctx.textBaseline = 'alphabetic'
+  ctx.fillStyle = `hsla(${hue}, 70%, 40%, 0.92)`
+  ctx.fillText(`${name.toUpperCase()} · ${members.length}`, minx + 10, miny + worldPx + 6)
 }
 
 // Draws a filled triangle at `tip`, oriented along the from->tip direction —
@@ -366,11 +344,14 @@ function draw() {
   const canvas = canvasEl.value
   if (!canvas) return
   const ctx = canvas.getContext('2d')
-  const w = canvas.width
-  const h = canvas.height
-  ctx.clearRect(0, 0, w, h)
+  // Backing store is devicePixelRatio-scaled for crisp text; camera math
+  // stays in CSS px with the dpr factor baked into the base transform.
+  const dpr = window.devicePixelRatio || 1
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
 
   ctx.save()
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.translate(transform.x, transform.y)
   ctx.scale(transform.k, transform.k)
 
@@ -381,8 +362,21 @@ function draw() {
   // Draw project clusters — soft outline behind everything else.
   const projectGroups = groupByProject(nodes)
   for (const [name, members] of projectGroups) {
-    drawClusterBlob(ctx, members, projectColor(name))
-    drawClusterLabel(ctx, name, members, projectColor(name), transform.k)
+    drawClusterBox(ctx, name, members, projectColor(name), transform.k)
+  }
+
+  // Neighbor highlight: hovering (falling back to the selected node) dims
+  // every node/edge outside that node's 1-hop neighborhood, so the
+  // relationship it participates in reads clearly against the rest of the graph.
+  const activeId = hoveredNodeId.value || graph.selectedNodeId
+  let activeNeighbors = null
+  if (activeId) {
+    activeNeighbors = new Set([activeId])
+    for (const link of links) {
+      const sId = link.source?.id, tId = link.target?.id
+      if (sId === activeId) activeNeighbors.add(tId)
+      if (tId === activeId) activeNeighbors.add(sId)
+    }
   }
 
   // Draw edges — anchored to each node's boundary (not center) along the
@@ -421,6 +415,9 @@ function draw() {
       ctx.globalAlpha = 1
       ctx.lineWidth = 3.5
     }
+    if (activeNeighbors && !(activeNeighbors.has(link.source?.id) && activeNeighbors.has(link.target?.id))) {
+      ctx.globalAlpha *= 0.12
+    }
     ctx.moveTo(sx, sy)
     ctx.lineTo(tx, ty)
     ctx.stroke()
@@ -442,7 +439,7 @@ function draw() {
 
   // Draw nodes
   const query = graph.searchQuery.trim().toLowerCase()
-  const { text: textColor, draft: draftColor } = getThemeColors()
+  const { text: textColor, draft: draftColor, halo: haloColor } = getThemeColors()
   for (const node of nodes) {
     const r = nodeRadius(node)
     const isSelected = graph.selectedNodeId === node.id
@@ -461,17 +458,19 @@ function draw() {
       ctx.globalAlpha = 1
     }
 
+    const isNeighbor = !activeNeighbors || activeNeighbors.has(node.id)
+
     traceHex(ctx, node.x, node.y, r)
     ctx.fillStyle = color
-    ctx.globalAlpha = !isMatch ? 0.15 : isSelected ? 1 : 0.72
+    ctx.globalAlpha = !isMatch ? 0.15 : !isNeighbor ? 0.12 : isSelected ? 1 : 0.72
     ctx.fill()
     ctx.globalAlpha = 1
 
     // Label at zoom >= 2, always for the selected node — suppressed once
     // the camera is zoomed out far enough that text would be illegible.
-    if (showNodeLabels && ((graph.zoom >= 2 && isMatch) || isSelected)) {
+    if (showNodeLabels && ((graph.zoom >= 2 && isMatch && isNeighbor) || isSelected || node.id === activeId)) {
       const label = nodeLabel(node)
-      const text = label.text.slice(0, 20)
+      const text = truncateLabel(label.text, 20)
       const draftPrefix = label.isDraft ? '[DRAFT] ' : ''
       ctx.font = '10px "IBM Plex Mono", monospace'
       ctx.textAlign = 'left'
@@ -479,6 +478,12 @@ function draw() {
       const textWidth = ctx.measureText(text).width
       const startX = node.x - (prefixWidth + textWidth) / 2
       const y = node.y + r + 13
+      // Halo keeps labels legible where they cross edges or cluster fills.
+      ctx.strokeStyle = haloColor
+      ctx.lineWidth = 3
+      ctx.lineJoin = 'round'
+      if (draftPrefix) ctx.strokeText(draftPrefix, startX, y)
+      ctx.strokeText(text, startX + prefixWidth, y)
       if (draftPrefix) {
         ctx.fillStyle = draftColor
         ctx.fillText(draftPrefix, startX, y)
@@ -531,6 +536,17 @@ function syncData() {
   scheduleDraw()
 }
 
+// Once the layout settles every node gets pinned in place. From then on the
+// simulation only ever repositions *new* nodes (everything pre-existing is
+// fixed), so a drag or an SSE refresh can never make the rest of the graph
+// drift — the main complaint with a permanently-live simulation.
+function freezeLayout() {
+  for (const n of nodes) {
+    if (n.fx == null) { n.fx = n.x; n.fy = n.y }
+  }
+  draw()
+}
+
 function startSimulation(force = false) {
   const key = topologyKey()
   if (!force && sim && key === lastTopologyKey) {
@@ -541,18 +557,26 @@ function startSimulation(force = false) {
 
   if (sim) sim.stop()
   const canvas = canvasEl.value
-  const w = canvas?.width || 800
-  const h = canvas?.height || 600
+  const w = canvas?.offsetWidth || 800
+  const h = canvas?.offsetHeight || 600
   const pinned = loadPinned()
 
   const prevById = new Map(nodes.map(n => [n.id, n]))
-  nodes = nodeData.value.map(n => {
+  const staged = nodeData.value.map(n => ({ ...n, __project: projectOf(n) }))
+  clusterCenters = computeClusterCenters(staged, w, h)
+
+  nodes = staged.map(n => {
     const existing = prevById.get(n.id)
-    const base = existing
-      ? { ...n, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx, fy: existing.fy }
-      : (pinned[n.id] ? { ...n, x: pinned[n.id].x, y: pinned[n.id].y, fx: pinned[n.id].x, fy: pinned[n.id].y } : { ...n })
-    base.__project = projectOf(n)
-    return base
+    if (existing) {
+      return { ...n, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx, fy: existing.fy }
+    }
+    if (pinned[n.id]) {
+      return { ...n, x: pinned[n.id].x, y: pinned[n.id].y, fx: pinned[n.id].x, fy: pinned[n.id].y }
+    }
+    // New node: seed near its cluster center so the settle pass only has to
+    // resolve local overlap instead of hauling it across the canvas.
+    const c = centerFor(n)
+    return { ...n, x: c.x + (Math.random() - 0.5) * 60, y: c.y + (Math.random() - 0.5) * 60 }
   })
 
   // Drop links whose endpoints aren't in the node set. The DB cascades edge
@@ -572,30 +596,35 @@ function startSimulation(force = false) {
   }
 
   sim = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(links).id(d => d.id).distance(80).strength(0.3))
-    // distanceMax bounds charge to nearby nodes — without it, dragging one
-    // node perturbs the pairwise repulsion balance for every node in the
-    // graph, including ones with no edges, so edgeless nodes would drift
-    // away from the cluster on every drag.
-    .force('charge', d3.forceManyBody().strength(-200).distanceMax(300))
-    // Weak forceX/forceY instead of forceCenter: forceCenter rigidly
-    // translates ALL nodes (including pinned ones, which then snap back to
-    // fx/fy) to keep the mean at canvas center — with any pinned node away
-    // from center that tug-of-war repeats every tick and shows up as the
-    // unpinned nodes slowly drifting. forceX/Y act through velocity, which
-    // fixed nodes simply ignore, so pinning is conflict-free.
-    .force('x', d3.forceX(w / 2).strength(0.02))
-    .force('y', d3.forceY(h / 2).strength(0.02))
-    .force('clusterAnchor', forceClusterAnchor(0.03))
-    .force('projectCluster', forceProjectCluster(0.08))
-    .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 8))
+    .force('link', d3.forceLink(links).id(d => d.id).distance(130).strength(0.3))
+    // distanceMax bounds charge to nearby nodes so repulsion stays local to
+    // a cluster instead of pushing whole clusters apart from the packing
+    // centers they were assigned.
+    .force('charge', d3.forceManyBody().strength(-350).distanceMax(350))
+    // Per-node pull toward the node's packed cluster center — this is what
+    // holds each project's nodes inside its own non-overlapping circle.
+    .force('x', d3.forceX(d => centerFor(d).x).strength(0.08))
+    .force('y', d3.forceY(d => centerFor(d).y).strength(0.08))
+    // Collision reserves label width, not just the hex — labels were the
+    // thing actually overlapping at nodeRadius + 8.
+    .force('collision', d3.forceCollide().radius(collideRadius))
     .on('tick', scheduleDraw)
-    .on('end', draw)
+    .on('end', freezeLayout)
+}
+
+// Full re-layout on demand: forget pins (user drags included), repack the
+// clusters, and let the simulation settle fresh.
+function relayout() {
+  localStorage.removeItem(PINNED_KEY)
+  for (const n of nodes) { n.fx = null; n.fy = null }
+  const canvas = canvasEl.value
+  clusterCenters = computeClusterCenters(nodes, canvas?.offsetWidth || 800, canvas?.offsetHeight || 600)
+  sim?.alpha(1).restart()
 }
 
 function handleClick(e) {
   if (panMode.value) return
-  const [mx, my] = toWorld(e.offsetX, e.offsetY)
+  const [mx, my] = clientToWorld(e.clientX, e.clientY)
   const node = hitTestNode(mx, my)
   if (node) {
     graph.selectedNodeId = node.id
@@ -613,15 +642,32 @@ function ptSegDist(px, py, ax, ay, bx, by) {
   return Math.hypot(px - ax - t * dx, py - ay - t * dy)
 }
 
+function handleMouseLeave() {
+  if (hoveredNodeId.value !== null) {
+    hoveredNodeId.value = null
+    scheduleDraw()
+  }
+  emit('node-hover', null)
+  emit('edge-hover', null)
+}
+
 function handleMouseMove(e) {
   if (panMode.value) {
     canvasEl.value.style.cursor = panning ? 'grabbing' : 'grab'
+    if (hoveredNodeId.value !== null) {
+      hoveredNodeId.value = null
+      scheduleDraw()
+    }
     emit('node-hover', null)
     emit('edge-hover', null)
     return
   }
-  const [mx, my] = toWorld(e.offsetX, e.offsetY)
+  const [mx, my] = clientToWorld(e.clientX, e.clientY)
   const foundNode = hitTestNode(mx, my)
+  if (hoveredNodeId.value !== (foundNode?.id ?? null)) {
+    hoveredNodeId.value = foundNode?.id ?? null
+    scheduleDraw()
+  }
   emit('node-hover', foundNode)
 
   let foundEdge = null
@@ -639,27 +685,70 @@ function handleMouseMove(e) {
   canvasEl.value.style.cursor = foundNode ? 'pointer' : 'default'
 }
 
+// Two-finger trackpad scroll fires as a plain (non-ctrl) wheel event —
+// d3.zoom would normally treat that as zoom, same as mouse-wheel. In pan
+// mode we want it to pan instead, so it's intercepted here and blocked from
+// reaching d3.zoom's own wheel handler via the filter below. A trackpad
+// pinch gesture still carries ctrlKey, so that's left alone to zoom.
+function handleWheel(e) {
+  if (!panMode.value || e.ctrlKey) return
+  e.preventDefault()
+  const newX = transform.x - e.deltaX
+  const newY = transform.y - e.deltaY
+  d3.select(canvasEl.value).call(zoomBehavior.transform, d3.zoomIdentity.translate(newX, newY).scale(transform.k))
+}
+
+// Middle-mouse-button drag pans regardless of pan-mode state — matches the
+// convention in most canvas/design tools where the scroll-wheel click is a
+// dedicated pan gesture independent of whichever tool is active.
+function handleMouseDown(e) {
+  if (e.button !== 1) return
+  e.preventDefault()
+  middlePanning = true
+  lastMid = [e.clientX, e.clientY]
+  canvasEl.value.style.cursor = 'grabbing'
+}
+
+function handleWindowMouseMove(e) {
+  if (!middlePanning) return
+  const dx = e.clientX - lastMid[0]
+  const dy = e.clientY - lastMid[1]
+  lastMid = [e.clientX, e.clientY]
+  const newX = transform.x + dx
+  const newY = transform.y + dy
+  d3.select(canvasEl.value).call(zoomBehavior.transform, d3.zoomIdentity.translate(newX, newY).scale(transform.k))
+}
+
+function handleWindowMouseUp(e) {
+  if (e.button !== 1 || !middlePanning) return
+  middlePanning = false
+  saveCamera()
+  canvasEl.value.style.cursor = panMode.value ? 'grab' : 'default'
+}
+
 let ro = null
 let themeObserver = null
 onMounted(() => {
   ro = new ResizeObserver(() => {
     const canvas = canvasEl.value
     if (!canvas) return
-    canvas.width = canvas.offsetWidth
-    canvas.height = canvas.offsetHeight
-    // A resize doesn't change the graph — rebuilding the simulation here
-    // reset alpha to 1 on every window resize and made the layout churn.
-    // Just retarget the centering forces at the new canvas center and repaint.
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = canvas.offsetWidth * dpr
+    canvas.height = canvas.offsetHeight * dpr
+    // A resize doesn't change the graph — the settled (frozen) layout stays
+    // where it is; just resize the backing store and repaint.
     if (!sim) {
       startSimulation(true)
       return
     }
-    sim.force('x')?.x(canvas.width / 2)
-    sim.force('y')?.y(canvas.height / 2)
     scheduleDraw()
   })
   ro.observe(canvasEl.value.parentElement)
   window.addEventListener('keydown', handleKeydown)
+  canvasEl.value.addEventListener('wheel', handleWheel, { passive: false })
+  canvasEl.value.addEventListener('mousedown', handleMouseDown)
+  window.addEventListener('mousemove', handleWindowMouseMove)
+  window.addEventListener('mouseup', handleWindowMouseUp)
 
   // Theme flips restyle CSS variables — drop the cached canvas colors and
   // repaint (the canvas doesn't react to CSS changes on its own).
@@ -668,7 +757,13 @@ onMounted(() => {
 
   zoomBehavior = d3.zoom()
     .scaleExtent([0.2, 5])
-    .filter(event => event.type === 'wheel' || panMode.value)
+    // In pan mode, a plain wheel event (trackpad two-finger scroll) is
+    // handled by handleWheel instead — only a ctrlKey wheel (pinch-zoom)
+    // is left for d3.zoom to treat as zoom.
+    .filter(event => {
+      if (event.type === 'wheel') return !panMode.value || event.ctrlKey
+      return panMode.value
+    })
     .on('start', event => {
       if (panMode.value && event.sourceEvent?.type !== 'wheel') {
         panning = true
@@ -692,19 +787,17 @@ onMounted(() => {
   sel.call(zoomBehavior)
   sel.call(zoomBehavior.transform, d3.zoomIdentity.translate(transform.x, transform.y).scale(transform.k))
 
+  // Dragging never restarts the simulation: after freezeLayout every other
+  // node is fixed, so moving one node just moves that node — its edges follow
+  // in draw(), and nothing else can drift.
   const dragBehavior = d3.drag()
     .filter(() => !panMode.value)
     .subject(event => {
-      // `event.x`/`event.y` here are relative to d3.drag's container (the
-      // canvas's parentNode by default), not the canvas itself -- every
-      // other hit-test in this file uses the raw event's canvas-relative
-      // `offsetX`/`offsetY` instead, so use the same via `sourceEvent`.
-      const [mx, my] = toWorld(event.sourceEvent.offsetX, event.sourceEvent.offsetY)
+      const [mx, my] = clientToWorld(event.sourceEvent.clientX, event.sourceEvent.clientY)
       return hitTestNode(mx, my)
     })
     .on('start', event => {
       if (!event.subject) return
-      isDraggingNode = true
       event.subject.__wasPinned = event.subject.fx != null
       event.subject.fx = event.subject.x
       event.subject.fy = event.subject.y
@@ -714,13 +807,11 @@ onMounted(() => {
       // ENTIRE connected component along with it, edge by edge, well beyond
       // just the directly-linked neighbors -- confirmed by direct testing:
       // moving one degree-6 node 400px moved 36 of 39 other nodes, some by
-      // 400+px, within a couple of ticks. Freezing clusterAnchor/
-      // projectCluster during a drag (see isDraggingNode elsewhere) doesn't
-      // touch this, since it's forceLink itself doing it. Temporarily pin
-      // every other unpinned node in place for the drag's duration so only
-      // the dragged node visibly moves; they're released on drag end and
-      // ease into their new equilibrium then, once, instead of continuously
-      // jostling throughout the drag.
+      // 400+px, within a couple of ticks. Temporarily pin every other
+      // unpinned node in place for the drag's duration so only the dragged
+      // node visibly moves; they're released on drag end and ease into
+      // their new equilibrium then, once, instead of continuously jostling
+      // throughout the drag.
       for (const n of nodes) {
         if (n === event.subject || n.fx != null) continue
         n.__tempPinned = true
@@ -735,14 +826,15 @@ onMounted(() => {
     })
     .on('drag', event => {
       if (!event.subject) return
-      const [wx, wy] = toWorld(event.sourceEvent.offsetX, event.sourceEvent.offsetY)
+      const [wx, wy] = clientToWorld(event.sourceEvent.clientX, event.sourceEvent.clientY)
       event.subject.fx = wx
       event.subject.fy = wy
+      event.subject.x = wx
+      event.subject.y = wy
       scheduleDraw()
     })
     .on('end', event => {
       if (!event.subject) return
-      isDraggingNode = false
       sim?.alphaTarget(0)
       for (const n of nodes) {
         if (!n.__tempPinned) continue
@@ -771,9 +863,14 @@ onUnmounted(() => {
   sim?.stop()
   if (rafId) cancelAnimationFrame(rafId)
   window.removeEventListener('keydown', handleKeydown)
+  canvasEl.value?.removeEventListener('wheel', handleWheel)
+  canvasEl.value?.removeEventListener('mousedown', handleMouseDown)
+  window.removeEventListener('mousemove', handleWindowMouseMove)
+  window.removeEventListener('mouseup', handleWindowMouseUp)
 })
 
 watch([nodeData, linkData], () => startSimulation())
+watch(() => graph.relayoutSeq, relayout)
 watch([() => graph.zoom, () => graph.searchQuery, () => graph.layerFilter, () => graph.tagFilter, () => graph.selectedNodeId, () => graph.selectedEdgeId], scheduleDraw)
 </script>
 
@@ -782,5 +879,6 @@ watch([() => graph.zoom, () => graph.searchQuery, () => graph.layerFilter, () =>
     style="background:var(--hm-bg-base)"
     @click="handleClick"
     @mousemove="handleMouseMove"
+    @mouseleave="handleMouseLeave"
   ></canvas>
 </template>

@@ -9,12 +9,38 @@ pub(super) async fn get_update_state(
     ))
 }
 
+/// Applying an update replaces the running binary and re-execs the
+/// process, so it must never be reachable by accident. The JSON body
+/// (`{"confirm": true}`) means a browser can only send this with a CORS
+/// preflight, which the allowlist rejects for foreign origins; the
+/// `api::guard` Origin check is the second line.
+#[derive(Deserialize)]
+pub(super) struct ApplyBody {
+    #[serde(default)]
+    confirm: bool,
+}
+
 pub(super) async fn apply_update(
     Extension(update_state): Extension<SharedUpdateState>,
     Extension(events): Extension<Events>,
+    Json(body): Json<ApplyBody>,
 ) -> Result<Json<Value>, ApiError> {
+    if !body.confirm {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "applying an update requires {\"confirm\": true}".into(),
+        ));
+    }
     {
         let mut s = update_state.write().await;
+        if !s.apply_enabled {
+            return Err(ApiError(
+                StatusCode::FORBIDDEN,
+                "self-update via the API is disabled ([update] allow_apply_from_api = false); \
+                 run `mynd update apply` instead"
+                    .into(),
+            ));
+        }
         if s.status == UpdateStatus::Updating {
             return Err(ApiError(
                 StatusCode::CONFLICT,

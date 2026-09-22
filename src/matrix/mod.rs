@@ -1,4 +1,3 @@
-pub mod agent;
 pub mod commands;
 pub mod daemon;
 pub mod keyring_store;

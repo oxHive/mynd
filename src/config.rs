@@ -17,7 +17,7 @@ pub struct Recall {
 }
 
 #[derive(Debug, Clone)]
-pub struct HiveMindConfig {
+pub struct MyndConfig {
     pub project_name: String,
     pub max_tokens: usize,
     pub recalls: Vec<Recall>,
@@ -117,6 +117,7 @@ struct RawSync {
 struct RawUpdate {
     enabled: Option<bool>,
     check_interval_seconds: Option<u64>,
+    allow_apply_from_api: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -157,6 +158,25 @@ struct RawMatrixRoom {
     base_tags: Vec<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RawDiscord {
+    application_id: Option<String>,
+    #[serde(default)]
+    allowed_users: Vec<String>,
+    permission_gate: Option<String>,
+    #[serde(default)]
+    channels: Vec<RawDiscordChannel>,
+    session_ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawDiscordChannel {
+    channel_id: Option<String>,
+    alias: Option<String>,
+    #[serde(default)]
+    base_tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSettings {
     pub enabled: bool,
@@ -184,6 +204,10 @@ impl Default for SyncSettings {
 pub struct UpdateSettings {
     pub enabled: bool,
     pub check_interval_seconds: u64,
+    /// Whether the dashboard (`POST /api/v1/update/apply`) may trigger a
+    /// self-update and restart. `mynd update apply` on the CLI is always
+    /// available.
+    pub allow_apply_from_api: bool,
 }
 
 impl Default for UpdateSettings {
@@ -191,6 +215,7 @@ impl Default for UpdateSettings {
         UpdateSettings {
             enabled: true,
             check_interval_seconds: 600,
+            allow_apply_from_api: true,
         }
     }
 }
@@ -224,7 +249,7 @@ impl Default for HiveSettings {
     }
 }
 
-/// Which headless-agent CLI `hivemind suggest` / the Matrix bot shell out to.
+/// Which headless-agent CLI `mynd suggest` / the Matrix bot shell out to.
 /// Explicit rather than sniffed from `command`'s file name, so a wrapper
 /// script or a renamed binary doesn't silently change which flags get used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +328,25 @@ pub struct MatrixSettings {
     pub session_ttl_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscordChannelMapping {
+    pub channel_id: String,
+    pub alias: Option<String>,
+    pub base_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscordSettings {
+    pub application_id: String,
+    pub allowed_users: Vec<String>,
+    /// One of `"manage_guild"`, `"administrator"`, `"manage_channels"`,
+    /// `"manage_messages"`, `"kick_members"`, `"ban_members"` — or `None` to
+    /// leave `/hm` open to every guild member (the default).
+    pub permission_gate: Option<String>,
+    pub channels: Vec<DiscordChannelMapping>,
+    pub session_ttl_seconds: u64,
+}
+
 pub const DEFAULT_SESSION_TTL_SECONDS: u64 = 120;
 
 #[derive(Debug, Default, Deserialize)]
@@ -316,11 +360,15 @@ struct RawGlobal {
     #[serde(default)]
     sync: RawSync,
     #[serde(default)]
+    org_sync: RawSync,
+    #[serde(default)]
     update: RawUpdate,
     #[serde(default)]
     agent: RawAgent,
     #[serde(default)]
     matrix: RawMatrix,
+    #[serde(default)]
+    discord: RawDiscord,
     #[serde(default)]
     tags: RawTags,
     #[serde(default)]
@@ -332,42 +380,77 @@ struct RawDefaults {
     max_inject_tokens: Option<usize>,
 }
 
+/// Project config filename, current then legacy. `discover_project_root` and
+/// `load_config_with_global` accept either; a not-yet-migrated repo keeps
+/// working with `.hivemind.toml`.
+pub const PROJECT_CONFIG_NAMES: [&str; 2] = [".mynd.toml", ".hivemind.toml"];
+pub const PROJECT_LOCAL_CONFIG_NAMES: [&str; 2] = [".mynd.local.toml", ".hivemind.local.toml"];
+
+/// Path to the project config in `root`, preferring the current name and
+/// falling back to the legacy one. Returns the current-name path when neither
+/// exists (callers surface that as "no config found").
+pub fn project_config_file(root: &Path) -> PathBuf {
+    PROJECT_CONFIG_NAMES
+        .iter()
+        .map(|n| root.join(n))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| root.join(PROJECT_CONFIG_NAMES[0]))
+}
+
+fn project_local_config_file(root: &Path) -> Option<PathBuf> {
+    PROJECT_LOCAL_CONFIG_NAMES
+        .iter()
+        .map(|n| root.join(n))
+        .find(|p| p.is_file())
+}
+
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
     let start = start.canonicalize().ok()?;
     let mut dir: &Path = &start;
     loop {
-        if dir.join(".hivemind.toml").is_file() {
+        if PROJECT_CONFIG_NAMES.iter().any(|n| dir.join(n).is_file()) {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;
     }
 }
 
-pub fn global_config_dir() -> PathBuf {
+fn config_base() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("hivemind");
+        return PathBuf::from(xdg);
     }
-    let home = std::env::var_os("HOME")
+    std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".config").join("hivemind")
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+}
+
+pub fn global_config_dir() -> PathBuf {
+    config_base().join("mynd")
+}
+
+/// Pre-rename global config dir (`hivemind` instead of `mynd`); source for the
+/// one-time directory relocation in [`crate::dir_migrate`].
+pub fn legacy_global_config_dir() -> PathBuf {
+    config_base().join("hivemind")
 }
 
 pub fn global_config_path() -> PathBuf {
     global_config_dir().join("config.toml")
 }
 
-pub fn load_config(project_path: &Path) -> Result<HiveMindConfig> {
+pub fn load_config(project_path: &Path) -> Result<MyndConfig> {
     let root = discover_project_root(project_path).ok_or_else(|| {
         anyhow::anyhow!(
-            "no .hivemind.toml found at or above {}",
+            "no {} found at or above {}",
+            PROJECT_CONFIG_NAMES[0],
             project_path.display()
         )
     })?;
     load_config_with_global(&root, &global_config_path())
 }
 
-pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Result<HiveMindConfig> {
+pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Result<MyndConfig> {
     let global_default = if global_path.is_file() {
         let raw: RawGlobal = toml::from_str(&std::fs::read_to_string(global_path)?)
             .with_context(|| format!("parsing {}", global_path.display()))?;
@@ -376,7 +459,7 @@ pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Resul
         None
     };
 
-    let project_file = project_root.join(".hivemind.toml");
+    let project_file = project_config_file(project_root);
     let raw_project: RawProject = toml::from_str(
         &std::fs::read_to_string(&project_file)
             .with_context(|| format!("reading {}", project_file.display()))?,
@@ -401,9 +484,8 @@ pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Resul
         })
         .collect();
 
-    let local_file = project_root.join(".hivemind.local.toml");
     let mut max_tokens = base_max;
-    if local_file.is_file() {
+    if let Some(local_file) = project_local_config_file(project_root) {
         let raw_local: RawLocal = toml::from_str(&std::fs::read_to_string(&local_file)?)
             .with_context(|| format!("parsing {}", local_file.display()))?;
         max_tokens =
@@ -425,7 +507,7 @@ pub fn load_config_with_global(project_root: &Path, global_path: &Path) -> Resul
         raw_project.project.name
     };
 
-    Ok(HiveMindConfig {
+    Ok(MyndConfig {
         project_name,
         max_tokens,
         recalls,
@@ -448,6 +530,10 @@ pub struct ServerSettings {
     /// via a custom hostname (e.g. `http://pi.local:3459`).
     pub cors_origin: String,
     pub sync: SyncSettings,
+    /// The org-layer sync connection, if `[org_sync]` is configured and
+    /// enabled with a non-empty `remote_url`. `None` means the org layer is
+    /// unavailable — every org-layer code path must degrade cleanly on `None`.
+    pub org_sync: Option<SyncSettings>,
     pub update: UpdateSettings,
     pub agent: AgentSettings,
     pub hive: HiveSettings,
@@ -458,6 +544,66 @@ pub struct ServerSettings {
     pub guard_predefined_namespaces: bool,
 }
 
+/// Env vars that override the `api_key` fields in the global config, so the
+/// sync credentials never have to be written to disk at all.
+pub const SYNC_API_KEY_ENV: &str = "MYND_SYNC_API_KEY";
+pub const ORG_SYNC_API_KEY_ENV: &str = "MYND_ORG_SYNC_API_KEY";
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// Writes `contents` to `path` atomically with mode 0600 (owner-only), for
+/// files that may hold credentials: the global config carries the sync
+/// `api_key`. Same temp-file-then-rename pattern as `cli::write_atomic`.
+pub fn write_private_file(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+    let tmp = parent.join(format!(".{file_name}.mynd-tmp"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&tmp)?;
+    f.write_all(contents.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    {
+        // The rename keeps the temp file's mode, but tighten an existing
+        // destination that was created 0644 by an older build too.
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// True if `path` is readable by group or others. Only meaningful on Unix;
+/// elsewhere always false.
+pub fn is_readable_by_others(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o077 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<ServerSettings> {
     let raw: RawGlobal = if global_path.is_file() {
         toml::from_str(&std::fs::read_to_string(global_path)?)
@@ -465,37 +611,73 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
     } else {
         RawGlobal::default()
     };
+    let file_has_key = raw.sync.api_key.as_deref().is_some_and(|k| !k.is_empty())
+        || raw
+            .org_sync
+            .api_key
+            .as_deref()
+            .is_some_and(|k| !k.is_empty());
+    if file_has_key && is_readable_by_others(global_path) {
+        tracing::warn!(
+            "{} holds a sync api_key but is readable by other users; run `chmod 600 {}` \
+             or move the key to the {SYNC_API_KEY_ENV} / {ORG_SYNC_API_KEY_ENV} env vars",
+            global_path.display(),
+            global_path.display()
+        );
+    }
     let host = raw.server.host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = raw.server.port.unwrap_or(3456);
     // Not 3457/3458: those are `port + 1` (hive mTLS sync) and `port + 2`
     // (hive pairing listener) at the default `port` of 3456 -- both bind
     // whenever hive is enabled, and this default must not collide with them.
     let dashboard_port = raw.dashboard.port.unwrap_or(3459);
-    let api_url = raw
-        .dashboard
-        .api_url
-        .unwrap_or_else(|| format!("http://{host}:{port}"));
-    // For the CORS origin default, wildcard bind addresses (0.0.0.0 / ::) are
-    // not valid browser origins, so fall back to the loopback address.
-    let cors_host = match host.as_str() {
+    // Wildcard bind addresses (0.0.0.0 / ::) are not something a browser can
+    // dial, so every browser-facing default — the dashboard's own origin
+    // (cors_origin) and the URL it's told to call the API at (api_url) —
+    // falls back to loopback instead. An explicit override in either field
+    // still wins.
+    let browser_host = match host.as_str() {
         "0.0.0.0" | "::" => "127.0.0.1",
         h => h,
     };
+    let api_url = raw
+        .dashboard
+        .api_url
+        .unwrap_or_else(|| format!("http://{browser_host}:{port}"));
     let cors_origin = raw
         .dashboard
         .cors_origin
-        .unwrap_or_else(|| format!("http://{cors_host}:{dashboard_port}"));
+        .unwrap_or_else(|| format!("http://{browser_host}:{dashboard_port}"));
     let sync = SyncSettings {
         enabled: raw.sync.enabled.unwrap_or(false),
         remote_url: raw.sync.remote_url.unwrap_or_default(),
-        api_key: raw.sync.api_key.unwrap_or_default(),
+        api_key: env_non_empty(SYNC_API_KEY_ENV)
+            .unwrap_or_else(|| raw.sync.api_key.unwrap_or_default()),
         interval_seconds: raw.sync.interval_seconds.unwrap_or(300),
         sync_on_store: raw.sync.sync_on_store.unwrap_or(true),
         sync_on_startup: raw.sync.sync_on_startup.unwrap_or(true),
     };
+    let org_sync = {
+        let enabled = raw.org_sync.enabled.unwrap_or(false);
+        let remote_url = raw.org_sync.remote_url.unwrap_or_default();
+        if enabled && !remote_url.is_empty() {
+            Some(SyncSettings {
+                enabled: true,
+                remote_url,
+                api_key: env_non_empty(ORG_SYNC_API_KEY_ENV)
+                    .unwrap_or_else(|| raw.org_sync.api_key.unwrap_or_default()),
+                interval_seconds: raw.org_sync.interval_seconds.unwrap_or(300),
+                sync_on_store: raw.org_sync.sync_on_store.unwrap_or(true),
+                sync_on_startup: raw.org_sync.sync_on_startup.unwrap_or(true),
+            })
+        } else {
+            None
+        }
+    };
     let update = UpdateSettings {
         enabled: raw.update.enabled.unwrap_or(true),
         check_interval_seconds: raw.update.check_interval_seconds.unwrap_or(600),
+        allow_apply_from_api: raw.update.allow_apply_from_api.unwrap_or(true),
     };
     let agent_command = raw.agent.command.unwrap_or_else(|| "claude".into());
     let agent_kind = match raw.agent.kind {
@@ -526,6 +708,7 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
         api_url,
         cors_origin,
         sync,
+        org_sync,
         update,
         agent,
         hive,
@@ -576,7 +759,7 @@ pub fn load_matrix_settings(global_path: &Path) -> Result<Option<MatrixSettings>
 
 /// Writes `homeserver_url`/`user_id` into the global config's `[matrix]` table,
 /// preserving every other section and any existing `allowed_users`/`[[matrix.rooms]]`.
-/// Used by `hivemind matrix login` after a successful login.
+/// Used by `mynd matrix login` after a successful login.
 pub fn write_matrix_login(global_path: &Path, homeserver_url: &str, user_id: &str) -> Result<()> {
     let mut doc: toml::Value = if global_path.is_file() {
         toml::from_str(&std::fs::read_to_string(global_path)?)
@@ -601,6 +784,67 @@ pub fn write_matrix_login(global_path: &Path, homeserver_url: &str, user_id: &st
         "user_id".to_string(),
         toml::Value::String(user_id.to_string()),
     );
+    write_private_file(global_path, &toml::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
+pub fn load_discord_settings(global_path: &Path) -> Result<Option<DiscordSettings>> {
+    if !global_path.is_file() {
+        return Ok(None);
+    }
+    let raw: RawGlobal = toml::from_str(&std::fs::read_to_string(global_path)?)
+        .with_context(|| format!("parsing {}", global_path.display()))?;
+    let Some(application_id) = raw.discord.application_id else {
+        return Ok(None);
+    };
+    let channels = raw
+        .discord
+        .channels
+        .into_iter()
+        .filter_map(|c| {
+            c.channel_id.map(|channel_id| DiscordChannelMapping {
+                channel_id,
+                alias: c.alias,
+                base_tags: c.base_tags,
+            })
+        })
+        .collect();
+    Ok(Some(DiscordSettings {
+        application_id,
+        allowed_users: raw.discord.allowed_users,
+        permission_gate: raw.discord.permission_gate,
+        channels,
+        session_ttl_seconds: raw
+            .discord
+            .session_ttl_seconds
+            .unwrap_or(DEFAULT_SESSION_TTL_SECONDS),
+    }))
+}
+
+/// Writes `application_id` into the global config's `[discord]` table,
+/// preserving every other section and any existing `allowed_users`/
+/// `permission_gate`/`[[discord.channels]]`. Used by `mynd discord login`
+/// after a successful token validation.
+pub fn write_discord_login(global_path: &Path, application_id: &str) -> Result<()> {
+    let mut doc: toml::Value = if global_path.is_file() {
+        toml::from_str(&std::fs::read_to_string(global_path)?)
+            .with_context(|| format!("parsing {}", global_path.display()))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("global config root is not a table"))?;
+    let discord = table
+        .entry("discord")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let discord_table = discord
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[discord] is not a table"))?;
+    discord_table.insert(
+        "application_id".to_string(),
+        toml::Value::String(application_id.to_string()),
+    );
     if let Some(dir) = global_path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -613,12 +857,68 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(unix)]
+    #[test]
+    fn write_private_file_is_owner_only_and_tightens_existing_files() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(is_readable_by_others(&path));
+        write_private_file(&path, "[sync]\napi_key = \"secret\"\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[sync]\napi_key = \"secret\"\n"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!is_readable_by_others(&path));
+        assert!(!tmp.path().join(".config.toml.mynd-tmp").exists());
+    }
+
+    #[test]
+    fn sync_api_keys_can_come_from_the_environment() {
+        let _lock = crate::test_env_lock::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(
+            &path,
+            "[sync]\nenabled = true\nremote_url = \"http://s\"\napi_key = \"from-file\"\n\
+             [org_sync]\nenabled = true\nremote_url = \"http://o\"\napi_key = \"org-file\"\n",
+        )
+        .unwrap();
+        // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+        unsafe {
+            std::env::set_var(SYNC_API_KEY_ENV, "from-env");
+            std::env::set_var(ORG_SYNC_API_KEY_ENV, "   ");
+        }
+        let settings = load_server_settings(&path).unwrap();
+        unsafe {
+            std::env::remove_var(SYNC_API_KEY_ENV);
+            std::env::remove_var(ORG_SYNC_API_KEY_ENV);
+        }
+        assert_eq!(
+            settings.sync.api_key, "from-env",
+            "env var wins over the file"
+        );
+        assert_eq!(
+            settings.org_sync.unwrap().api_key,
+            "org-file",
+            "a blank env var does not blank out the file value"
+        );
+    }
+
     fn write(dir: &std::path::Path, name: &str, body: &str) {
         fs::write(dir.join(name), body).unwrap();
     }
 
     #[test]
-    fn discover_walks_up_to_find_project_config() {
+    fn discover_walks_up_to_find_legacy_hivemind_toml() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(root, ".hivemind.toml", "[project]\nname=\"x\"\n");
@@ -629,9 +929,51 @@ mod tests {
     }
 
     #[test]
+    fn discover_walks_up_to_find_mynd_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, ".mynd.toml", "[project]\nname=\"x\"\n");
+        let nested = root.join("internal").join("svc");
+        fs::create_dir_all(&nested).unwrap();
+        let found = discover_project_root(&nested).unwrap();
+        assert_eq!(found, root.canonicalize().unwrap());
+    }
+
+    #[test]
     fn discover_returns_none_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(discover_project_root(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn load_reads_mynd_toml_and_mynd_local_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".mynd.toml",
+            "[project]\nname=\"p\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[\"team\"]\n",
+        );
+        write(
+            tmp.path(),
+            ".mynd.local.toml",
+            "[hooks.on_session_start]\nmax_tokens=500\nrecalls=[\"mine\"]\n",
+        );
+        let missing_global = tmp.path().join("no-global.toml");
+        let cfg = load_config_with_global(tmp.path(), &missing_global).unwrap();
+        assert_eq!(cfg.project_name, "p");
+        assert_eq!(cfg.max_tokens, 2500);
+        assert_eq!(cfg.recalls.len(), 2);
+        assert_eq!(cfg.recalls[1].query, "mine");
+    }
+
+    #[test]
+    fn load_prefers_mynd_toml_over_hivemind_toml_when_both_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".hivemind.toml", "[project]\nname=\"old\"\n");
+        write(tmp.path(), ".mynd.toml", "[project]\nname=\"new\"\n");
+        let missing_global = tmp.path().join("no-global.toml");
+        let cfg = load_config_with_global(tmp.path(), &missing_global).unwrap();
+        assert_eq!(cfg.project_name, "new");
     }
 
     #[test]
@@ -727,6 +1069,19 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_bind_remaps_api_url_default_to_loopback_like_cors_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[server]\nhost = \"0.0.0.0\"\nport = 9000\n[dashboard]\nport = 9001\n",
+        );
+        let s = load_server_settings(&tmp.path().join("config.toml")).unwrap();
+        assert_eq!(s.api_url, "http://127.0.0.1:9000");
+        assert_eq!(s.cors_origin, "http://127.0.0.1:9001");
+    }
+
+    #[test]
     fn server_settings_cors_origin_explicit_override() {
         let tmp = tempfile::tempdir().unwrap();
         write(
@@ -751,6 +1106,12 @@ mod tests {
 
     #[test]
     fn sync_settings_reads_from_global_config() {
+        // Reads an api_key from the file: must not overlap with the tests
+        // that set MYND_*_API_KEY, which override the file for the whole
+        // process. Same lock those tests hold.
+        let _lock = crate::test_env_lock::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         write(
             tmp.path(),
@@ -763,6 +1124,57 @@ mod tests {
         assert_eq!(s.sync.api_key, "secret");
         assert_eq!(s.sync.interval_seconds, 60);
         assert!(!s.sync.sync_on_store);
+    }
+
+    #[test]
+    fn org_sync_absent_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load_server_settings(&tmp.path().join("no-global.toml")).unwrap();
+        assert_eq!(s.org_sync, None);
+    }
+
+    #[test]
+    fn org_sync_none_when_present_but_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(
+            &global,
+            "[org_sync]\nenabled = false\nremote_url = \"https://gateway.oxhive.dev\"\napi_key = \"x\"\n",
+        )
+        .unwrap();
+        let s = load_server_settings(&global).unwrap();
+        assert_eq!(s.org_sync, None);
+    }
+
+    #[test]
+    fn org_sync_some_when_enabled_with_remote_url() {
+        // Reads an api_key from the file: must not overlap with the tests
+        // that set MYND_*_API_KEY, which override the file for the whole
+        // process. Same lock those tests hold.
+        let _lock = crate::test_env_lock::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(
+            &global,
+            "[org_sync]\nenabled = true\nremote_url = \"https://gateway.oxhive.dev\"\napi_key = \"hm_org_x\"\ninterval_seconds = 60\n",
+        )
+        .unwrap();
+        let s = load_server_settings(&global).unwrap();
+        let org = s.org_sync.expect("org_sync should be Some");
+        assert_eq!(org.remote_url, "https://gateway.oxhive.dev");
+        assert_eq!(org.api_key, "hm_org_x");
+        assert_eq!(org.interval_seconds, 60);
+    }
+
+    #[test]
+    fn org_sync_none_when_enabled_but_remote_url_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "[org_sync]\nenabled = true\nremote_url = \"\"\n").unwrap();
+        let s = load_server_settings(&global).unwrap();
+        assert_eq!(s.org_sync, None);
     }
 
     #[test]
@@ -868,10 +1280,12 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", tmp.path());
         }
         let dir = global_config_dir();
+        let legacy = legacy_global_config_dir();
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
-        assert_eq!(dir, tmp.path().join("hivemind"));
+        assert_eq!(dir, tmp.path().join("mynd"));
+        assert_eq!(legacy, tmp.path().join("hivemind"));
     }
 
     #[test]
@@ -970,23 +1384,23 @@ mod tests {
             "config.toml",
             "[matrix]\n\
              homeserver_url=\"https://matrix.org\"\n\
-             user_id=\"@hivemind-bot:matrix.org\"\n\
+             user_id=\"@mynd-bot:matrix.org\"\n\
              allowed_users=[\"@you:matrix.org\"]\n\
              \n\
              [[matrix.rooms]]\n\
              room_id=\"!abc123:matrix.org\"\n\
-             alias=\"hivemind-project\"\n\
+             alias=\"mynd-project\"\n\
              base_tags=[\"project:hivemind\"]\n",
         );
         let s = load_matrix_settings(&tmp.path().join("config.toml"))
             .unwrap()
             .expect("matrix settings should be present");
         assert_eq!(s.homeserver_url, "https://matrix.org");
-        assert_eq!(s.user_id, "@hivemind-bot:matrix.org");
+        assert_eq!(s.user_id, "@mynd-bot:matrix.org");
         assert_eq!(s.allowed_users, vec!["@you:matrix.org".to_string()]);
         assert_eq!(s.rooms.len(), 1);
         assert_eq!(s.rooms[0].room_id, "!abc123:matrix.org");
-        assert_eq!(s.rooms[0].alias.as_deref(), Some("hivemind-project"));
+        assert_eq!(s.rooms[0].alias.as_deref(), Some("mynd-project"));
         assert_eq!(s.rooms[0].base_tags, vec!["project:hivemind".to_string()]);
         assert_eq!(s.session_ttl_seconds, DEFAULT_SESSION_TTL_SECONDS);
     }
@@ -1071,5 +1485,102 @@ mod tests {
             raw.contains("max_inject_tokens"),
             "unrelated [defaults] section survives"
         );
+    }
+
+    #[test]
+    fn discord_settings_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load_discord_settings(&tmp.path().join("no-global.toml")).unwrap();
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn discord_settings_parses_full_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[discord]\n\
+             application_id=\"123456789012345678\"\n\
+             allowed_users=[\"111111111111111111\"]\n\
+             permission_gate=\"manage_guild\"\n\
+             \n\
+             [[discord.channels]]\n\
+             channel_id=\"222222222222222222\"\n\
+             alias=\"hivemind-project\"\n\
+             base_tags=[\"project:hivemind\"]\n",
+        );
+        let s = load_discord_settings(&tmp.path().join("config.toml"))
+            .unwrap()
+            .expect("discord settings should be present");
+        assert_eq!(s.application_id, "123456789012345678");
+        assert_eq!(s.allowed_users, vec!["111111111111111111".to_string()]);
+        assert_eq!(s.permission_gate, Some("manage_guild".to_string()));
+        assert_eq!(s.channels.len(), 1);
+        assert_eq!(s.channels[0].channel_id, "222222222222222222");
+        assert_eq!(s.channels[0].alias, Some("hivemind-project".to_string()));
+    }
+
+    #[test]
+    fn discord_settings_defaults_allowed_users_permission_gate_and_channels() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[discord]\napplication_id=\"123456789012345678\"\n",
+        );
+        let s = load_discord_settings(&tmp.path().join("config.toml"))
+            .unwrap()
+            .unwrap();
+        assert!(s.allowed_users.is_empty());
+        assert_eq!(s.permission_gate, None);
+        assert!(s.channels.is_empty());
+        assert_eq!(s.session_ttl_seconds, DEFAULT_SESSION_TTL_SECONDS);
+    }
+
+    #[test]
+    fn discord_settings_honors_configured_session_ttl() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "config.toml",
+            "[discord]\napplication_id=\"123456789012345678\"\nsession_ttl_seconds=60\n",
+        );
+        let s = load_discord_settings(&tmp.path().join("config.toml"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.session_ttl_seconds, 60);
+    }
+
+    #[test]
+    fn write_discord_login_creates_new_discord_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        write_discord_login(&path, "123456789012345678").unwrap();
+        let s = load_discord_settings(&path).unwrap().unwrap();
+        assert_eq!(s.application_id, "123456789012345678");
+    }
+
+    #[test]
+    fn write_discord_login_preserves_other_sections_and_channel_mappings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        write(
+            tmp.path(),
+            "config.toml",
+            "[server]\nport=3456\n\
+             [discord]\napplication_id=\"000000000000000000\"\n\
+             allowed_users=[\"111111111111111111\"]\n\
+             [[discord.channels]]\nchannel_id=\"222222222222222222\"\nbase_tags=[\"project:hivemind\"]\n",
+        );
+        write_discord_login(&path, "999999999999999999").unwrap();
+        let s = load_discord_settings(&path).unwrap().unwrap();
+        assert_eq!(s.application_id, "999999999999999999");
+        assert_eq!(s.allowed_users, vec!["111111111111111111".to_string()]);
+        assert_eq!(s.channels.len(), 1);
+        assert_eq!(s.channels[0].channel_id, "222222222222222222");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("[server]"));
+        assert!(raw.contains("port = 3456"));
     }
 }

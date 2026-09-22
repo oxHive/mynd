@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
+import { readStored } from '../lib/localStore'
 
-const STORAGE_KEY = 'hivemind.fontScale'
+const STORAGE_KEY = 'mynd.fontScale'
 export const MIN_PERCENT = 80
 export const MAX_PERCENT = 130
 export const DEFAULT_PERCENT = 100
@@ -13,7 +14,7 @@ export const DEFAULT_PERCENT = 100
 // adjusting layout), so it's the only lever that touches "anything else"
 // as the user asked, without rewriting every inline font-size in the app.
 export const useFontScaleStore = defineStore('fontScale', () => {
-  const stored = parseInt(localStorage.getItem(STORAGE_KEY), 10)
+  const stored = parseInt(readStored(STORAGE_KEY), 10)
   const percent = ref(
     Number.isFinite(stored) && stored >= MIN_PERCENT && stored <= MAX_PERCENT ? stored : DEFAULT_PERCENT
   )

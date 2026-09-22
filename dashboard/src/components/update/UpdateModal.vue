@@ -146,7 +146,7 @@ onBeforeUnmount(() => {
             Elapsed: {{ elapsed }}s
           </p>
           <p class="text-xs" style="color:var(--hm-text-tertiary)">
-            The server is restarting itself — this page will reload automatically.
+            The server is restarting itself. This page will reload automatically.
           </p>
         </div>
 

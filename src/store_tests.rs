@@ -616,7 +616,11 @@ async fn list_feedback_filtered_by_memory_id() {
 async fn set_feedback_status_updates() {
     let (s, _dir) = make_store().await;
     s.store(&test_row("mem_g", "G", "body", &[])).await.unwrap();
-    let fb = s.create_feedback("mem_g", "negative", None).await.unwrap();
+    let fb = s
+        .create_feedback("mem_g", "negative", None)
+        .await
+        .unwrap()
+        .unwrap();
     let ok = s.set_feedback_status(&fb.id, "resolved").await.unwrap();
     assert!(ok);
     let items = s.list_feedback(Some("mem_g"), None).await.unwrap();
@@ -2177,4 +2181,131 @@ async fn hive_merge_roster_persists_merge_and_keeps_revocations_sticky() {
         .find(|e| e.device_id == b.device_id)
         .unwrap();
     assert_eq!(b_row.status, crate::hive::roster::RosterStatus::Revoked);
+}
+/// All handlers share one libsql connection, and a libsql transaction is
+/// just `BEGIN` on that connection. Without the store's write lock, two
+/// tasks that both reach `BEGIN` fail with "cannot start a transaction
+/// within a transaction", and a bystander's statement can be swallowed by
+/// (and rolled back with) another task's transaction. Multi-threaded on
+/// purpose so the writers genuinely interleave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_writers_never_collide_on_the_shared_connection() {
+    let (s, _dir) = make_store().await;
+    let store = std::sync::Arc::new(s);
+    let mut handles = Vec::new();
+    for i in 0..40u32 {
+        let store = store.clone();
+        handles.push(tokio::spawn(async move {
+            let id = format!("mem_{i:032x}");
+            store
+                .store(&test_row(&id, "t", "c", &["topic:x".into()]))
+                .await?;
+            store.update(&id, "t2", "c2", &[]).await?;
+            store.set_meta("last_writer", &i.to_string()).await?;
+            anyhow::Ok(())
+        }));
+    }
+    for h in handles {
+        h.await.unwrap().expect("no writer may fail");
+    }
+    assert_eq!(store.count().await.unwrap(), 40);
+    for i in 0..40u32 {
+        let e = store
+            .recall_by_id(&format!("mem_{i:032x}"))
+            .await
+            .unwrap()
+            .expect("every write must have landed");
+        assert_eq!(e.content, "c2");
+    }
+}
+
+/// `list_memories`/`search` batch their tag lookup 500 ids at a time; cross
+/// the batch boundary and check the result matches the per-id path exactly.
+#[tokio::test]
+async fn batched_tag_loading_matches_per_memory_recall_across_batches() {
+    let (s, _dir) = make_store().await;
+    for i in 0..503u32 {
+        let tags: Vec<String> = match i % 3 {
+            0 => vec![],
+            1 => vec![format!("topic:t{i}")],
+            _ => vec![
+                format!("topic:t{i}"),
+                "lang:rust".to_string(),
+                "kind:pattern".to_string(),
+            ],
+        };
+        s.store(&test_row(&format!("mem_{i:032x}"), "t", "c", &tags))
+            .await
+            .unwrap();
+    }
+    let listed = s.list_memories(1000, 0).await.unwrap();
+    assert_eq!(listed.len(), 503);
+    for e in &listed {
+        let single = s.recall_by_id(&e.id).await.unwrap().unwrap();
+        assert_eq!(e.tags, single.tags, "tags for {}", e.id);
+    }
+    let hits = s.search("c", 50).await.unwrap();
+    assert!(!hits.is_empty());
+    for e in &hits {
+        let single = s.recall_by_id(&e.id).await.unwrap().unwrap();
+        assert_eq!(e.tags, single.tags);
+    }
+}
+
+#[tokio::test]
+async fn create_feedback_returns_none_for_unknown_memory() {
+    let (s, _dir) = make_store().await;
+    let result = s
+        .create_feedback("mem_nope", "incorrect", None)
+        .await
+        .unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn create_feedback_returns_entry_for_known_memory() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row("mem_1", "t", "c", &[])).await.unwrap();
+    let entry = s
+        .create_feedback("mem_1", "outdated", Some("stale"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.memory_id, "mem_1");
+    assert_eq!(entry.signal, "outdated");
+}
+
+#[tokio::test]
+async fn delete_all_also_clears_sync_journal_and_session_start_log() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row("mem_1", "t", "c", &[])).await.unwrap();
+    assert!(
+        !s.take_journal().await.unwrap().is_empty(),
+        "store() journals the write"
+    );
+    s.log_session_start(
+        "/proj",
+        &crate::session::SessionStartResult {
+            project: "p".to_string(),
+            loaded: vec![],
+            skipped: vec![],
+            used_tokens: 0,
+            max_tokens: 100,
+            memories_recalled: 0,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.list_session_logs(10).await.unwrap().len(), 1);
+
+    let deleted = s.delete_all().await.unwrap();
+    assert_eq!(deleted, 1);
+    assert!(
+        s.take_journal().await.unwrap().is_empty(),
+        "journal must be cleared too"
+    );
+    assert!(
+        s.list_session_logs(10).await.unwrap().is_empty(),
+        "session_start_log must be cleared too"
+    );
 }

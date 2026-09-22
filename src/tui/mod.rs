@@ -86,4 +86,22 @@ mod tests {
     fn plain_flag_forces_non_interactive() {
         assert!(!is_interactive(true));
     }
+
+    #[test]
+    fn no_color_is_false_when_env_var_unset() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only env var mutation; serialised by ENV_MUTEX.
+        unsafe { std::env::remove_var("NO_COLOR") };
+        assert!(!no_color());
+    }
+
+    #[test]
+    fn no_color_is_true_when_env_var_set_to_any_value() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only env var mutation; serialised by ENV_MUTEX.
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+        let result = no_color();
+        unsafe { std::env::remove_var("NO_COLOR") };
+        assert!(result);
+    }
 }

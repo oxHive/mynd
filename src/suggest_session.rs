@@ -225,7 +225,7 @@ impl SuggestSessionManager {
             edge.source_id,
             edge.relationship,
             edge.target_id,
-            edge.reason.as_deref().unwrap_or("none given"),
+            crate::prompt_data::single_line(edge.reason.as_deref().unwrap_or("none given")),
         ))
     }
 
@@ -242,7 +242,7 @@ impl SuggestSessionManager {
 
     async fn run_claude_turn(&self, prompt: &str, resume: Option<&str>) -> Result<String, String> {
         let mcp_config = json!({
-            "mcpServers": { "hivemind": { "type": "http", "url": self.mcp_url } }
+            "mcpServers": { "mynd": { "type": "http", "url": self.mcp_url } }
         })
         .to_string();
         let mut cmd = tokio::process::Command::new(&self.agent.command);
@@ -258,7 +258,7 @@ impl SuggestSessionManager {
             .arg(&mcp_config)
             .arg("--strict-mcp-config")
             .arg("--allowedTools")
-            .arg("mcp__hivemind__memory_store_edge,mcp__hivemind__memory_update_edge,mcp__hivemind__memory_get_edges")
+            .arg("mcp__mynd__memory_store_edge,mcp__mynd__memory_update_edge,mcp__mynd__memory_get_edges")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -277,8 +277,8 @@ impl SuggestSessionManager {
     // and per-tool permissions are only configurable via `opencode.json` /
     // `OPENCODE_CONFIG`, not CLI args), so — same tradeoff as
     // `matrix::agent::run_opencode_turn` — this requires the user to have
-    // pre-configured an OpenCode agent profile named "hivemind-suggest" that
-    // wires up the hivemind MCP server (this `mcp_url`) and allows only
+    // pre-configured an OpenCode agent profile named "mynd-suggest" that
+    // wires up the mynd MCP server (this `mcp_url`) and allows only
     // memory_store_edge/memory_update_edge/memory_get_edges.
     async fn run_opencode_turn(
         &self,
@@ -291,7 +291,7 @@ impl SuggestSessionManager {
             cmd.arg("-s").arg(id);
         }
         cmd.arg("--agent")
-            .arg("hivemind-suggest")
+            .arg("mynd-suggest")
             .arg("--format")
             .arg("json")
             .stdin(std::process::Stdio::null())
@@ -312,8 +312,8 @@ impl SuggestSessionManager {
         mut cmd: tokio::process::Command,
         command_name: &str,
     ) -> Result<String, String> {
-        let child = cmd
-            .spawn()
+        let child = spawn_retrying_busy(&mut cmd)
+            .await
             .map_err(|e| format!("failed to spawn {command_name}: {e}"))?;
         let out = tokio::time::timeout(TURN_TIMEOUT, child.wait_with_output())
             .await
@@ -336,6 +336,26 @@ impl SuggestSessionManager {
             .find(|l| !l.trim().is_empty())
             .map(str::to_string)
             .ok_or_else(|| "agent produced no output".to_string())
+    }
+}
+
+/// `spawn`, retrying briefly on ETXTBSY. Linux refuses to exec a file that
+/// any process still has open for writing; a freshly written script (or a
+/// binary mid-replacement by self-update) can hit that for a few
+/// milliseconds, and a forked-but-not-yet-exec'd sibling holds inherited
+/// write descriptors for exactly that window.
+async fn spawn_retrying_busy(
+    cmd: &mut tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            other => return other,
+        }
     }
 }
 
@@ -579,7 +599,7 @@ mod tests {
         assert_eq!(next_state(&mut rx).await, "suggestions_ready");
         let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
         assert!(log.contains("run"));
-        assert!(log.contains("--agent hivemind-suggest"));
+        assert!(log.contains("--agent mynd-suggest"));
         assert!(log.contains("--format json"));
         assert!(
             !log.contains("--mcp-config"),

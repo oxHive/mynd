@@ -14,6 +14,13 @@ export const useGraphStore = defineStore('graph', () => {
   // '' (off), 'ns:*' (any value in namespace ns), 'ns:value', or a bare tag.
   // Set by TagFilter.vue, read by GraphCanvas.vue's node-dimming pass.
   const tagFilter = ref('')
+  // Bumped by the toolbar's re-layout button; GraphCanvas watches it and
+  // repacks the layout from scratch (clearing user-pinned positions).
+  const relayoutSeq = ref(0)
+
+  function requestRelayout() {
+    relayoutSeq.value++
+  }
 
   function matchesTagFilter(tags) {
     if (!tagFilter.value) return true
@@ -71,6 +78,7 @@ export const useGraphStore = defineStore('graph', () => {
 
   return {
     edges, zoom, selectedNodeId, selectedEdgeId, searchQuery, layerFilter, tagFilter,
+    relayoutSeq, requestRelayout,
     pendingEdges, selectedEdge, edgesFor, fetchEdges, resolveEdge,
     acceptAllPending, rejectAllPending, matchesTagFilter,
   }

@@ -1,3 +1,4 @@
+use crate::prompt_data::{DATA_NOTICE, single_line};
 use crate::store::SqliteStore;
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -115,7 +116,7 @@ pub struct TagNamespacesListInput {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SessionStartInput {
-    /// Absolute path to the project root where .hivemind.toml lives.
+    /// Absolute path to the project root where .mynd.toml lives.
     pub project_path: String,
 }
 
@@ -160,19 +161,23 @@ pub struct MemoryGetEdgesInput {
 }
 
 #[derive(Clone)]
-pub struct HiveMind {
+pub struct Mynd {
     store: Arc<SqliteStore>,
+    org_store: Option<Arc<SqliteStore>>,
     sync_trigger: Option<Arc<tokio::sync::Notify>>,
+    org_sync_trigger: Option<Arc<tokio::sync::Notify>>,
     events: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     hive_identity: Option<crate::hive::identity::DeviceIdentity>,
 }
 
-impl HiveMind {
+impl Mynd {
     #[cfg(test)]
     pub fn new(store: SqliteStore) -> Self {
         Self {
             store: Arc::new(store),
+            org_store: None,
             sync_trigger: None,
+            org_sync_trigger: None,
             events: None,
             hive_identity: None,
         }
@@ -181,7 +186,9 @@ impl HiveMind {
     pub fn with_store(store: Arc<SqliteStore>) -> Self {
         Self {
             store,
+            org_store: None,
             sync_trigger: None,
+            org_sync_trigger: None,
             events: None,
             hive_identity: None,
         }
@@ -190,10 +197,28 @@ impl HiveMind {
     pub fn with_sync(store: Arc<SqliteStore>, trigger: Arc<tokio::sync::Notify>) -> Self {
         Self {
             store,
+            org_store: None,
             sync_trigger: Some(trigger),
+            org_sync_trigger: None,
             events: None,
             hive_identity: None,
         }
+    }
+
+    /// Attaches the org-layer store. No-op on the org layer's absence — every
+    /// org-layer tool path checks `self.org_store` and degrades to "org layer
+    /// not configured" or "skip" rather than assuming this was called.
+    pub fn with_org_store(mut self, org_store: Arc<SqliteStore>) -> Self {
+        self.org_store = Some(org_store);
+        self
+    }
+
+    /// Lets an org-layer write wake the org sync loop immediately, the same
+    /// way `with_sync`'s trigger does for the primary store. Optional —
+    /// without it, org syncs still happen, just only on the interval timer.
+    pub fn with_org_sync_trigger(mut self, trigger: Arc<tokio::sync::Notify>) -> Self {
+        self.org_sync_trigger = Some(trigger);
+        self
     }
 
     /// Broadcasts a "changed" signal to dashboard SSE subscribers whenever a
@@ -233,21 +258,47 @@ impl HiveMind {
     /// dashboard-configurable `max_content_tokens` guardrail (default
     /// `DEFAULT_MAX_CONTENT_TOKENS`). Applied to both `memory_store` and
     /// `memory_update` so the limit holds on edits too, not just creation.
-    async fn check_content_size(&self, title: &str, content: &str) -> Result<(), ErrorData> {
-        let tokens = crate::budget::count_entry_tokens(title, content) as i64;
-        let limit = self.store.max_content_tokens().await;
-        if tokens > limit {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "content is {tokens} tokens, exceeds max_content_tokens ({limit}). \
-                     Split into an index memory plus child memories, linked via \
-                     [phrase](child:mem_xxx) — store each child first, then reference \
-                     their real returned ids from the index's content."
-                ),
-                None,
-            ));
+    /// Takes the target store explicitly so an org-layer write is checked
+    /// against the org store's own configured limit, not the primary
+    /// store's.
+    async fn check_content_size(
+        &self,
+        store: &SqliteStore,
+        title: &str,
+        content: &str,
+    ) -> Result<(), ErrorData> {
+        store
+            .check_content_size(title, content)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))
+    }
+
+    /// Tries the primary store first, then the org store if configured.
+    /// Returns the store that has a memory with this id, or `None` if
+    /// neither does. Used by every ID-addressed tool (recall/update/delete)
+    /// so a caller never needs to know which layer an id belongs to.
+    async fn find_owning_store(&self, id: &str) -> Result<Option<&Arc<SqliteStore>>, ErrorData> {
+        if self
+            .store
+            .recall_by_id(id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            .is_some()
+        {
+            return Ok(Some(&self.store));
         }
-        Ok(())
+        if let Some(org) = &self.org_store {
+            match org.recall_by_id(id).await {
+                Ok(Some(_)) => return Ok(Some(org)),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "org store lookup failed for id {id}: {e:#}; treating as not found in org"
+                    );
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub async fn do_memory_store(&self, p: MemoryStoreInput) -> Result<CallToolResult, ErrorData> {
@@ -255,7 +306,7 @@ impl HiveMind {
         let title = p.title.clone();
 
         let layer = p.layer.as_deref().unwrap_or("workspace");
-        layer
+        let parsed_layer = layer
             .parse::<crate::model::Layer>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
@@ -264,9 +315,21 @@ impl HiveMind {
             .parse::<crate::model::MemoryType>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        self.check_content_size(&p.title, &p.content).await?;
+        let target_store = if parsed_layer == crate::model::Layer::Org {
+            self.org_store.as_ref().ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "org layer not configured — set [org_sync] in the global config",
+                    None,
+                )
+            })?
+        } else {
+            &self.store
+        };
 
-        self.store
+        self.check_content_size(target_store, &p.title, &p.content)
+            .await?;
+
+        target_store
             .store(&crate::store::NewMemoryRow {
                 id: &id,
                 title: &p.title,
@@ -278,7 +341,12 @@ impl HiveMind {
             })
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        if let Some(t) = &self.sync_trigger {
+        let trigger = if parsed_layer == crate::model::Layer::Org {
+            &self.org_sync_trigger
+        } else {
+            &self.sync_trigger
+        };
+        if let Some(t) = trigger {
             t.notify_one();
         }
         self.notify_change();
@@ -294,9 +362,27 @@ impl HiveMind {
         p: MemoryRecallInput,
     ) -> Result<CallToolResult, ErrorData> {
         let entry = if let Some(ref id) = p.id {
-            self.store.recall_by_id(id).await
+            match self.find_owning_store(id).await? {
+                Some(store) => store.recall_by_id(id).await,
+                None => Ok(None),
+            }
         } else if let Some(ref title) = p.title {
-            self.store.recall_by_title(title).await
+            match self.store.recall_by_title(title).await {
+                Ok(Some(e)) => Ok(Some(e)),
+                Ok(None) => match &self.org_store {
+                    Some(org) => match org.recall_by_title(title).await {
+                        Ok(found) => Ok(found),
+                        Err(e) => {
+                            tracing::warn!(
+                                "org store recall_by_title failed: {e:#}; treating as not found in org"
+                            );
+                            Ok(None)
+                        }
+                    },
+                    None => Ok(None),
+                },
+                Err(e) => Err(e),
+            }
         } else {
             return Err(ErrorData::invalid_params(
                 "provide either 'id' or 'title'",
@@ -321,6 +407,50 @@ impl HiveMind {
         }
     }
 
+    /// Runs the query/tags search logic against a single store. Factored out
+    /// of `do_memory_search` so it can be run once for the primary store and
+    /// once more for the org store, merging results with primary-first
+    /// priority.
+    async fn search_in(
+        &self,
+        store: &SqliteStore,
+        query: Option<&str>,
+        tags: Option<&[String]>,
+        limit: i64,
+    ) -> Result<Vec<crate::store::MemoryEntry>, ErrorData> {
+        match (query, tags) {
+            (Some(q), Some(tags)) => {
+                let expr =
+                    crate::tag_query::TagExpr::and_all(tags).expect("tags checked non-empty above");
+                let candidates = store
+                    .search(q, 50)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let mut filtered: Vec<_> = candidates
+                    .into_iter()
+                    .filter(|e| expr.eval(&e.tags))
+                    .collect();
+                filtered.truncate(limit as usize);
+                Ok(filtered)
+            }
+            (Some(q), None) => store
+                .search(q, limit)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None)),
+            (None, Some(tags)) => {
+                let expr =
+                    crate::tag_query::TagExpr::and_all(tags).expect("tags checked non-empty above");
+                let mut results = store
+                    .find_by_tag_expr(&expr)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                results.truncate(limit as usize);
+                Ok(results)
+            }
+            (None, None) => unreachable!("caller returns early before calling this"),
+        }
+    }
+
     pub async fn do_memory_search(
         &self,
         p: MemorySearchInput,
@@ -336,40 +466,26 @@ impl HiveMind {
             })));
         }
 
-        let hits = match (query, tags) {
-            (Some(q), Some(tags)) => {
-                let expr = crate::tag_query::TagExpr::and_all(&tags)
-                    .expect("tags checked non-empty above");
-                let candidates = self
-                    .store
-                    .search(q, 50)
-                    .await
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                let mut filtered: Vec<_> = candidates
-                    .into_iter()
-                    .filter(|e| expr.eval(&e.tags))
-                    .collect();
-                filtered.truncate(limit as usize);
-                filtered
-            }
-            (Some(q), None) => self
-                .store
-                .search(q, limit)
+        let mut hits = self
+            .search_in(&self.store, query, tags.as_deref(), limit)
+            .await?;
+
+        if hits.len() < limit as usize
+            && let Some(org) = &self.org_store
+        {
+            match self
+                .search_in(org, query, tags.as_deref(), limit - hits.len() as i64)
                 .await
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
-            (None, Some(tags)) => {
-                let expr = crate::tag_query::TagExpr::and_all(&tags)
-                    .expect("tags checked non-empty above");
-                let mut results = self
-                    .store
-                    .find_by_tag_expr(&expr)
-                    .await
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                results.truncate(limit as usize);
-                results
+            {
+                Ok(org_hits) => hits.extend(org_hits),
+                Err(e) => {
+                    tracing::warn!(
+                        "org store search failed: {}; showing primary results only",
+                        e.message
+                    );
+                }
             }
-            (None, None) => unreachable!("handled by the early return above"),
-        };
+        }
 
         let results: Vec<_> = hits
             .iter()
@@ -408,28 +524,39 @@ impl HiveMind {
         p: MemoryUpdateInput,
     ) -> Result<CallToolResult, ErrorData> {
         // Fetch current state to fill in unchanged fields
-        let current = self
-            .store
-            .recall_by_id(&p.id)
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let current = match current {
+        let owning_store = match self.find_owning_store(&p.id).await? {
+            Some(s) => s,
             None => {
                 return Ok(CallToolResult::structured(json!({
                     "updated": false,
                     "id": p.id,
                 })));
             }
+        };
+        let current = match owning_store
+            .recall_by_id(&p.id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+        {
             Some(c) => c,
+            // Vanished between find_owning_store's existence check and this
+            // fetch (e.g. a concurrent delete on a shared, cloned store).
+            // Treat identically to "never existed" rather than panicking.
+            None => {
+                return Ok(CallToolResult::structured(json!({
+                    "updated": false,
+                    "id": p.id,
+                })));
+            }
         };
         let title = p.title.as_deref().unwrap_or(&current.title);
         let content = p.content.as_deref().unwrap_or(&current.content);
         let tags = p.tags.as_deref().unwrap_or(&current.tags);
 
-        self.check_content_size(title, content).await?;
+        self.check_content_size(owning_store, title, content)
+            .await?;
 
-        let updated = self
-            .store
+        let updated = owning_store
             .update(&p.id, title, content, tags)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -453,11 +580,13 @@ impl HiveMind {
                 None,
             ));
         }
-        let deleted = self
-            .store
-            .delete(&p.id)
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let deleted = match self.find_owning_store(&p.id).await? {
+            Some(store) => store
+                .delete(&p.id)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+            None => false,
+        };
         if deleted {
             self.notify_change();
         }
@@ -473,23 +602,41 @@ impl HiveMind {
             .list_memories(50, 0)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let count = memories.len();
-        let body = if memories.is_empty() {
+        let org_memories = match &self.org_store {
+            Some(org) => match org.list_memories(50, 0).await {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("org store list_memories failed: {e:#}; omitting org memories");
+                    vec![]
+                }
+            },
+            None => vec![],
+        };
+        let count = memories.len() + org_memories.len();
+        let body = if memories.is_empty() && org_memories.is_empty() {
             "No memories stored yet. Use memory_store to add some.".to_string()
         } else {
-            let lines: Vec<String> = memories
+            let mut lines: Vec<String> = memories
                 .iter()
                 .map(|m| {
                     let tags = if m.tags.is_empty() {
                         String::new()
                     } else {
-                        format!(" [{}]", m.tags.join(", "))
+                        format!(" [{}]", single_line(&m.tags.join(", ")))
                     };
-                    format!("• {} — {}{}", m.id, m.title, tags)
+                    format!("• {} — {}{}", m.id, single_line(&m.title), tags)
                 })
                 .collect();
+            lines.extend(org_memories.iter().map(|m| {
+                let tags = if m.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", single_line(&m.tags.join(", ")))
+                };
+                format!("• {} — {}{} [org]", m.id, single_line(&m.title), tags)
+            }));
             format!(
-                "HiveMind Memory List ({count} memories):\n\n{}",
+                "Mynd Memory List ({count} memories):\n\n{}",
                 lines.join("\n")
             )
         };
@@ -502,19 +649,51 @@ impl HiveMind {
             .count()
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let org_count = match &self.org_store {
+            Some(org) => match org.count().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("org store count failed: {e:#}; treating org count as 0");
+                    0
+                }
+            },
+            None => 0,
+        };
+        let count = count + org_count;
         let recent = self
             .store
             .list_memories(5, 0)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        let recent_lines: Vec<String> = recent
+        let mut recent_lines: Vec<String> = recent
             .iter()
-            .map(|m| format!("  \u{2022} {} \u{2014} {}", m.id, m.title))
+            .map(|m| format!("  \u{2022} {} \u{2014} {}", m.id, single_line(&m.title)))
             .collect();
 
+        if recent_lines.len() < 5
+            && let Some(org) = &self.org_store
+        {
+            match org.list_memories(5, 0).await {
+                Ok(org_recent) => {
+                    recent_lines.extend(org_recent.iter().take(5 - recent_lines.len()).map(|m| {
+                        format!(
+                            "  \u{2022} {} \u{2014} {} [org]",
+                            m.id,
+                            single_line(&m.title)
+                        )
+                    }));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "org store list_memories failed: {e:#}; showing primary recents only"
+                    );
+                }
+            }
+        }
+
         let mut parts = vec![
-            "HiveMind Status".to_string(),
+            "Mynd Status".to_string(),
             "\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}".to_string(),
             format!("Total memories: {count}"),
         ];
@@ -535,10 +714,26 @@ impl HiveMind {
         let hits = if trimmed.is_empty() {
             vec![]
         } else {
-            self.store
-                .search(&trimmed, 10)
-                .await
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            let mut hits = self
+                .search_in(&self.store, Some(&trimmed), None, 10)
+                .await?;
+            if hits.len() < 10
+                && let Some(org) = &self.org_store
+            {
+                match self
+                    .search_in(org, Some(&trimmed), None, 10 - hits.len() as i64)
+                    .await
+                {
+                    Ok(org_hits) => hits.extend(org_hits),
+                    Err(e) => {
+                        tracing::warn!(
+                            "org store search failed: {}; showing primary results only",
+                            e.message
+                        );
+                    }
+                }
+            }
+            hits
         };
         let body = if hits.is_empty() {
             format!(
@@ -550,11 +745,16 @@ impl HiveMind {
                 .iter()
                 .map(|h| {
                     let snippet: String = h.content.chars().take(200).collect();
-                    format!("\u{2022} {} \u{2014} {}\n  {}", h.id, h.title, snippet)
+                    format!(
+                        "\u{2022} {} \u{2014} {}\n  {}",
+                        h.id,
+                        single_line(&h.title),
+                        single_line(&snippet)
+                    )
                 })
                 .collect();
             format!(
-                "Search results for \"{}\" ({} found):\n\n{}\n\nUse memory_recall with an ID for full content.",
+                "Search results for \"{}\" ({} found):\n{DATA_NOTICE}\n\n{}\n\nUse memory_recall with an ID for full content.",
                 p.query,
                 hits.len(),
                 lines.join("\n\n")
@@ -575,7 +775,7 @@ impl HiveMind {
             .ok_or_else(|| ErrorData::invalid_params(format!("Memory {} not found", p.id), None))?;
         let tags = mem.tags.join(", ");
         let body = format!(
-            "Memory to edit:\n\
+            "Memory to edit ({DATA_NOTICE}):\n\
              ━━━━━━━━━━━━━━\n\
              ID:      {}\n\
              Title:   {}\n\
@@ -584,7 +784,11 @@ impl HiveMind {
              ━━━━━━━━━━━━━━\n\n\
              Ask the user what changes they want to make, then call memory_update with ID {} to save.\n\
              You can update content and/or tags. Omit fields you are not changing.",
-            mem.id, mem.title, tags, mem.content, mem.id
+            mem.id,
+            single_line(&mem.title),
+            single_line(&tags),
+            mem.content,
+            mem.id
         );
         Ok(vec![PromptMessage::new_text(Role::User, body)])
     }
@@ -599,18 +803,25 @@ impl HiveMind {
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
             .ok_or_else(|| ErrorData::invalid_params(format!("Memory {} not found", p.id), None))?;
+        // `mem` above already confirmed p.id exists, so `None` here would
+        // mean it was deleted in the instant between that fetch and this
+        // insert — vanishingly unlikely, and internal_error is the right
+        // shape for it (a normal caller can't hit this any other way).
         self.store
             .create_feedback(&p.id, &p.reason, p.note.as_deref())
             .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            .ok_or_else(|| {
+                ErrorData::internal_error(format!("memory {} vanished mid-flag", p.id), None)
+            })?;
         let body = format!(
             "Flagged memory \"{}\" ({}) as \"{}\".\n\
              A feedback record has been created and will appear in the dashboard under Feedback.\n\
              The memory has not been deleted — it remains available until a human reviews the flag.\n\
              {}",
-            mem.title,
+            single_line(&mem.title),
             mem.id,
-            p.reason,
+            single_line(&p.reason),
             p.note
                 .as_ref()
                 .map(|n| format!("Note: {n}"))
@@ -644,15 +855,16 @@ impl HiveMind {
 
         let mut lines = vec![
             format!("Open Feedback Items ({} total)", open_items.len()),
+            DATA_NOTICE.to_string(),
             "\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}".to_string(),
         ];
 
         for (i, item) in open_items.iter().enumerate() {
-            let note = item.note.as_deref().unwrap_or("(no note)");
+            let note = single_line(item.note.as_deref().unwrap_or("(no note)"));
             lines.push(format!(
                 "\n{}. [{}] Memory: {} | {}\n   Note: {}",
                 i + 1,
-                item.signal,
+                single_line(&item.signal),
                 item.memory_id,
                 item.id,
                 note
@@ -693,9 +905,10 @@ impl HiveMind {
         let config = crate::config::load_config(&canon)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        let result = crate::session::execute_session_start(&config, &self.store)
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let result =
+            crate::session::execute_session_start(&config, &self.store, self.org_store.as_deref())
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
         if let Err(e) = self
             .store
@@ -710,7 +923,7 @@ impl HiveMind {
 }
 
 #[tool_router]
-impl HiveMind {
+impl Mynd {
     #[tool(
         description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones."
     )]
@@ -772,9 +985,9 @@ impl HiveMind {
     }
 
     #[tool(
-        description = "Call this once at the start of every session when .hivemind.toml exists in the project root. Returns pre-configured memory context for this project."
+        description = "Call this once at the start of every session when .mynd.toml exists in the project root. Returns pre-configured memory context for this project."
     )]
-    async fn hivemind_session_start(
+    async fn mynd_session_start(
         &self,
         Parameters(p): Parameters<SessionStartInput>,
     ) -> Result<CallToolResult, ErrorData> {
@@ -803,7 +1016,7 @@ impl HiveMind {
                 None,
             ));
         }
-        match self
+        let primary_result = self
             .store
             .create_edge_with_status(
                 &p.source_id,
@@ -813,8 +1026,32 @@ impl HiveMind {
                 None,
                 p.reason.as_deref(),
             )
-            .await
-        {
+            .await;
+        let result = match (&primary_result, &self.org_store) {
+            (Ok(EdgeCreate::MissingEndpoint), Some(org)) => {
+                match org
+                    .create_edge_with_status(
+                        &p.source_id,
+                        &p.target_id,
+                        &p.relationship,
+                        status,
+                        None,
+                        p.reason.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(r) => Ok(r),
+                    Err(e) => {
+                        tracing::warn!(
+                            "org store lookup failed while resolving edge endpoints: {e:#}"
+                        );
+                        primary_result
+                    }
+                }
+            }
+            _ => primary_result,
+        };
+        match result {
             Ok(EdgeCreate::Created(id)) => {
                 self.notify_change();
                 Ok(CallToolResult::structured(json!({
@@ -845,7 +1082,7 @@ impl HiveMind {
         &self,
         p: MemoryUpdateEdgeInput,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
+        let primary = self
             .store
             .update_edge(
                 &p.id,
@@ -853,8 +1090,28 @@ impl HiveMind {
                 p.reason.as_deref(),
                 p.link_text.as_deref(),
             )
-            .await
-        {
+            .await;
+        let result = match (&primary, &self.org_store) {
+            (Ok(false), Some(org)) => {
+                match org
+                    .update_edge(
+                        &p.id,
+                        p.relationship.as_deref(),
+                        p.reason.as_deref(),
+                        p.link_text.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(r) => Ok(r),
+                    Err(e) => {
+                        tracing::warn!("org store lookup failed while updating edge: {e:#}");
+                        primary
+                    }
+                }
+            }
+            _ => primary,
+        };
+        match result {
             Ok(true) => {
                 self.notify_change();
                 Ok(CallToolResult::structured(
@@ -885,7 +1142,11 @@ impl HiveMind {
         &self,
         Parameters(p): Parameters<MemoryGetEdgesInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self.store.get_edges_grouped(&p.memory_id).await {
+        let store = self
+            .find_owning_store(&p.memory_id)
+            .await?
+            .unwrap_or(&self.store);
+        match store.get_edges_grouped(&p.memory_id).await {
             Ok(grouped) => Ok(CallToolResult::structured(
                 serde_json::to_value(grouped).unwrap(),
             )),
@@ -895,11 +1156,11 @@ impl HiveMind {
 }
 
 #[prompt_router]
-impl HiveMind {
+impl Mynd {
     /// List all memories with titles and tags
     #[prompt(
         name = "memory-list",
-        description = "List all stored memories with titles and tags. Use to browse what HiveMind knows before searching or editing."
+        description = "List all stored memories with titles and tags. Use to browse what Mynd knows before searching or editing."
     )]
     async fn memory_list_prompt(&self) -> Result<Vec<PromptMessage>, ErrorData> {
         self.do_memory_list_prompt().await
@@ -917,7 +1178,7 @@ impl HiveMind {
     /// Search memories by keyword and present results
     #[prompt(
         name = "memory-search",
-        description = "Search HiveMind memories by keyword. Returns matching memories with content snippets. Follow up with memory_recall for full content."
+        description = "Search Mynd memories by keyword. Returns matching memories with content snippets. Follow up with memory_recall for full content."
     )]
     async fn memory_search_prompt(
         &self,
@@ -985,11 +1246,23 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
             let tags = if m.tags.is_empty() {
                 String::new()
             } else {
-                format!(" [{}]", m.tags.join(", "))
+                format!(" [{}]", single_line(&m.tags.join(", ")))
             };
             let snippet: String = m.content.chars().take(80).collect();
-            let ellipsis = if m.content.len() > 80 { "…" } else { "" };
-            format!("{} | {} | {}{}{}", m.id, m.title, snippet, ellipsis, tags)
+            let ellipsis = if m.content.chars().count() > 80 {
+                "…"
+            } else {
+                ""
+            };
+            // One line per memory, whatever the title or content contain.
+            format!(
+                "{} | {} | {}{}{}",
+                m.id,
+                single_line(&m.title),
+                single_line(&snippet),
+                ellipsis,
+                tags
+            )
         })
         .collect();
 
@@ -1010,9 +1283,10 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
     };
 
     Ok(format!(
-        "HiveMind — Suggest Connections\n\
+        "Mynd — Suggest Connections\n\
          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
          You have {} memories and {} existing connections.\n\n\
+         {DATA_NOTICE}\n\n\
          MEMORIES:\n\
          {}\n\n\
          EXISTING CONNECTIONS:\n\
@@ -1064,16 +1338,16 @@ pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<
 
 #[tool_handler]
 #[prompt_handler]
-impl rmcp::ServerHandler for HiveMind {
-    fn get_info(&self) -> rmcp::model::ServerInfo {
-        rmcp::model::ServerInfo::new(
+impl rmcp::ServerHandler for Mynd {
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        rmcp::model::ServerConfig::new(
             rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .build(),
         )
         .with_server_info(rmcp::model::Implementation::new(
-            "hivemind",
+            "mynd",
             env!("CARGO_PKG_VERSION"),
         ))
     }

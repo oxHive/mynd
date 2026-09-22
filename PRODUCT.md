@@ -6,11 +6,11 @@ product
 
 ## Users
 
-Developers who use Claude Code and other MCP-compatible AI agents. They run HiveMind locally as a background service and interact with the dashboard to inspect, manage, and review what their agents remember. They're comfortable in the terminal, operate in dark environments, and have high standards for information density and clarity.
+Developers who use Claude Code and other MCP-compatible AI agents. They run Mynd locally as a background service and interact with the dashboard to inspect, manage, and review what their agents remember. They're comfortable in the terminal, operate in dark environments, and have high standards for information density and clarity.
 
 ## Product Purpose
 
-HiveMind is a local-first persistent memory store for AI coding agents. The dashboard is the control surface: browse and edit stored memories, review the relationship graph, triage feedback and conflicts, and manage server and sync settings. Success looks like a developer who never has to think about the UI — it's a quiet, reliable tool that stays out of the way.
+Mynd is a local-first persistent memory store for AI coding agents. The dashboard is the control surface: browse and edit stored memories, review the relationship graph, triage feedback and conflicts, and manage server and sync settings. Success looks like a developer who never has to think about the UI — it's a quiet, reliable tool that stays out of the way.
 
 ## Brand Personality
 
@@ -18,7 +18,7 @@ Calm, structured, capable. The interface should feel like a well-run filing syst
 
 ## Anti-references
 
-- Generic SaaS dashboards: metric cards, gradient accents, chart-heavy layouts, the Vercel/Datadog aesthetic. HiveMind is infrastructure, not analytics.
+- Generic SaaS dashboards: metric cards, gradient accents, chart-heavy layouts, the Vercel/Datadog aesthetic. Mynd is infrastructure, not analytics.
 - VS Code extension panels: too boxy, too much indirection, feels like an afterthought bolted onto a bigger app. The dashboard is a first-class product.
 
 ## Design Principles

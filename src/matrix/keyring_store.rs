@@ -6,30 +6,51 @@ pub trait SessionStore: Send + Sync {
     fn delete(&self, user_id: &str) -> Result<()>;
 }
 
+/// Current keyring service name. `LEGACY_SERVICE` is the pre-rename name, still
+/// read (and then migrated forward) so an existing Matrix login survives an
+/// upgrade without a re-login.
+const SERVICE: &str = "mynd-matrix";
+const LEGACY_SERVICE: &str = "hivemind-matrix";
+
 pub struct KeyringSessionStore;
 
 impl SessionStore for KeyringSessionStore {
     fn save(&self, user_id: &str, session_json: &str) -> Result<()> {
-        let entry = keyring::Entry::new("hivemind-matrix", user_id)?;
+        let entry = keyring::Entry::new(SERVICE, user_id)?;
         entry.set_password(session_json)?;
         Ok(())
     }
 
     fn load(&self, user_id: &str) -> Result<Option<String>> {
-        let entry = keyring::Entry::new("hivemind-matrix", user_id)?;
+        let entry = keyring::Entry::new(SERVICE, user_id)?;
         match entry.get_password() {
-            Ok(pw) => Ok(Some(pw)),
+            Ok(pw) => return Ok(Some(pw)),
+            Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e.into()),
+        }
+        // Fall back to the pre-rename service name; if found, migrate it forward
+        // so subsequent loads hit the new name directly.
+        let legacy = keyring::Entry::new(LEGACY_SERVICE, user_id)?;
+        match legacy.get_password() {
+            Ok(pw) => {
+                let _ = self.save(user_id, &pw);
+                let _ = legacy.delete_credential();
+                Ok(Some(pw))
+            }
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
     fn delete(&self, user_id: &str) -> Result<()> {
-        let entry = keyring::Entry::new("hivemind-matrix", user_id)?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.into()),
+        for service in [SERVICE, LEGACY_SERVICE] {
+            let entry = keyring::Entry::new(service, user_id)?;
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
+        Ok(())
     }
 }
 

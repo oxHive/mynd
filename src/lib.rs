@@ -1,12 +1,16 @@
 pub mod api;
 pub mod budget;
+pub mod chat_bot;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod dir_migrate;
+pub mod discord;
 pub mod hive;
 pub mod http;
 pub mod matrix;
 pub mod model;
+pub mod prompt_data;
 pub mod server;
 pub mod session;
 pub mod store;

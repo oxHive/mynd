@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
-import { PhDownloadSimple, PhFlag } from '@phosphor-icons/vue'
+import { PhDownloadSimple, PhFlag, PhShareNetwork } from '@phosphor-icons/vue'
 import { useMemoriesStore } from '../../stores/memories.js'
 import { useUiStore } from '../../stores/ui.js'
 import { useGraphStore } from '../../stores/graph.js'
@@ -212,6 +212,12 @@ async function handleDelete() {
   ui.showToast('Memory deleted')
 }
 
+function openInGraph() {
+  if (!memories.selected) return
+  graph.selectedNodeId = memories.selected.id
+  ui.requestActiveView('graph')
+}
+
 function handleReset() {
   showResetModal.value = false
   memories.resetDraft()
@@ -247,6 +253,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
           <CopyIdButton v-if="!memories.creatingNew" :id="memories.selected.id" />
         </span>
         <div v-if="memories.selected" class="flex gap-1">
+          <button v-if="!memories.creatingNew" class="hm-btn hm-btn-ghost hm-btn-sm" title="View in graph" @click="openInGraph">
+            <PhShareNetwork :size="14" /> Go to graph
+          </button>
           <button class="hm-btn hm-btn-ghost hm-btn-sm"
             :disabled="!canDownload"
             :title="memories.dirty ? 'Save changes before downloading' : 'Download as Markdown'"
@@ -292,7 +301,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
         <label class="hm-label" for="mem-title">TITLE</label>
         <input
           id="mem-title"
-          class="hm-input mb-6"
+          class="mem-title-input mb-6"
+          placeholder="Untitled memory"
           :value="memories.draft?.title"
           @input="memories.draft.title = $event.target.value"
         />
@@ -375,24 +385,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             <button class="hm-btn hm-btn-sm"
               :style="memories.draft.layer==='personal' ? 'background:var(--hm-personal-bg); border-color:var(--hm-personal); color:var(--hm-personal)' : 'border-color:var(--hm-border-subtle); color:var(--hm-text-secondary)'"
               @click="memories.draft.layer='personal'">personal</button>
+            <button class="hm-btn hm-btn-sm"
+              :disabled="!ui.orgInfo?.configured"
+              :title="ui.orgInfo?.configured ? '' : 'Org layer not configured — set [org_sync] in the global config'"
+              :style="memories.draft.layer==='org' ? 'background:var(--hm-org-bg); border-color:var(--hm-org); color:var(--hm-org)' : 'border-color:var(--hm-border-subtle); color:var(--hm-text-secondary)'"
+              @click="memories.draft.layer='org'">org</button>
           </div>
         </template>
 
         <!-- Connections -->
         <template v-if="memories.selected && graph.edgesFor(memories.selected.id).length">
-          <label class="hm-label">CONNECTIONS</label>
-          <div class="flex flex-col gap-1.5">
+          <label class="hm-label">CONNECTIONS · {{ graph.edgesFor(memories.selected.id).length }}</label>
+          <div class="flex flex-col gap-1.5 mb-2">
             <div v-for="edge in graph.edgesFor(memories.selected.id)" :key="edge.id"
-              class="flex items-center justify-between px-3 py-2 rounded-md cursor-pointer"
-              style="border:0.5px solid var(--hm-border-subtle); font-size:12px"
+              class="conn-row"
               @click="memories.select(memories.all.find(m => m.id === (edge.source_id === memories.selected.id ? edge.target_id : edge.source_id)))">
-              <span class="font-mono" style="font-size:10px; color:var(--hm-text-tertiary); margin-right:8px">
+              <span class="font-mono conn-row__rel">
                 {{ relationshipFor(edge) }}
               </span>
-              <span style="flex:1; color:var(--hm-text-primary)">
+              <span class="conn-row__title">
                 {{ memories.all.find(m => m.id === (edge.source_id === memories.selected.id ? edge.target_id : edge.source_id))?.title || edge.target_id }}
               </span>
-              <span style="color:var(--hm-text-tertiary)">→</span>
+              <span class="conn-row__arrow">→</span>
             </div>
           </div>
         </template>
@@ -450,6 +464,79 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 </template>
 
 <style scoped>
+.mem-title-input {
+  display: block;
+  width: 100%;
+  font-family: var(--hm-font-sans);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  color: var(--hm-text-primary);
+  background: transparent;
+  border: 0.5px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  outline: none;
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.mem-title-input::placeholder {
+  color: var(--hm-text-tertiary);
+  font-weight: 700;
+}
+
+.mem-title-input:hover {
+  border-color: var(--hm-border-subtle);
+}
+
+.mem-title-input:focus {
+  border-color: var(--hm-accent);
+  background: var(--hm-bg-elevated);
+}
+
+.conn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  border: 0.5px solid var(--hm-border-subtle);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.conn-row:hover {
+  border-color: var(--hm-border-default);
+  background: var(--hm-bg-elevated);
+}
+
+.conn-row__rel {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--hm-text-tertiary);
+  background: var(--hm-bg-elevated);
+  border: 0.5px solid var(--hm-border-subtle);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.conn-row__title {
+  flex: 1;
+  min-width: 0;
+  color: var(--hm-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conn-row__arrow {
+  flex-shrink: 0;
+  color: var(--hm-text-tertiary);
+}
+
 .flag-option {
   font-size: 12px;
   color: var(--hm-text-secondary);

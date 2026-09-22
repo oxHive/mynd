@@ -12,4 +12,10 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    include: ['src/**/*.test.js'],
+    exclude: ['e2e/**', 'node_modules/**'],
+  },
 })

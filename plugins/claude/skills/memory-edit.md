@@ -3,7 +3,7 @@ name: memory-edit
 description: Fetch a memory by ID or title and edit its content or tags. Pass the ID or title in the argument.
 ---
 
-Edit an existing memory in HiveMind.
+Edit an existing memory in Mynd.
 
 Input from $ARGUMENTS: a memory ID or title to look up.
 

@@ -6,6 +6,7 @@ import { useGraphStore } from '../../stores/graph.js'
 import { useUpdateStore } from '../../stores/update.js'
 import StatusRow from './StatusRow.vue'
 import oxhiveMark from '../../assets/oxhive-mark.png'
+import { BASE } from '../../api/client.js'
 
 const ui = useUiStore()
 const feedback = useFeedbackStore()
@@ -17,11 +18,11 @@ const feedbackCount = computed(() =>
 )
 
 const navItems = [
-  { id: 'analytics', label: 'Analytics' },
-  { id: 'memories', label: 'Memories' },
-  { id: 'graph', label: 'Graph' },
-  { id: 'feedback', label: 'Feedback' },
-  { id: 'settings', label: 'Settings' },
+  { id: 'analytics', label: 'Analytics', icon: 'analytics' },
+  { id: 'memories', label: 'Memories', icon: 'memories' },
+  { id: 'graph', label: 'Graph', icon: 'graph' },
+  { id: 'feedback', label: 'Feedback', icon: 'feedback' },
+  { id: 'settings', label: 'Settings', icon: 'settings' },
 ]
 
 // Pending connection suggestions: badged on the two pages that surface them
@@ -39,14 +40,14 @@ const statusDot = computed(() => {
   return 'green'
 })
 
-const statusText = computed(() => {
-  if (ui.serverStatus === 'unreachable') return 'unreachable'
-  if (ui.serverStatus === 'syncing') return 'syncing…'
-  if (ui.serverStatus === 'sync_failed') return 'sync failed'
-  return 'running'
+const memoryCount = computed(() => {
+  if (!ui.serverInfo) return '—'
+  const primary = ui.serverInfo?.memory_count ?? ui.serverInfo?.memoryCount ?? 0
+  const org = ui.orgInfo?.count ?? 0
+  return primary + org
 })
 
-const memoryCount = computed(() => ui.serverInfo?.memory_count ?? ui.serverInfo?.memoryCount ?? '—')
+const serverAddress = computed(() => (BASE || 'http://localhost:3456').replace(/^https?:\/\//, ''))
 
 const syncInfo = computed(() => ui.syncInfo)
 
@@ -67,6 +68,30 @@ const syncDot = computed(() => {
   const diffSec = Math.floor(Date.now() / 1000) - last
   return diffSec > 600 ? 'amber' : 'green'
 })
+
+const conflictCount = computed(() => syncInfo.value?.conflict_count ?? 0)
+const conflictDot = computed(() => (conflictCount.value > 0 ? 'amber' : 'green'))
+
+const orgInfo = computed(() => ui.orgInfo)
+
+const orgSyncStatusText = computed(() => {
+  if (!orgInfo.value?.configured) return null
+  if (!orgInfo.value?.enabled) return 'configured, sync disabled'
+  const last = orgInfo.value?.last_synced_at
+  if (!last) return 'not yet synced'
+  const diffSec = Math.floor(Date.now() / 1000) - last
+  if (diffSec < 60) return 'synced · just now'
+  const diffMin = Math.floor(diffSec / 60)
+  return `synced · ${diffMin}m ago`
+})
+
+const orgSyncDot = computed(() => {
+  if (!orgInfo.value?.configured || !orgInfo.value?.enabled) return 'gray'
+  const last = orgInfo.value?.last_synced_at
+  if (!last) return 'gray'
+  const diffSec = Math.floor(Date.now() / 1000) - last
+  return diffSec > 600 ? 'amber' : 'green'
+})
 </script>
 
 <template>
@@ -82,7 +107,7 @@ const syncDot = computed(() => {
             fill="none" stroke="var(--hm-accent)" stroke-width="1.2" />
           <circle cx="8" cy="8" r="2" fill="var(--hm-accent)" />
         </svg>
-        <div style="font-size:19px; font-weight:600; letter-spacing:-0.01em; color:var(--hm-text-primary); line-height:1">HiveMind</div>
+        <div style="font-size:19px; font-weight:600; letter-spacing:-0.01em; color:var(--hm-text-primary); line-height:1">Mynd</div>
       </div>
       <span class="font-mono self-end" style="font-size:10px; color:var(--hm-text-tertiary); line-height:1">
         v{{ ui.serverInfo?.version || '—' }}
@@ -98,10 +123,36 @@ const syncDot = computed(() => {
           :class="{ 'nav-item--active': ui.activeView === item.id }"
           :aria-current="ui.activeView === item.id ? 'page' : undefined"
         >
-          <span>{{ item.label }}</span>
+          <span class="nav-item__left">
+            <svg class="nav-item__icon" width="16" height="16" :viewBox="item.icon === 'settings' ? '0 0 24 24' : '0 0 16 16'" fill="none" aria-hidden="true">
+              <template v-if="item.icon === 'analytics'">
+                <path d="M2.5 13.5V8.5M8 13.5V4.5M13.5 13.5V6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+              </template>
+              <template v-else-if="item.icon === 'memories'">
+                <ellipse cx="8" cy="3.6" rx="5" ry="2.1" stroke="currentColor" stroke-width="1.3" />
+                <path d="M3 3.6V8c0 1.16 2.24 2.1 5 2.1s5-.94 5-2.1V3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                <path d="M3 8v4.4c0 1.16 2.24 2.1 5 2.1s5-.94 5-2.1V8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+              </template>
+              <template v-else-if="item.icon === 'graph'">
+                <circle cx="11.5" cy="3.5" r="1.7" stroke="currentColor" stroke-width="1.3" />
+                <circle cx="11.5" cy="12.5" r="1.7" stroke="currentColor" stroke-width="1.3" />
+                <circle cx="4" cy="8" r="1.7" stroke="currentColor" stroke-width="1.3" />
+                <path d="M5.5 7.1l4.4-2.7M5.5 8.9l4.4 2.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+              </template>
+              <template v-else-if="item.icon === 'feedback'">
+                <path d="M3.5 2v12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                <path d="M3.5 2.8h7.3c.8 0 1.2.9.7 1.5l-1.8 2.2 1.8 2.2c.5.6.1 1.5-.7 1.5H3.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+              </template>
+              <template v-else-if="item.icon === 'settings'">
+                <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" stroke="currentColor" stroke-width="1.8" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                  stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+              </template>
+            </svg>
+            <span>{{ item.label }}</span>
+          </span>
           <span v-if="navBadgeCount(item.id) > 0"
-            class="font-mono rounded-sm px-1.5 py-0.5"
-            style="font-size:10px; background:var(--hm-warning-bg); color:var(--hm-warning)">
+            class="nav-item__badge font-mono">
             {{ navBadgeCount(item.id) }}
           </span>
         </button>
@@ -114,26 +165,22 @@ const syncDot = computed(() => {
         <button
           @click="update.changelogOpen = true"
           class="nav-item"
-          style="border-radius:6px"
+          style="border-radius:6px; flex-wrap:nowrap"
         >
-          <span>Update available</span>
+          <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0">Update available</span>
           <span
             class="font-mono rounded-sm px-1.5 py-0.5"
-            style="font-size:10px; background:var(--hm-warning-bg); color:var(--hm-warning)">
+            style="font-size:10px; background:var(--hm-warning-bg); color:var(--hm-warning); white-space:nowrap; flex-shrink:0">
             v{{ update.latestVersion }}
           </span>
         </button>
       </div>
       <div class="px-5 pb-5 pt-4"
         style="border-top:0.5px solid var(--hm-border-subtle)">
-        <StatusRow v-if="syncStatusText" :dot="syncDot" :text="syncStatusText" />
-        <StatusRow
-          v-if="(syncInfo?.conflict_count ?? 0) > 0"
-          dot="amber"
-          :text="`${syncInfo.conflict_count} conflict${syncInfo.conflict_count > 1 ? 's' : ''} need review`"
-          :class="{ 'mt-1': syncStatusText }"
-        />
-        <StatusRow :dot="statusDot" :text="statusText" :class="{ 'mt-1': syncStatusText || (syncInfo?.conflict_count ?? 0) > 0 }" />
+        <StatusRow :dot="statusDot" k="server" :v="serverAddress" />
+        <StatusRow v-if="syncStatusText" :dot="syncDot" pulse k="sync" :v="syncStatusText" class="mt-1" />
+        <StatusRow v-if="orgInfo?.configured" :dot="orgSyncDot" pulse k="org" :v="orgSyncStatusText" class="mt-1" />
+        <StatusRow :dot="conflictDot" k="conflicts" :v="String(conflictCount)" class="mt-1" />
         <StatusRow dot="gray" :text="`${memoryCount} memories`" class="mt-1" />
       </div>
     </div>
@@ -148,18 +195,32 @@ const syncDot = computed(() => {
 
 <style scoped>
 .nav-item {
-  width: 100%;
+  width: calc(100% - 16px);
+  margin: 1px 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 20px;
+  padding: 9px 12px;
   font-size: 13px;
   text-align: left;
   color: var(--hm-text-secondary);
   background: transparent;
   border: none;
+  border-radius: 8px;
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
+}
+
+.nav-item__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-item__icon {
+  flex-shrink: 0;
+  color: var(--hm-text-tertiary);
+  transition: color 0.1s;
 }
 
 .nav-item:hover,
@@ -167,6 +228,11 @@ const syncDot = computed(() => {
   background: var(--hm-bg-elevated);
   color: var(--hm-text-primary);
   outline: none;
+}
+
+.nav-item:hover .nav-item__icon,
+.nav-item:focus-visible .nav-item__icon {
+  color: var(--hm-text-primary);
 }
 
 .nav-item:focus-visible {
@@ -178,7 +244,24 @@ const syncDot = computed(() => {
   background: var(--hm-bg-elevated);
   color: var(--hm-text-primary);
   font-weight: 500;
-  box-shadow: inset 2px 0 0 var(--hm-accent);
+}
+
+.nav-item--active .nav-item__icon {
+  color: var(--hm-text-primary);
+}
+
+.nav-item__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1;
+  background: var(--hm-warning-bg);
+  color: var(--hm-warning);
 }
 
 .footer {

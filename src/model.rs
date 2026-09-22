@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum Layer {
     Personal,
     Workspace,
+    Org,
 }
 
 impl std::fmt::Display for Layer {
@@ -12,6 +13,7 @@ impl std::fmt::Display for Layer {
         match self {
             Layer::Personal => write!(f, "personal"),
             Layer::Workspace => write!(f, "workspace"),
+            Layer::Org => write!(f, "org"),
         }
     }
 }
@@ -22,6 +24,7 @@ impl std::str::FromStr for Layer {
         match s {
             "personal" => Ok(Layer::Personal),
             "workspace" => Ok(Layer::Workspace),
+            "org" => Ok(Layer::Org),
             _ => Err(anyhow::anyhow!("invalid layer: {s}")),
         }
     }
@@ -117,6 +120,12 @@ mod tests {
         assert_eq!(MemoryType::Preference.to_string(), "preference");
         assert_eq!(MemoryType::Project.to_string(), "project");
         assert_eq!(MemoryType::History.to_string(), "history");
+    }
+
+    #[test]
+    fn layer_org_roundtrips_through_string() {
+        let l: Layer = "org".parse().unwrap();
+        assert_eq!(l.to_string(), "org");
     }
 
     #[test]

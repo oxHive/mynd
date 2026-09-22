@@ -3,7 +3,7 @@ name: memory-connections
 description: Show a memory's connections to other memories, grouped by relationship (parent, child, sibling). Pass the memory's ID or title in the argument.
 ---
 
-Show how a memory connects to the rest of what's stored in HiveMind.
+Show how a memory connects to the rest of what's stored in Mynd.
 
 Input from $ARGUMENTS: a memory ID or title to look up.
 

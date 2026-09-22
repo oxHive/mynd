@@ -92,8 +92,8 @@ function toggle() {
 <template>
   <div class="relative" ref="root">
     <button class="hm-btn hm-btn-sm" :class="modelValue ? 'hm-btn-default' : 'hm-btn-ghost'"
-      style="font-family:var(--hm-font-mono)" @click="toggle">
-      <span>{{ activeLabel }}</span>
+      style="font-family:var(--hm-font-mono); max-width:100%" @click="toggle">
+      <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ activeLabel }}</span>
       <span v-if="modelValue" class="tag-filter-clear inline-flex items-center" @click.stop="clear">
         <PhX :size="11" weight="bold" />
       </span>
@@ -149,7 +149,7 @@ function toggle() {
   border-radius: 8px;
   border: 0.5px solid var(--hm-border-default);
   background: var(--hm-bg-overlay);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--hm-bg-base) 70%, black);
 }
 
 .tag-filter-row {

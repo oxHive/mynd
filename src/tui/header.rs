@@ -34,7 +34,7 @@ pub fn render_header(data: &StatusData, no_color: bool, area: Rect, buf: &mut Bu
         .padding(Padding::new(2, 2, 0, 0))
         .title(Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!("{HEX_MARK} HiveMind"), brand_style),
+            Span::styled(format!("{HEX_MARK} Mynd"), brand_style),
             Span::styled(format!(" v{}", data.version), dim(no_color)),
             Span::raw(" "),
         ]));
@@ -91,17 +91,18 @@ mod tests {
     fn sample_data() -> StatusData {
         StatusData {
             version: "0.6.0",
-            project_label: Some("oxhive-hivemind".to_string()),
+            project_label: Some("oxhive-mynd".to_string()),
             server_up: true,
             server_host: "127.0.0.1".to_string(),
             server_port: 3456,
-            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            db_path: "~/.local/share/mynd/memories.db".to_string(),
             memory_count: 128,
             sync_enabled: false,
             sync_remote_url: String::new(),
             registered_clients: vec!["claude".to_string(), "opencode".to_string()],
             project: None,
             matrix: crate::cli::MatrixStatusLine::NotConfigured,
+            discord: crate::cli::DiscordStatusLine::NotConfigured,
         }
     }
 
@@ -120,9 +121,40 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(content.contains("HiveMind"));
-        assert!(content.contains("oxhive-hivemind"));
+        assert!(content.contains("Mynd"));
+        assert!(content.contains("oxhive-mynd"));
         assert!(content.contains("128"));
+    }
+
+    #[test]
+    fn header_shows_budget_line_when_project_present() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut data = sample_data();
+        data.project = Some(crate::cli::ProjectStatus {
+            project_name: "hivemind".to_string(),
+            has_local_config: false,
+            file_open_rule_count: 0,
+            mention_trigger_count: 0,
+            loaded: vec![],
+            skipped: vec![],
+            used_tokens: 500,
+            max_tokens: 2000,
+            truncated: false,
+        });
+        terminal
+            .draw(|frame| render_header(&data, false, frame.area(), frame.buffer_mut()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("500"));
+        assert!(content.contains("2000"));
+        assert!(content.contains("1500 remaining"));
     }
 
     #[test]
@@ -139,8 +171,8 @@ mod tests {
         let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
 
         // Text content is unchanged regardless of no_color.
-        assert!(content.contains("HiveMind"));
-        assert!(content.contains("oxhive-hivemind"));
+        assert!(content.contains("Mynd"));
+        assert!(content.contains("oxhive-mynd"));
         assert!(content.contains("128"));
 
         // No cell in the rendered buffer carries a foreground color when no_color is set.

@@ -2,9 +2,9 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "hivemind",
+    name = "mynd",
     version,
-    about = "HiveMind — persistent memory for AI coding agents"
+    about = "Mynd — persistent memory for AI coding agents"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -13,7 +13,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Scaffold .hivemind.toml + CLAUDE.md integration for this project
+    /// Scaffold .mynd.toml + CLAUDE.md integration for this project
     Init,
     /// Show config and preview what session start will inject
     Status {
@@ -41,15 +41,20 @@ pub enum Command {
         #[command(subcommand)]
         action: McpAction,
     },
-    /// Manage HiveMind as a background service
+    /// Manage Mynd as a background service
     Service {
         #[command(subcommand)]
         action: ServiceAction,
     },
-    /// Matrix chat interface: capture/recall HiveMind memories from a room or DM
+    /// Matrix chat interface: capture/recall Mynd memories from a room or DM
     Matrix {
         #[command(subcommand)]
         action: MatrixAction,
+    },
+    /// Discord chat interface: capture/recall Mynd memories from a channel or DM
+    Discord {
+        #[command(subcommand)]
+        action: DiscordAction,
     },
     /// Migrate the database from the legacy ~/.hivemind/ path to XDG data dir
     Migrate,
@@ -59,25 +64,89 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage memories (list, search, create, edit, delete, tag)
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+    /// Manage the memory relationship graph (edges between memories)
+    Edge {
+        #[command(subcommand)]
+        action: EdgeAction,
+    },
+    /// Review and triage flagged-memory feedback
+    Feedback {
+        #[command(subcommand)]
+        action: FeedbackAction,
+    },
+    /// Review and resolve sync conflicts
+    Conflict {
+        #[command(subcommand)]
+        action: ConflictAction,
+    },
+    /// Manage the tag namespace registry (colors, values, descriptions)
+    Tags {
+        #[command(subcommand)]
+        action: TagsAction,
+    },
+    /// Manage the max-content-tokens guardrail
+    Limits {
+        #[command(subcommand)]
+        action: LimitsAction,
+    },
+    /// Export/import memories, or wipe all local data
+    Data {
+        #[command(subcommand)]
+        action: DataAction,
+    },
+    /// AI-assisted graph suggestions (requires `mynd up` to be running)
+    Suggest {
+        #[command(subcommand)]
+        action: SuggestAction,
+    },
+    /// Check for and apply Mynd updates
+    Update {
+        #[command(subcommand)]
+        action: UpdateAction,
+    },
+    /// Show analytics: tag/type/project counts, activity by day, and recall session logs
+    Analytics {
+        /// Emit machine-readable JSON instead of a text summary
+        #[arg(long)]
+        json: bool,
+        /// How many days of activity-by-day history to include
+        #[arg(long, default_value_t = 90)]
+        days: i64,
+        /// How many recent recall sessions to show
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum ServiceAction {
-    /// Install and enable HiveMind as a user-level background service
+    /// Install and enable Mynd as a user-level background service
     Install {
         /// Also serve the dashboard from the background service
         #[arg(long)]
         dashboard: bool,
-        /// Also install the Matrix bot unit (requires `hivemind matrix login` first)
+        /// Also install the Matrix bot unit (requires `mynd matrix login` first)
         #[arg(long)]
         matrix: bool,
         /// Enable Hive Mode (requires [hive] enabled = true in the global config first)
         #[arg(long)]
         hive: bool,
+        /// Also install the Discord bot unit (requires `mynd discord login` first)
+        #[arg(long)]
+        discord: bool,
+        /// (Linux only) Skip `loginctl enable-linger`. Without linger the
+        /// service only starts when you log in, not unattended at boot.
+        #[arg(long)]
+        no_linger: bool,
     },
-    /// Stop and remove the HiveMind background service
+    /// Stop and remove the Mynd background service
     Uninstall,
-    /// Show the status of the HiveMind background service
+    /// Show the status of the Mynd background service
     Status,
 }
 
@@ -85,7 +154,7 @@ pub enum ServiceAction {
 pub enum MatrixAction {
     /// Log into a Matrix account once; persists the session to the OS keyring
     Login,
-    /// Run the Matrix bot daemon (requires `hivemind matrix login` first)
+    /// Run the Matrix bot daemon (requires `mynd matrix login` first)
     Run {
         /// Print verbose connection/message logs to stderr
         #[arg(long)]
@@ -103,24 +172,66 @@ pub enum MatrixAction {
 }
 
 #[derive(Subcommand)]
+pub enum DiscordAction {
+    /// Log into a Discord bot account once; persists the token to the OS keyring
+    Login,
+    /// Run the Discord bot daemon (requires `mynd discord login` first)
+    Run {
+        /// Print verbose connection/message logs to stderr
+        #[arg(long)]
+        debug: bool,
+    },
+    /// Show whether the daemon is running and its sync/session state
+    Status,
+    /// Send a one-off DM to a user (connectivity smoke test, no daemon needed)
+    Send {
+        /// Recipient's Discord user ID (snowflake, e.g. 111111111111111111)
+        user_id: String,
+        /// Message text to send
+        message: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum McpAction {
-    /// Register HiveMind as an MCP server in a supported AI coding client
+    /// Register Mynd as an MCP server in a supported AI coding client
     Install {
         /// Client to register with: claude, opencode, kimi, codex, cursor, windsurf
         client: String,
     },
 }
 
+mod analytics;
+pub(crate) mod common;
+mod data;
+mod discord_cmds;
+mod edge;
+mod feedback;
 mod init;
+mod limits;
 mod matrix_cmds;
 mod mcp_install;
+mod memory;
+mod self_update;
 mod service;
 mod status;
+mod suggest;
+mod tags;
 #[cfg(test)]
 mod tests;
 
+pub use analytics::*;
+pub use data::*;
+pub use discord_cmds::*;
+pub use edge::*;
+pub use feedback::*;
 pub use init::*;
+pub use limits::*;
 pub use matrix_cmds::*;
 pub use mcp_install::*;
+pub use memory::*;
+pub use self_update::*;
 pub use service::*;
 pub use status::*;
+pub use suggest::*;
+pub use tags::*;

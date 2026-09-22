@@ -29,6 +29,10 @@ pub struct UpdateState {
     /// mid-update can re-anchor its elapsed-time counter.
     pub update_started_at: Option<i64>,
     pub platform_supported: bool,
+    /// Whether `POST /api/v1/update/apply` is allowed at all
+    /// (`[update] allow_apply_from_api`). Serialised so the dashboard can
+    /// hide the button instead of showing one that 403s.
+    pub apply_enabled: bool,
 }
 
 impl UpdateState {
@@ -44,6 +48,7 @@ impl UpdateState {
             error: None,
             update_started_at: None,
             platform_supported: cfg!(unix),
+            apply_enabled: true,
         }
     }
 }
@@ -57,7 +62,7 @@ pub struct ReleaseInfo {
 }
 
 /// Fetches release info from GitHub's releases API. The URL is overridable
-/// (constructor param, or `HIVEMIND_UPDATE_CHECK_URL` env var for the
+/// (constructor param, or `MYND_UPDATE_CHECK_URL` env var for the
 /// production default) so tests and manual E2E runs can point this at a
 /// local mock server instead of the real GitHub API.
 pub struct GitHubVersionSource {
@@ -73,17 +78,20 @@ impl Default for GitHubVersionSource {
 
 impl GitHubVersionSource {
     pub fn new() -> Self {
-        let api_url = std::env::var("HIVEMIND_UPDATE_CHECK_URL").unwrap_or_else(|_| {
-            "https://api.github.com/repos/oxhive/hivemind/releases/latest".to_string()
+        let api_url = std::env::var("MYND_UPDATE_CHECK_URL").unwrap_or_else(|_| {
+            "https://api.github.com/repos/oxhive/mynd/releases/latest".to_string()
         });
         GitHubVersionSource::with_url(api_url)
     }
 
     pub fn with_url(api_url: String) -> Self {
-        GitHubVersionSource {
-            client: reqwest::Client::new(),
-            api_url,
-        }
+        // A stalled response would otherwise park the check loop forever
+        // (and hang `mynd update check`): the loop awaits `check_once`.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        GitHubVersionSource { client, api_url }
     }
 
     pub async fn latest(&self) -> Result<ReleaseInfo> {
@@ -97,10 +105,7 @@ impl GitHubVersionSource {
         let resp = self
             .client
             .get(&self.api_url)
-            .header(
-                "User-Agent",
-                concat!("hivemind/", env!("CARGO_PKG_VERSION")),
-            )
+            .header("User-Agent", concat!("mynd/", env!("CARGO_PKG_VERSION")))
             .header("Accept", "application/vnd.github+json")
             .send()
             .await
@@ -209,13 +214,21 @@ pub async fn run_update(state: SharedUpdateState, events: Events) {
     }
 }
 
-async fn do_update() -> Result<()> {
+pub(crate) async fn do_update() -> Result<()> {
+    // Resolved before run_binstall(), not after: cargo-binstall replaces this
+    // binary's path via an atomic rename, which unlinks the running
+    // process's original inode. Post-replace, /proc/self/exe (what
+    // std::env::current_exe reads) resolves to "<path> (deleted)" — a path
+    // that doesn't exist, so exec() on it fails with ENOENT. Resolving here
+    // captures the plain path, which still resolves correctly to the new
+    // binary once the rename lands.
+    let exe = std::env::current_exe().context("resolving current executable path")?;
     ensure_binstall_available().await?;
     run_binstall().await?;
-    restart()
+    restart(&exe)
 }
 
-async fn ensure_binstall_available() -> Result<()> {
+pub(crate) async fn ensure_binstall_available() -> Result<()> {
     let ok = tokio::process::Command::new("cargo")
         .args(["binstall", "-V"])
         .output()
@@ -231,9 +244,9 @@ async fn ensure_binstall_available() -> Result<()> {
     Ok(())
 }
 
-async fn run_binstall() -> Result<()> {
+pub(crate) async fn run_binstall() -> Result<()> {
     let output = tokio::process::Command::new("cargo")
-        .args(["binstall", "oxhivemind", "--no-confirm", "--force"])
+        .args(["binstall", "oxmynd", "--no-confirm", "--force"])
         .kill_on_drop(true)
         .output()
         .await
@@ -254,19 +267,18 @@ async fn run_binstall() -> Result<()> {
 /// running under systemd/launchd or a foreground terminal. Never returns on
 /// success — only returns (as an `Err`) if `exec()` itself fails.
 #[cfg(unix)]
-fn restart() -> Result<()> {
+fn restart(exe: &std::path::Path) -> Result<()> {
     use std::os::unix::process::CommandExt;
-    let exe = std::env::current_exe().context("resolving current executable path")?;
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let err = std::process::Command::new(exe).args(args).exec();
     Err(anyhow::anyhow!("exec() failed: {err}"))
 }
 
 #[cfg(not(unix))]
-fn restart() -> Result<()> {
+fn restart(_exe: &std::path::Path) -> Result<()> {
     anyhow::bail!(
         "binary updated, but automatic restart is only supported on Unix — \
-         please restart hivemind manually to pick up the new version"
+         please restart mynd manually to pick up the new version"
     )
 }
 
@@ -287,7 +299,7 @@ mod tests {
                     Json(json!({
                         "tag_name": tag_name,
                         "body": body,
-                        "html_url": "https://github.com/oxhive/hivemind/releases/tag/test",
+                        "html_url": "https://github.com/oxhive/mynd/releases/tag/test",
                     }))
                 }
             }),
