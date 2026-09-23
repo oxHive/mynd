@@ -425,11 +425,7 @@ mod tests {
         let r = execute_session_start(&config(2000, vec!["tag:project:mynd"]), &s, None)
             .await
             .unwrap();
-        assert_eq!(
-            r.loaded.len(),
-            2,
-            "both mynd-tagged memories should load"
-        );
+        assert_eq!(r.loaded.len(), 2, "both mynd-tagged memories should load");
         assert!(r.skipped.is_empty());
         let mut titles: Vec<_> = r.loaded.iter().map(|l| l.entry.title.clone()).collect();
         titles.sort();
