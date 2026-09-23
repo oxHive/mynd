@@ -1390,7 +1390,7 @@ mod tests {
              [[matrix.rooms]]\n\
              room_id=\"!abc123:matrix.org\"\n\
              alias=\"mynd-project\"\n\
-             base_tags=[\"project:hivemind\"]\n",
+             base_tags=[\"project:mynd\"]\n",
         );
         let s = load_matrix_settings(&tmp.path().join("config.toml"))
             .unwrap()
@@ -1401,7 +1401,7 @@ mod tests {
         assert_eq!(s.rooms.len(), 1);
         assert_eq!(s.rooms[0].room_id, "!abc123:matrix.org");
         assert_eq!(s.rooms[0].alias.as_deref(), Some("mynd-project"));
-        assert_eq!(s.rooms[0].base_tags, vec!["project:hivemind".to_string()]);
+        assert_eq!(s.rooms[0].base_tags, vec!["project:mynd".to_string()]);
         assert_eq!(s.session_ttl_seconds, DEFAULT_SESSION_TTL_SECONDS);
     }
 
@@ -1468,7 +1468,7 @@ mod tests {
             "[defaults]\nmax_inject_tokens=1500\n\
              [matrix]\nhomeserver_url=\"https://old.example\"\nuser_id=\"@old:example\"\n\
              allowed_users=[\"@you:matrix.org\"]\n\
-             [[matrix.rooms]]\nroom_id=\"!abc:matrix.org\"\nbase_tags=[\"project:hivemind\"]\n",
+             [[matrix.rooms]]\nroom_id=\"!abc:matrix.org\"\nbase_tags=[\"project:mynd\"]\n",
         );
         write_matrix_login(&path, "https://matrix.org", "@bot:matrix.org").unwrap();
         let s = load_matrix_settings(&path).unwrap().unwrap();
@@ -1507,8 +1507,8 @@ mod tests {
              \n\
              [[discord.channels]]\n\
              channel_id=\"222222222222222222\"\n\
-             alias=\"hivemind-project\"\n\
-             base_tags=[\"project:hivemind\"]\n",
+             alias=\"mynd-project\"\n\
+             base_tags=[\"project:mynd\"]\n",
         );
         let s = load_discord_settings(&tmp.path().join("config.toml"))
             .unwrap()
@@ -1518,7 +1518,7 @@ mod tests {
         assert_eq!(s.permission_gate, Some("manage_guild".to_string()));
         assert_eq!(s.channels.len(), 1);
         assert_eq!(s.channels[0].channel_id, "222222222222222222");
-        assert_eq!(s.channels[0].alias, Some("hivemind-project".to_string()));
+        assert_eq!(s.channels[0].alias, Some("mynd-project".to_string()));
     }
 
     #[test]
@@ -1571,7 +1571,7 @@ mod tests {
             "[server]\nport=3456\n\
              [discord]\napplication_id=\"000000000000000000\"\n\
              allowed_users=[\"111111111111111111\"]\n\
-             [[discord.channels]]\nchannel_id=\"222222222222222222\"\nbase_tags=[\"project:hivemind\"]\n",
+             [[discord.channels]]\nchannel_id=\"222222222222222222\"\nbase_tags=[\"project:mynd\"]\n",
         );
         write_discord_login(&path, "999999999999999999").unwrap();
         let s = load_discord_settings(&path).unwrap().unwrap();

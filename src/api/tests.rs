@@ -878,7 +878,7 @@ async fn save_tag_settings_persists_and_get_returns_it() {
     // not the predefined-namespace guard, so it's free to replace project/lang.
     let (app, _dir) = test_router_with_guard(false).await;
     let custom = json!({
-        "project": { "color": "#4a9eff", "values": ["hivemind", "oxhive"] },
+        "project": { "color": "#4a9eff", "values": ["mynd", "oxhive"] },
         "lang": { "color": "#e0607e", "values": ["rust"] },
     });
     let (status, saved) = req(

@@ -228,7 +228,7 @@ pub async fn spawn_hive_stack(
                     if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
                         tracing::info!("hive peer discovered: {}", info.get_fullname());
                         let fullname = info.get_fullname();
-                        if let Some(device_id) = fullname.strip_suffix("._hivemind._tcp.local.") {
+                        if let Some(device_id) = fullname.strip_suffix("._mynd._tcp.local.") {
                             // Prefer an IPv4 address; fall back to the first
                             // IPv6 one, bracketed so it forms a valid URL
                             // authority (a bare `fe80::1:3457` never parses).

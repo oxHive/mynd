@@ -406,13 +406,13 @@ mod tests {
                 "id_rust",
                 "rust notes",
                 "short",
-                vec!["lang:rust".to_string(), "project:hivemind".to_string()],
+                vec!["lang:rust".to_string(), "project:mynd".to_string()],
             ),
             (
                 "id_vue",
                 "vue notes",
                 "short",
-                vec!["lang:vue".to_string(), "project:hivemind".to_string()],
+                vec!["lang:vue".to_string(), "project:mynd".to_string()],
             ),
             (
                 "id_other",
@@ -422,14 +422,10 @@ mod tests {
             ),
         ])
         .await;
-        let r = execute_session_start(&config(2000, vec!["tag:project:hivemind"]), &s, None)
+        let r = execute_session_start(&config(2000, vec!["tag:project:mynd"]), &s, None)
             .await
             .unwrap();
-        assert_eq!(
-            r.loaded.len(),
-            2,
-            "both hivemind-tagged memories should load"
-        );
+        assert_eq!(r.loaded.len(), 2, "both mynd-tagged memories should load");
         assert!(r.skipped.is_empty());
         let mut titles: Vec<_> = r.loaded.iter().map(|l| l.entry.title.clone()).collect();
         titles.sort();
@@ -440,7 +436,7 @@ mod tests {
     async fn malformed_tag_expr_recall_is_skipped_not_found_not_fts_searched() {
         let (s, _dir) = store_with(&[(
             "id_a",
-            "tag:project:hivemind",
+            "tag:project:mynd",
             "a memory whose title happens to look like a tag expression",
             vec![],
         )])

@@ -234,7 +234,7 @@ mod tests {
             server_up: true,
             server_host: "127.0.0.1".to_string(),
             server_port: 3456,
-            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            db_path: "~/.local/share/mynd/memories.db".to_string(),
             memory_count: 42,
             sync_enabled: false,
             sync_remote_url: String::new(),

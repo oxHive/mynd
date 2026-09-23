@@ -168,7 +168,7 @@ async function removeTrusted(id) {
 
     <template v-else>
       <p v-if="hive.loadError === 'forbidden'" style="font-size:12px; color:var(--hm-text-tertiary)">
-        Hive controls are only available from the machine running HiveMind.
+        Hive controls are only available from the machine running Mynd.
       </p>
       <template v-else>
       <label class="flex items-center gap-3 mb-2 cursor-pointer">

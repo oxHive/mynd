@@ -153,12 +153,12 @@ mod tests {
         let mut reply = base_reply();
         reply.channels.push(ChannelStatus {
             channel_id: "222222222222222222".into(),
-            alias: Some("project-hivemind".into()),
+            alias: Some("project-mynd".into()),
             active_session: true,
             last_active_at: None,
         });
         let out = format_status_reply(&reply);
-        assert!(out.contains("project-hivemind  (active session)"));
+        assert!(out.contains("project-mynd  (active session)"));
         assert!(!out.contains("222222222222222222"));
     }
 

@@ -3,14 +3,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
-// A fresh scratch dir per Playwright run: HIVEMIND_DB_PATH gives the backend
+// A fresh scratch dir per Playwright run: MYND_DB_PATH gives the backend
 // an empty SQLite db, XDG_CONFIG_HOME keeps it from picking up whatever
 // global config.toml the person running this happens to have (unrelated
 // agent/hive/matrix settings that could make the server behave differently
 // than a clean install). Computed once here (this file runs once per
 // `playwright test` invocation), not per test -- individual tests reset
 // data via the DELETE /api/v1/memories/all endpoint instead of a restart.
-const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hivemind-e2e-'))
+const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mynd-e2e-'))
 const dbPath = path.join(scratchDir, 'test.db')
 
 export default defineConfig({
@@ -28,10 +28,10 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'cargo run --quiet --bin hivemind -- up --headless --plain',
+      command: 'cargo run --quiet --bin mynd -- up --headless --plain',
       cwd: '..',
       env: {
-        HIVEMIND_DB_PATH: dbPath,
+        MYND_DB_PATH: dbPath,
         XDG_CONFIG_HOME: scratchDir,
       },
       url: 'http://127.0.0.1:3456/api/v1/status',

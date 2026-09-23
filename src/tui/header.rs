@@ -132,7 +132,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut data = sample_data();
         data.project = Some(crate::cli::ProjectStatus {
-            project_name: "hivemind".to_string(),
+            project_name: "mynd".to_string(),
             has_local_config: false,
             file_open_rule_count: 0,
             mention_trigger_count: 0,

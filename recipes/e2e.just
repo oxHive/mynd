@@ -1,5 +1,5 @@
 # Dashboard test suites. Unit tests (Vitest) run in Node, no server needed.
-# E2E tests (Playwright) spin up a real `hivemind up --headless` backend
+# E2E tests (Playwright) spin up a real `mynd up --headless` backend
 # (fresh temp DB + XDG_CONFIG_HOME per run, see dashboard/playwright.config.js)
 # plus `vite dev`, then drive a real browser against them.
 

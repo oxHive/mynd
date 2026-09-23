@@ -7,8 +7,8 @@ import { test, expect, createMemory } from './fixtures.js'
 // known world coordinate and zeroes the camera transform, so world space ==
 // canvas pixel space -- letting the test click/drag at exact coordinates
 // instead of guessing where d3's force simulation happened to settle.
-const CAMERA_KEY = 'hivemind.graph.camera'
-const PINNED_KEY = 'hivemind.graph.pinned'
+const CAMERA_KEY = 'mynd.graph.camera'
+const PINNED_KEY = 'mynd.graph.pinned'
 const START = { x: 200, y: 200 }
 
 test.describe('graph node drag', () => {
