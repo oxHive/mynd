@@ -52,7 +52,7 @@ rpassword = "7.5.4"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 semver = "1"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
-mdns-sd = "0.20.2"
+mdns-sd = "0.21.3"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 hex = "0.4.3"
 rand = { version = "0.8", features = ["std"] }
