@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { getStatus } from '../api/memories.js'
 
 export const useUiStore = defineStore('ui', () => {
-  const activeView = ref('analytics')
+  const activeView = ref('graph')
   const serverStatus = ref('checking') // 'checking'|'running'|'unreachable'|'syncing'|'sync_failed'
   const serverInfo = ref(null)
   const syncInfo = ref(null)
