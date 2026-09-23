@@ -7,7 +7,7 @@ pub struct DeviceIdentity {
 }
 
 pub fn generate() -> DeviceIdentity {
-    let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
+    let signing_key = SigningKey::generate(&mut rand::rng());
     let device_id = device_id_from_public_key(&signing_key.verifying_key());
     DeviceIdentity {
         device_id,
