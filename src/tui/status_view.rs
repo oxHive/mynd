@@ -450,7 +450,7 @@ mod tests {
             server_up: true,
             server_host: "127.0.0.1".to_string(),
             server_port: 3456,
-            db_path: "~/.local/share/hivemind/memories.db".to_string(),
+            db_path: "~/.local/share/mynd/memories.db".to_string(),
             memory_count: 42,
             sync_enabled: false,
             sync_remote_url: String::new(),
@@ -490,7 +490,7 @@ mod tests {
         let data = sample_data();
         let content = render(&data, None, None);
         assert!(content.contains("running at http://127.0.0.1:3456"));
-        assert!(content.contains("~/.local/share/hivemind/memories.db"));
+        assert!(content.contains("~/.local/share/mynd/memories.db"));
     }
 
     #[test]
@@ -643,7 +643,7 @@ mod tests {
     fn draw_omits_no_project_message_when_project_is_some() {
         let mut data = sample_data();
         data.project = Some(ProjectStatus {
-            project_name: "hivemind".to_string(),
+            project_name: "mynd".to_string(),
             has_local_config: false,
             file_open_rule_count: 0,
             mention_trigger_count: 0,

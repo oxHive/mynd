@@ -1,6 +1,6 @@
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 
-const SERVICE_TYPE: &str = "_hivemind._tcp.local.";
+const SERVICE_TYPE: &str = "_mynd._tcp.local.";
 
 pub fn service_name(device_id: &str) -> String {
     format!("{device_id}.{SERVICE_TYPE}")
@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn service_name_includes_device_id_and_service_type() {
         let name = service_name("hive_abc123");
-        assert_eq!(name, "hive_abc123._hivemind._tcp.local.");
+        assert_eq!(name, "hive_abc123._mynd._tcp.local.");
     }
 
     #[test]

@@ -54,13 +54,13 @@ async fn store_lowercases_tags() {
         "mem_upper",
         "Title",
         "content",
-        &["Lang:Rust".into(), "PROJECT:HiveMind".into()],
+        &["Lang:Rust".into(), "PROJECT:Mynd".into()],
     ))
     .await
     .unwrap();
     let entry = s.recall_by_id("mem_upper").await.unwrap().unwrap();
     assert!(entry.tags.contains(&"lang:rust".to_string()));
-    assert!(entry.tags.contains(&"project:hivemind".to_string()));
+    assert!(entry.tags.contains(&"project:mynd".to_string()));
 }
 
 #[tokio::test]
@@ -71,7 +71,7 @@ async fn store_rejects_more_than_one_project_tag() {
             "mem_multi_project",
             "Title",
             "content",
-            &["project:hivemind".into(), "project:oxhive".into()],
+            &["project:mynd".into(), "project:oxhive".into()],
         ))
         .await;
     assert!(result.is_err());
@@ -403,7 +403,7 @@ async fn find_by_tag_expr_returns_matching_memories() {
         "mem_rust",
         "Rust notes",
         "content",
-        &["lang:rust".into(), "project:hivemind".into()],
+        &["lang:rust".into(), "project:mynd".into()],
     ))
     .await
     .unwrap();
@@ -411,7 +411,7 @@ async fn find_by_tag_expr_returns_matching_memories() {
         "mem_vue",
         "Vue notes",
         "content",
-        &["lang:vue".into(), "project:hivemind".into()],
+        &["lang:vue".into(), "project:mynd".into()],
     ))
     .await
     .unwrap();
@@ -424,7 +424,7 @@ async fn find_by_tag_expr_returns_matching_memories() {
     .await
     .unwrap();
 
-    let expr = crate::tag_query::parse("tag:project:hivemind & tag:lang:rust").unwrap();
+    let expr = crate::tag_query::parse("tag:project:mynd & tag:lang:rust").unwrap();
     let results = s.find_by_tag_expr(&expr).await.unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].title, "Rust notes");

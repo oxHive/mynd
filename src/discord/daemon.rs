@@ -543,7 +543,7 @@ mod tests {
             channels: vec![DiscordChannelMapping {
                 channel_id: "222222222222222222".into(),
                 alias: None,
-                base_tags: vec!["project:hivemind".into()],
+                base_tags: vec!["project:mynd".into()],
             }],
             session_ttl_seconds: crate::config::DEFAULT_SESSION_TTL_SECONDS,
         }

@@ -74,7 +74,7 @@ mod tests {
             last_sync_at: Some("2026-08-22T10:03:00Z".to_string()),
             channels: vec![ChannelStatus {
                 channel_id: "222222222222222222".to_string(),
-                alias: Some("hivemind-project".to_string()),
+                alias: Some("mynd-project".to_string()),
                 active_session: true,
                 last_active_at: Some("2026-08-22T10:02:40Z".to_string()),
             }],

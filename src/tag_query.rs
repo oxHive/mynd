@@ -215,18 +215,18 @@ mod tests {
 
     #[test]
     fn looks_like_tag_expr_detects_expected_prefixes() {
-        assert!(looks_like_tag_expr("tag:project:hivemind"));
+        assert!(looks_like_tag_expr("tag:project:mynd"));
         assert!(looks_like_tag_expr("!tag:status:done"));
         assert!(looks_like_tag_expr("(tag:a & tag:b)"));
-        assert!(looks_like_tag_expr("  tag:project:hivemind")); // leading whitespace trimmed
+        assert!(looks_like_tag_expr("  tag:project:mynd")); // leading whitespace trimmed
         assert!(!looks_like_tag_expr("my exact memory title"));
         assert!(!looks_like_tag_expr("plain fts keywords"));
     }
 
     #[test]
     fn parses_single_tag() {
-        let expr = parse("tag:project:hivemind").unwrap();
-        assert_eq!(expr, TagExpr::Tag("project:hivemind".to_string()));
+        let expr = parse("tag:project:mynd").unwrap();
+        assert_eq!(expr, TagExpr::Tag("project:mynd".to_string()));
     }
 
     #[test]
@@ -273,8 +273,8 @@ mod tests {
 
     #[test]
     fn tag_values_are_lowercased_on_parse() {
-        let expr = parse("tag:Project:HiveMind").unwrap();
-        assert_eq!(expr, TagExpr::Tag("project:hivemind".to_string()));
+        let expr = parse("tag:Project:Mynd").unwrap();
+        assert_eq!(expr, TagExpr::Tag("project:mynd".to_string()));
     }
 
     #[test]

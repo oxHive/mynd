@@ -2221,11 +2221,11 @@ fn data_export_import_and_wipe_round_trip() {
 #[test]
 fn analytics_reports_counts_across_tags_types_and_projects() {
     with_isolated_cli_env(|| {
-        add_memory("A", "a", &["topic:sync", "project:hivemind"]);
+        add_memory("A", "a", &["topic:sync", "project:mynd"]);
         cmd_memory(MemoryAction::Add {
             title: "B".to_string(),
             content: "b".to_string(),
-            tags: vec!["topic:sync".to_string(), "project:hivemind".to_string()],
+            tags: vec!["topic:sync".to_string(), "project:mynd".to_string()],
             layer: "workspace".to_string(),
             memory_type: "preference".to_string(),
         })

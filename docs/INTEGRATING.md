@@ -439,7 +439,7 @@ fi
 import sqlite3, requests, json
 
 OLD_DB = "/path/to/your/old.db"
-HIVEMIND = "http://127.0.0.1:3456/api/v1"
+MYND = "http://127.0.0.1:3456/api/v1"
 
 conn = sqlite3.connect(OLD_DB)
 rows = conn.execute("SELECT title, content, tags FROM your_table").fetchall()
@@ -449,12 +449,12 @@ for title, content, tags_raw in rows:
     tags = json.loads(tags_raw) if tags_raw else []
 
     # Skip if already exists
-    existing = requests.get(f"{HIVEMIND}/search", params={"q": title, "limit": 1}).json()
+    existing = requests.get(f"{MYND}/search", params={"q": title, "limit": 1}).json()
     if existing["count"] > 0:
         skipped += 1
         continue
 
-    requests.post(f"{HIVEMIND}/memories", json={
+    requests.post(f"{MYND}/memories", json={
         "title": title,
         "content": content,
         "tags": tags,

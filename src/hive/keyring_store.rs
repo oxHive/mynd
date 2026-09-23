@@ -9,13 +9,13 @@ pub struct KeyringHiveKeyStore;
 
 impl HiveKeyStore for KeyringHiveKeyStore {
     fn save(&self, device_id: &str, signing_key_hex: &str) -> Result<()> {
-        let entry = keyring::Entry::new("hivemind-hive", device_id)?;
+        let entry = keyring::Entry::new("mynd-hive", device_id)?;
         entry.set_password(signing_key_hex)?;
         Ok(())
     }
 
     fn load(&self, device_id: &str) -> Result<Option<String>> {
-        let entry = keyring::Entry::new("hivemind-hive", device_id)?;
+        let entry = keyring::Entry::new("mynd-hive", device_id)?;
         match entry.get_password() {
             Ok(pw) => Ok(Some(pw)),
             Err(keyring::Error::NoEntry) => Ok(None),

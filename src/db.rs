@@ -542,11 +542,11 @@ mod tests {
     fn org_db_path_sits_next_to_primary_db_path() {
         let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
         // SAFETY: test-only env var mutation; serialised by ENV_MUTEX.
-        unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/hivemind-test-xdg") };
+        unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/mynd-test-xdg") };
         let primary = resolve_db_path();
         let org = resolve_org_db_path();
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
-        assert_eq!(primary, "/tmp/hivemind-test-xdg/mynd/memories.db");
-        assert_eq!(org, "/tmp/hivemind-test-xdg/mynd/org.db");
+        assert_eq!(primary, "/tmp/mynd-test-xdg/mynd/memories.db");
+        assert_eq!(org, "/tmp/mynd-test-xdg/mynd/org.db");
     }
 }
