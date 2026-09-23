@@ -11,10 +11,10 @@ pub struct PairingCode {
 }
 
 pub fn generate_pairing_code(now: i64) -> PairingCode {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::RngExt;
+    let mut rng = rand::rng();
     let code: String = (0..CODE_LEN)
-        .map(|_| CODE_CHARS[rng.gen_range(0..CODE_CHARS.len())] as char)
+        .map(|_| CODE_CHARS[rng.random_range(0..CODE_CHARS.len())] as char)
         .collect();
     PairingCode {
         code,
