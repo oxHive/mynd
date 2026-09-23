@@ -12,6 +12,7 @@ jobs:
       contents: write
       pull-requests: read
       checks: write
+      packages: write
     # Pinned to a commit (see pull-request.yml); this job signs and publishes
     # release artifacts, so the workflow it runs must not change under it.
     uses: oxHive/pipelines/.github/workflows/rust-release.yml@v2
