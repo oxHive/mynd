@@ -82,16 +82,19 @@ This runs a shell command and injects its stdout into the conversation. It works
 ## Installation
 
 ```sh
-cargo binstall oxmynd       # download pre-built binary (recommended, includes dashboard)
+curl -fsSL https://get.oxhive.dev/mynd | sh    # pre-built binary into ~/.local/bin (recommended, includes dashboard)
+brew install oxhive/tap/mynd                   # or via Homebrew
 ```
+
+Upgrade later with `mynd upgrade` (install-script installs) or `brew update && brew upgrade oxhive/tap/mynd`.
 
 Compile from source instead:
 
 ```sh
-cargo install oxmynd        # dashboard shows setup instructions instead of the UI
+cargo install --git https://github.com/oxhive/mynd --locked oxmynd   # dashboard shows setup instructions instead of the UI
 ```
 
-To get the dashboard bundled in a source build, compile from a local checkout instead of crates.io:
+To get the dashboard bundled in a source build, compile from a local checkout:
 
 ```sh
 git clone https://github.com/oxhive/mynd
@@ -387,8 +390,8 @@ mynd data wipe [--yes]                        Permanently delete all memories, e
 
 mynd suggest start / status / revise / end    Drive an AI-assisted graph-suggestion session
 
-mynd update check [--json]                    Check GitHub releases for a newer version
-mynd update apply [--yes]                     Self-update via cargo-binstall
+mynd update [--json]                          Check GitHub releases for a newer version
+mynd upgrade [--yes]                          Upgrade in place (install-script installs; Homebrew/cargo get their command)
 
 mynd analytics [--days N] [--limit N]         Tag/type/project counts, activity by day, recall sessions
 ```
@@ -477,8 +480,8 @@ sync_on_startup = true
 [update]
 enabled = true                 # check GitHub releases for a newer version
 check_interval_seconds = 600
-allow_apply_from_api = true    # let the dashboard's Update button run `cargo binstall` + restart;
-                               # set false to require `mynd update apply` on the CLI
+allow_apply_from_api = true    # let the dashboard's Update button re-run the install script + restart
+                               # (install-script installs only); set false to require `mynd upgrade`
 ```
 
 `$XDG_CONFIG_HOME/mynd/config.toml` is used instead if `XDG_CONFIG_HOME` is set.

@@ -3171,7 +3171,7 @@ async fn search_includes_org_entries_when_configured() {
     assert_eq!(json["results"][0]["title"], "orgsearchable");
 }
 
-// POST /api/v1/update/apply spawns a real `cargo binstall` + process-replacing
+// POST /api/v1/update/apply runs the real install script + process-replacing
 // restart on success (see update::do_update), which must never run inside a
 // test — only its refusal paths are exercised here.
 #[tokio::test]

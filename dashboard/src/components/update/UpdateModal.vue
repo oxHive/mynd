@@ -17,6 +17,17 @@ let pollTimer = null
 let versionBeforeUpdate = null
 
 const isUpdating = computed(() => update.status === 'updating')
+const copied = ref(false)
+
+async function copyCommand() {
+  try {
+    await navigator.clipboard.writeText(update.manualCommand)
+    copied.value = true
+    setTimeout(() => { copied.value = false }, 1500)
+  } catch {
+    // clipboard unavailable (insecure context) — the command is selectable
+  }
+}
 const canDismiss = computed(() => !isUpdating.value)
 
 function trapFocus(e) {
@@ -127,11 +138,27 @@ onBeforeUnmount(() => {
           <MarkdownContent :text="update.releaseNotesMd" />
         </div>
 
+        <div v-if="update.manualCommand" class="mb-5">
+          <p class="text-xs mb-2" style="color:var(--hm-text-secondary)">
+            This install can't be upgraded from the dashboard. Run:
+          </p>
+          <div class="flex items-center gap-2 p-2 rounded"
+            style="background:var(--hm-bg-surface); border:0.5px solid var(--hm-border-default)">
+            <code class="font-mono text-xs flex-1 select-all" style="color:var(--hm-text-primary); overflow-wrap:anywhere">{{ update.manualCommand }}</code>
+            <button class="hm-btn hm-btn-default hm-btn-sm" @click="copyCommand">{{ copied ? 'Copied' : 'Copy' }}</button>
+          </div>
+        </div>
+
         <div class="flex justify-end gap-2">
-          <button class="hm-btn hm-btn-default" @click="emit('close')">Later</button>
-          <button class="hm-btn hm-btn-primary" @click="onUpdate">
-            {{ update.status === 'failed' ? 'Retry update' : 'Update' }}
-          </button>
+          <template v-if="update.manualCommand">
+            <button class="hm-btn hm-btn-primary" @click="emit('close')">Close</button>
+          </template>
+          <template v-else>
+            <button class="hm-btn hm-btn-default" @click="emit('close')">Later</button>
+            <button class="hm-btn hm-btn-primary" @click="onUpdate">
+              {{ update.status === 'failed' ? 'Retry update' : 'Update' }}
+            </button>
+          </template>
         </div>
       </template>
 

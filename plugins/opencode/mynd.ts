@@ -63,7 +63,7 @@ export default (async ({ client, directory, $ }) => {
         service: "mynd",
         level: "warn",
         message:
-          "mynd binary not found in PATH. MCP server not registered. Install: cargo binstall oxmynd",
+          "mynd binary not found in PATH. MCP server not registered. Install: curl -fsSL https://get.oxhive.dev/mynd | sh",
       },
     })
   }

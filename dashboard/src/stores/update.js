@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { getUpdateState, applyUpdate } from '../api/update.js'
 
 export const useUpdateStore = defineStore('update', () => {
   const available = ref(false)
   const platformSupported = ref(true)
+  const applyEnabled = ref(true)
+  const upgradeCommand = ref(null) // set for Homebrew/cargo installs, which can't self-upgrade
   const status = ref('idle') // 'idle'|'checking'|'updating'|'failed'
   const currentVersion = ref(null)
   const latestVersion = ref(null)
@@ -19,6 +21,8 @@ export const useUpdateStore = defineStore('update', () => {
       const data = await getUpdateState()
       available.value = !!data.available
       platformSupported.value = !!data.platform_supported
+      applyEnabled.value = data.apply_enabled ?? true
+      upgradeCommand.value = data.upgrade_command ?? null
       status.value = data.status ?? 'idle'
       currentVersion.value = data.current_version ?? null
       latestVersion.value = data.latest_version ?? null
@@ -31,6 +35,11 @@ export const useUpdateStore = defineStore('update', () => {
       // is momentarily unreachable — leave state as-is, next poll will retry
     }
   }
+
+  // When set, the dashboard can't upgrade this install and shows this
+  // command instead of the Update button.
+  const manualCommand = computed(() =>
+    upgradeCommand.value ?? (applyEnabled.value ? null : 'mynd upgrade'))
 
   async function startUpdate() {
     status.value = 'updating'
@@ -55,6 +64,7 @@ export const useUpdateStore = defineStore('update', () => {
   return {
     available,
     platformSupported,
+    manualCommand,
     status,
     currentVersion,
     latestVersion,
