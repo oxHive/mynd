@@ -29,6 +29,13 @@ pub struct UpdateState {
     /// mid-update can re-anchor its elapsed-time counter.
     pub update_started_at: Option<i64>,
     pub platform_supported: bool,
+    /// How this binary was installed. Only `script` installs can be
+    /// upgraded in place; the others are owned by their package manager.
+    pub install_method: InstallMethod,
+    /// The command to run by hand when `install_method` can't self-upgrade
+    /// (`None` for script installs). Serialised so the dashboard can show it
+    /// in place of the Update button.
+    pub upgrade_command: Option<String>,
     /// Whether `POST /api/v1/update/apply` is allowed at all
     /// (`[update] allow_apply_from_api`). Serialised so the dashboard can
     /// hide the button instead of showing one that 403s.
@@ -37,6 +44,7 @@ pub struct UpdateState {
 
 impl UpdateState {
     pub fn new_idle() -> Self {
+        let install_method = InstallMethod::detect();
         UpdateState {
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             latest_version: None,
@@ -48,6 +56,8 @@ impl UpdateState {
             error: None,
             update_started_at: None,
             platform_supported: cfg!(unix),
+            upgrade_command: install_method.manual_upgrade_command().map(str::to_string),
+            install_method,
             apply_enabled: true,
         }
     }
@@ -60,6 +70,8 @@ pub struct ReleaseInfo {
     pub notes_md: String,
     pub html_url: String,
 }
+
+const DEFAULT_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Fetches release info from GitHub's releases API. The URL is overridable
 /// (constructor param, or `MYND_UPDATE_CHECK_URL` env var for the
@@ -78,17 +90,25 @@ impl Default for GitHubVersionSource {
 
 impl GitHubVersionSource {
     pub fn new() -> Self {
+        GitHubVersionSource::with_timeout(DEFAULT_CHECK_TIMEOUT)
+    }
+
+    pub fn with_timeout(timeout: std::time::Duration) -> Self {
         let api_url = std::env::var("MYND_UPDATE_CHECK_URL").unwrap_or_else(|_| {
             "https://api.github.com/repos/oxhive/mynd/releases/latest".to_string()
         });
-        GitHubVersionSource::with_url(api_url)
+        GitHubVersionSource::build(api_url, timeout)
     }
 
     pub fn with_url(api_url: String) -> Self {
+        GitHubVersionSource::build(api_url, DEFAULT_CHECK_TIMEOUT)
+    }
+
+    fn build(api_url: String, timeout: std::time::Duration) -> Self {
         // A stalled response would otherwise park the check loop forever
-        // (and hang `mynd update check`): the loop awaits `check_once`.
+        // (and hang `mynd update`): the loop awaits `check_once`.
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
+            .timeout(timeout)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         GitHubVersionSource { client, api_url }
@@ -127,6 +147,36 @@ impl GitHubVersionSource {
     }
 }
 
+/// Whether `latest` is a strictly newer semver than this binary. Unparseable
+/// versions count as "not newer" so a malformed tag never nags anyone.
+pub fn is_newer_than_current(latest: &str) -> bool {
+    let current = env!("CARGO_PKG_VERSION");
+    match (
+        semver::Version::parse(current),
+        semver::Version::parse(latest),
+    ) {
+        (Ok(cur), Ok(latest)) => latest > cur,
+        _ => {
+            tracing::warn!(
+                "could not parse versions for comparison (current={current}, latest={latest})"
+            );
+            false
+        }
+    }
+}
+
+/// Best-effort check for `mynd status`: returns the latest version only when
+/// it's newer than this binary. Any failure (offline, rate-limited, slow
+/// network past `timeout`) is swallowed — status must never fail or stall
+/// because GitHub is unreachable.
+pub async fn newer_version_available(timeout: std::time::Duration) -> Option<String> {
+    let release = GitHubVersionSource::with_timeout(timeout)
+        .latest()
+        .await
+        .ok()?;
+    is_newer_than_current(&release.version).then_some(release.version)
+}
+
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -153,20 +203,7 @@ async fn check_once(state: &SharedUpdateState, source: &GitHubVersionSource, eve
         }
     };
 
-    let current = env!("CARGO_PKG_VERSION");
-    let is_newer = match (
-        semver::Version::parse(current),
-        semver::Version::parse(&release.version),
-    ) {
-        (Ok(cur), Ok(latest)) => latest > cur,
-        _ => {
-            tracing::warn!(
-                "could not parse versions for comparison (current={current}, latest={})",
-                release.version
-            );
-            false
-        }
-    };
+    let is_newer = is_newer_than_current(&release.version);
 
     let mut s = state.write().await;
     let was_available = s.available;
@@ -215,47 +252,173 @@ pub async fn run_update(state: SharedUpdateState, events: Events) {
 }
 
 pub(crate) async fn do_update() -> Result<()> {
-    // Resolved before run_binstall(), not after: cargo-binstall replaces this
-    // binary's path via an atomic rename, which unlinks the running
-    // process's original inode. Post-replace, /proc/self/exe (what
+    // Resolved before the install script runs, not after: the script `mv`s
+    // the new binary over this one, which unlinks the running process's
+    // original inode. Post-replace, /proc/self/exe (what
     // std::env::current_exe reads) resolves to "<path> (deleted)" — a path
     // that doesn't exist, so exec() on it fails with ENOENT. Resolving here
     // captures the plain path, which still resolves correctly to the new
     // binary once the rename lands.
     let exe = std::env::current_exe().context("resolving current executable path")?;
-    ensure_binstall_available().await?;
-    run_binstall().await?;
+    let method = InstallMethod::detect_from(&exe);
+    let InstallMethod::Script { install_dir } = &method else {
+        anyhow::bail!("{}", method.refusal_message());
+    };
+    run_install_script(install_dir, ScriptOutput::Capture).await?;
     restart(&exe)
 }
 
-pub(crate) async fn ensure_binstall_available() -> Result<()> {
-    let ok = tokio::process::Command::new("cargo")
-        .args(["binstall", "-V"])
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !ok {
-        anyhow::bail!(
-            "cargo-binstall is not installed — install it from \
-             https://github.com/cargo-bins/cargo-binstall, then try again"
-        );
-    }
-    Ok(())
+/// How the running `mynd` binary got onto this machine, which decides
+/// whether `mynd upgrade` may replace it or must defer to a package manager.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InstallMethod {
+    /// `curl -fsSL https://get.oxhive.dev/mynd | sh` — a plain binary in
+    /// `$INSTALL_DIR` (default `~/.local/bin`). Also the fallback for any
+    /// location we don't recognise, since that's where a custom
+    /// `INSTALL_DIR` puts it.
+    Script {
+        #[serde(skip)]
+        install_dir: std::path::PathBuf,
+    },
+    /// `brew install oxhive/tap/mynd` — lives under a Homebrew `Cellar`.
+    Homebrew,
+    /// `cargo install` — lives in `$CARGO_HOME/bin`.
+    Cargo,
 }
 
-pub(crate) async fn run_binstall() -> Result<()> {
-    let output = tokio::process::Command::new("cargo")
-        .args(["binstall", "oxmynd", "--no-confirm", "--force"])
-        .kill_on_drop(true)
-        .output()
+pub const INSTALL_SCRIPT_URL: &str = "https://get.oxhive.dev/mynd";
+
+impl InstallMethod {
+    pub fn detect() -> Self {
+        match std::env::current_exe() {
+            Ok(exe) => InstallMethod::detect_from(&exe),
+            // Without a path there's nothing to replace; report it as a
+            // cargo-style install so nothing tries to self-upgrade.
+            Err(_) => InstallMethod::Cargo,
+        }
+    }
+
+    pub fn detect_from(exe: &std::path::Path) -> Self {
+        // Homebrew symlinks `<prefix>/bin/mynd` into the Cellar, so resolve
+        // links first; fall back to the raw path if that fails.
+        let resolved = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+        let cargo_bin = std::env::var_os("CARGO_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".cargo")))
+            .map(|c| c.join("bin"));
+        InstallMethod::classify(&resolved, cargo_bin.as_deref())
+    }
+
+    /// Pure classification, split out so tests don't depend on the real
+    /// filesystem or environment.
+    fn classify(exe: &std::path::Path, cargo_bin: Option<&std::path::Path>) -> Self {
+        let in_cellar = exe
+            .components()
+            .any(|c| c.as_os_str() == "Cellar" || c.as_os_str() == ".linuxbrew");
+        if in_cellar {
+            return InstallMethod::Homebrew;
+        }
+        if cargo_bin.is_some_and(|bin| exe.parent() == Some(bin)) {
+            return InstallMethod::Cargo;
+        }
+        InstallMethod::Script {
+            install_dir: exe
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The command the user must run themselves, or `None` when `mynd
+    /// upgrade` can do it.
+    pub fn manual_upgrade_command(&self) -> Option<&'static str> {
+        match self {
+            InstallMethod::Script { .. } => None,
+            InstallMethod::Homebrew => Some("brew update && brew upgrade oxhive/tap/mynd"),
+            InstallMethod::Cargo => {
+                Some("cargo install --git https://github.com/oxhive/mynd --locked oxmynd")
+            }
+        }
+    }
+
+    /// The next step to tell someone who has an update waiting.
+    pub fn upgrade_hint(&self) -> &'static str {
+        self.manual_upgrade_command().unwrap_or("mynd upgrade")
+    }
+
+    pub fn refusal_message(&self) -> String {
+        let (how, cmd) = match self {
+            InstallMethod::Script { .. } => return String::new(),
+            InstallMethod::Homebrew => ("Homebrew", self.upgrade_hint()),
+            InstallMethod::Cargo => ("cargo", self.upgrade_hint()),
+        };
+        format!("mynd was installed with {how}, so it can't upgrade itself. Upgrade with:\n\n  {cmd}")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ScriptOutput {
+    /// Stream the installer's output to this terminal (`mynd upgrade`).
+    Inherit,
+    /// Collect it and surface stderr in the error (dashboard-triggered
+    /// upgrades, where there's no terminal to print to).
+    Capture,
+}
+
+/// Downloads the install script and runs it with `sh`, pointed at
+/// `install_dir` so it replaces this binary in place. The script is fetched
+/// with reqwest (not `curl | sh`) so there's no shell quoting of the path and
+/// no dependency on curl; `MYND_INSTALL_SCRIPT_URL` overrides the URL for
+/// tests and manual E2E runs.
+pub async fn run_install_script(install_dir: &std::path::Path, output: ScriptOutput) -> Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let url =
+        std::env::var("MYND_INSTALL_SCRIPT_URL").unwrap_or_else(|_| INSTALL_SCRIPT_URL.to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let resp = client
+        .get(&url)
+        .header("User-Agent", concat!("mynd/", env!("CARGO_PKG_VERSION")))
+        .send()
         .await
-        .context("failed to run cargo binstall")?;
-    if !output.status.success() {
+        .with_context(|| format!("downloading install script from {url}"))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("downloading install script returned HTTP {}", resp.status());
+    }
+    let script = resp.bytes().await.context("reading install script")?;
+
+    let (stdout, stderr) = match output {
+        ScriptOutput::Inherit => (std::process::Stdio::inherit(), std::process::Stdio::inherit()),
+        ScriptOutput::Capture => (std::process::Stdio::piped(), std::process::Stdio::piped()),
+    };
+    let mut child = tokio::process::Command::new("sh")
+        .env("INSTALL_DIR", install_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(stdout)
+        .stderr(stderr)
+        .kill_on_drop(true)
+        .spawn()
+        .context("failed to run sh for the install script")?;
+    {
+        let mut stdin = child.stdin.take().context("install script stdin unavailable")?;
+        stdin
+            .write_all(&script)
+            .await
+            .context("piping install script to sh")?;
+    } // drop closes stdin so sh sees EOF and runs to completion
+    let out = child
+        .wait_with_output()
+        .await
+        .context("waiting for install script")?;
+    if !out.status.success() {
         anyhow::bail!(
-            "cargo binstall failed (exit {}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            "install script failed (exit {}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     Ok(())
@@ -383,6 +546,99 @@ mod tests {
             "transient fetch error should not reset availability"
         );
         assert!(s.error.is_some());
+    }
+
+    #[test]
+    fn classify_detects_homebrew_cellar_paths() {
+        for exe in [
+            "/opt/homebrew/Cellar/mynd/0.16.0/bin/mynd",
+            "/usr/local/Cellar/mynd/0.16.0/bin/mynd",
+            "/home/linuxbrew/.linuxbrew/Cellar/mynd/0.16.0/bin/mynd",
+        ] {
+            assert_eq!(
+                InstallMethod::classify(std::path::Path::new(exe), None),
+                InstallMethod::Homebrew,
+                "{exe}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_detects_cargo_bin() {
+        let cargo_bin = std::path::Path::new("/home/u/.cargo/bin");
+        assert_eq!(
+            InstallMethod::classify(&cargo_bin.join("mynd"), Some(cargo_bin)),
+            InstallMethod::Cargo
+        );
+    }
+
+    #[test]
+    fn classify_treats_everything_else_as_script_install() {
+        let cargo_bin = std::path::Path::new("/home/u/.cargo/bin");
+        for dir in ["/home/u/.local/bin", "/usr/local/bin", "/opt/tools"] {
+            let dir = std::path::Path::new(dir);
+            assert_eq!(
+                InstallMethod::classify(&dir.join("mynd"), Some(cargo_bin)),
+                InstallMethod::Script {
+                    install_dir: dir.to_path_buf()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn only_script_installs_can_self_upgrade() {
+        let script = InstallMethod::Script {
+            install_dir: "/home/u/.local/bin".into(),
+        };
+        assert_eq!(script.manual_upgrade_command(), None);
+        assert_eq!(script.upgrade_hint(), "mynd upgrade");
+        assert!(
+            InstallMethod::Homebrew
+                .upgrade_hint()
+                .contains("brew upgrade oxhive/tap/mynd")
+        );
+        assert!(InstallMethod::Homebrew.refusal_message().contains("Homebrew"));
+        assert!(InstallMethod::Cargo.upgrade_hint().starts_with("cargo install"));
+    }
+
+    #[test]
+    fn install_script_runs_with_install_dir_and_reports_failure() {
+        let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(install_script_runs_with_install_dir_and_reports_failure_inner());
+    }
+
+    async fn install_script_runs_with_install_dir_and_reports_failure_inner() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = format!(
+            "printf '%s' \"$INSTALL_DIR\" > '{}'\nexit 0\n",
+            marker.display()
+        );
+        let app = Router::new().route("/ok", get(move || async move { script }))
+            .route("/fail", get(|| async { "echo boom >&2\nexit 3\n" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
+        unsafe { std::env::set_var("MYND_INSTALL_SCRIPT_URL", format!("http://{addr}/ok")) };
+        let ok = run_install_script(dir.path(), ScriptOutput::Capture).await;
+        // SAFETY: as above.
+        unsafe { std::env::set_var("MYND_INSTALL_SCRIPT_URL", format!("http://{addr}/fail")) };
+        let fail = run_install_script(dir.path(), ScriptOutput::Capture).await;
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("MYND_INSTALL_SCRIPT_URL") };
+
+        ok.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            dir.path().display().to_string()
+        );
+        let err = format!("{:#}", fail.unwrap_err());
+        assert!(err.contains("boom"), "{err}");
     }
 
     #[tokio::test]

@@ -61,7 +61,8 @@ fn main() -> Result<()> {
         Some(Command::Limits { action }) => cli::cmd_limits(action),
         Some(Command::Data { action }) => cli::cmd_data(action),
         Some(Command::Suggest { action }) => cli::cmd_suggest(action),
-        Some(Command::Update { action }) => cli::cmd_update(action),
+        Some(Command::Update { json }) => cli::cmd_update(json),
+        Some(Command::Upgrade { yes }) => cli::cmd_upgrade(yes),
         Some(Command::Analytics { json, days, limit }) => cli::cmd_analytics(json, days, limit),
     }
 }

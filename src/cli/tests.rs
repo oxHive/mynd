@@ -699,6 +699,18 @@ async fn build_status_data_matches_render_status_text() {
     let project = data.project.as_ref().unwrap();
     let expected_remaining = project.max_tokens.saturating_sub(project.used_tokens);
     assert!(via_struct.contains(&format!("Remaining:  ~{expected_remaining} tokens")));
+    assert!(!via_struct.contains("available"));
+
+    let mut data = data;
+    data.available_update = Some(AvailableUpdate {
+        version: "99.0.0".to_string(),
+        upgrade_hint: "brew update && brew upgrade oxhive/tap/mynd",
+    });
+    let with_update = format_status_text(&data);
+    assert!(with_update.contains(" (v99.0.0 available) — test-proj"));
+    assert!(with_update.contains(
+        "Update:     v99.0.0 available → brew update && brew upgrade oxhive/tap/mynd"
+    ));
 }
 
 /// Fix 1 regression: `build_status_data` (the function `hivemind status`
@@ -1588,14 +1600,14 @@ fn parses_analytics_with_overrides() {
 }
 
 #[test]
-fn parses_update_apply_with_yes_flag() {
-    let cli = Cli::parse_from(["mynd", "update", "apply", "--yes"]);
-    match cli.command {
-        Some(Command::Update {
-            action: UpdateAction::Apply { yes },
-        }) => assert!(yes),
-        _ => panic!("expected Update Apply command"),
-    }
+fn parses_update_as_check_only_and_upgrade_with_yes_flag() {
+    let cli = Cli::parse_from(["mynd", "update", "--json"]);
+    assert!(matches!(cli.command, Some(Command::Update { json: true })));
+    let cli = Cli::parse_from(["mynd", "upgrade", "--yes"]);
+    assert!(matches!(cli.command, Some(Command::Upgrade { yes: true })));
+    // The old subcommands are gone.
+    assert!(Cli::try_parse_from(["mynd", "update", "apply"]).is_err());
+    assert!(Cli::try_parse_from(["mynd", "update", "check"]).is_err());
 }
 
 // ── dashboard-parity command execution ───────────────────────────────────
@@ -1618,12 +1630,15 @@ fn with_isolated_cli_env<T>(f: impl FnOnce() -> T) -> T {
     unsafe {
         std::env::set_var("HIVEMIND_DB_PATH", &db_path);
         std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path());
+        // Keep `mynd status`'s version check off the real GitHub API.
+        std::env::set_var("MYND_UPDATE_CHECK_URL", "http://127.0.0.1:1/release");
     }
     let result = f();
     // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
     unsafe {
         std::env::remove_var("HIVEMIND_DB_PATH");
         std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("MYND_UPDATE_CHECK_URL");
     }
     result
 }
@@ -1648,12 +1663,15 @@ fn with_isolated_cli_env_and_dashboard_api_url<T>(api_url: &str, f: impl FnOnce(
     unsafe {
         std::env::set_var("HIVEMIND_DB_PATH", &db_path);
         std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path());
+        // Keep `mynd status`'s version check off the real GitHub API.
+        std::env::set_var("MYND_UPDATE_CHECK_URL", "http://127.0.0.1:1/release");
     }
     let result = f();
     // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
     unsafe {
         std::env::remove_var("HIVEMIND_DB_PATH");
         std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("MYND_UPDATE_CHECK_URL");
     }
     result
 }
@@ -2290,8 +2308,8 @@ fn update_check_reports_available_and_up_to_date() {
     unsafe {
         std::env::set_var("MYND_UPDATE_CHECK_URL", format!("http://{addr}/release"));
     }
-    cmd_update(UpdateAction::Check { json: false }).unwrap();
-    cmd_update(UpdateAction::Check { json: true }).unwrap();
+    cmd_update(false).unwrap();
+    cmd_update(true).unwrap();
     // SAFETY: test-only env mutation; serialised by ENV_MUTEX.
     unsafe {
         std::env::remove_var("MYND_UPDATE_CHECK_URL");
@@ -2299,11 +2317,45 @@ fn update_check_reports_available_and_up_to_date() {
 }
 
 #[test]
-fn update_apply_without_yes_is_cancelled_without_running_binstall() {
+fn upgrade_without_yes_is_cancelled_without_running_install_script() {
+    let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let app = axum::Router::new().route(
+                "/release",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "tag_name": "v99.0.0",
+                        "body": "notes",
+                        "html_url": "https://example.com/release",
+                    }))
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            addr_tx.send(listener.local_addr().unwrap()).unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    let addr = addr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // SAFETY: test-only env mutation; serialised by ENV_MUTEX. The install
+    // script URL points at a closed port so an accidental run fails loudly
+    // instead of touching the test binary.
+    unsafe {
+        std::env::set_var("MYND_UPDATE_CHECK_URL", format!("http://{addr}/release"));
+        std::env::set_var("MYND_INSTALL_SCRIPT_URL", "http://127.0.0.1:1/install");
+    }
     // `cargo test` runs with an empty/closed stdin, so `confirm()` reads EOF
-    // and returns false — this must short-circuit before touching
-    // cargo-binstall (which this test must never actually invoke).
-    cmd_update(UpdateAction::Apply { yes: false }).unwrap();
+    // and returns false — this must short-circuit before the install script.
+    // (The test binary lives under target/, so it detects as a script install.)
+    let result = cmd_upgrade(false);
+    // SAFETY: as above.
+    unsafe {
+        std::env::remove_var("MYND_UPDATE_CHECK_URL");
+        std::env::remove_var("MYND_INSTALL_SCRIPT_URL");
+    }
+    result.unwrap();
 }
 
 #[test]
@@ -2529,6 +2581,8 @@ fn cmd_status_reports_matrix_not_running_when_configured_but_no_daemon() {
     unsafe {
         std::env::set_var("HIVEMIND_DB_PATH", &db_path);
         std::env::set_var("XDG_CONFIG_HOME", cfg_dir.path());
+        // Keep `mynd status`'s version check off the real GitHub API.
+        std::env::set_var("MYND_UPDATE_CHECK_URL", "http://127.0.0.1:1/release");
     }
     // No matrix daemon is running against this isolated socket path, so this
     // exercises the "configured but not running" branch deterministically.
@@ -2537,6 +2591,7 @@ fn cmd_status_reports_matrix_not_running_when_configured_but_no_daemon() {
     unsafe {
         std::env::remove_var("HIVEMIND_DB_PATH");
         std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("MYND_UPDATE_CHECK_URL");
     }
     result.unwrap();
 }

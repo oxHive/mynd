@@ -205,8 +205,8 @@ pub struct UpdateSettings {
     pub enabled: bool,
     pub check_interval_seconds: u64,
     /// Whether the dashboard (`POST /api/v1/update/apply`) may trigger a
-    /// self-update and restart. `mynd update apply` on the CLI is always
-    /// available.
+    /// self-update and restart. `mynd upgrade` on the CLI is always
+    /// available. Either way, only install-script installs can self-update.
     pub allow_apply_from_api: bool,
 }
 

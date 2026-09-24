@@ -11,6 +11,7 @@ const HEX_MARK: &str = "\u{25c7}"; // ◇, matches the outline-icon dashboard si
 const BRAND_PURPLE: Color = Color::Rgb(0xa2, 0x9b, 0xef);
 const DIM: Color = Color::Rgb(0x8a, 0x8a, 0x9a);
 const CYAN: Color = Color::Rgb(0x67, 0xe8, 0xf9);
+const WARNING: Color = Color::Rgb(0xfb, 0xbf, 0x24);
 
 fn dim(no_color: bool) -> Style {
     if no_color {
@@ -29,15 +30,26 @@ pub fn render_header(data: &StatusData, no_color: bool, area: Rect, buf: &mut Bu
     if !no_color {
         brand_style = brand_style.fg(BRAND_PURPLE);
     }
+    let mut title = vec![
+        Span::raw(" "),
+        Span::styled(format!("{HEX_MARK} Mynd"), brand_style),
+        Span::styled(format!(" v{}", data.version), dim(no_color)),
+    ];
+    if let Some(update) = &data.available_update {
+        let mut update_style = Style::default();
+        if !no_color {
+            update_style = update_style.fg(WARNING);
+        }
+        title.push(Span::styled(
+            format!(" (v{} available)", update.version),
+            update_style,
+        ));
+    }
+    title.push(Span::raw(" "));
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::new(2, 2, 0, 0))
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!("{HEX_MARK} Mynd"), brand_style),
-            Span::styled(format!(" v{}", data.version), dim(no_color)),
-            Span::raw(" "),
-        ]));
+        .title(Line::from(title));
     let inner = block.inner(area);
     block.render(area, buf);
 
@@ -91,6 +103,7 @@ mod tests {
     fn sample_data() -> StatusData {
         StatusData {
             version: "0.6.0",
+            available_update: None,
             project_label: Some("oxhive-mynd".to_string()),
             server_up: true,
             server_host: "127.0.0.1".to_string(),
@@ -124,6 +137,28 @@ mod tests {
         assert!(content.contains("Mynd"));
         assert!(content.contains("oxhive-mynd"));
         assert!(content.contains("128"));
+    }
+
+    #[test]
+    fn header_marks_available_update_beside_version() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut data = sample_data();
+        data.available_update = Some(crate::cli::AvailableUpdate {
+            version: "0.7.0".to_string(),
+            upgrade_hint: "mynd upgrade",
+        });
+        terminal
+            .draw(|frame| render_header(&data, false, frame.area(), frame.buffer_mut()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("v0.6.0 (v0.7.0 available)"), "{content}");
     }
 
     #[test]

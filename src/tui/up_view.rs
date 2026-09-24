@@ -230,6 +230,7 @@ mod tests {
     fn sample_data() -> StatusData {
         StatusData {
             version: "0.14.3",
+            available_update: None,
             project_label: None,
             server_up: true,
             server_host: "127.0.0.1".to_string(),

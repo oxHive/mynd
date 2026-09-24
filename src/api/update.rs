@@ -37,8 +37,17 @@ pub(super) async fn apply_update(
             return Err(ApiError(
                 StatusCode::FORBIDDEN,
                 "self-update via the API is disabled ([update] allow_apply_from_api = false); \
-                 run `mynd update apply` instead"
+                 run `mynd upgrade` instead"
                     .into(),
+            ));
+        }
+        // Homebrew/cargo own the binary; replacing it behind their back
+        // would desync the package manager. The dashboard shows this
+        // command instead of the button, so this is the backstop.
+        if let Some(cmd) = &s.upgrade_command {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                format!("this install can't upgrade itself; run `{cmd}` instead"),
             ));
         }
         if s.status == UpdateStatus::Updating {

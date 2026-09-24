@@ -105,21 +105,27 @@ pub fn cmd_status(plain: bool) -> Result<()> {
             .enable_all()
             .build()?
             .block_on(async {
-                let sync = crate::config::SyncSettings::default();
-                let database = crate::db::open_database(&sync, &db_path).await?;
-                let conn = database.connect()?;
-                crate::db::run_migrations(&conn).await?;
-                let store = crate::store::SqliteStore::new(conn);
-                render_status(
-                    &cwd,
-                    &crate::config::global_config_path(),
-                    &store,
-                    &db_path,
-                    &clients,
-                    &settings,
-                    server_up,
-                )
-                .await
+                let build = async {
+                    let sync = crate::config::SyncSettings::default();
+                    let database = crate::db::open_database(&sync, &db_path).await?;
+                    let conn = database.connect()?;
+                    crate::db::run_migrations(&conn).await?;
+                    let store = crate::store::SqliteStore::new(conn);
+                    build_status_data(
+                        &cwd,
+                        &crate::config::global_config_path(),
+                        &store,
+                        &db_path,
+                        &clients,
+                        &settings,
+                        server_up,
+                    )
+                    .await
+                };
+                let (data, available_update) = tokio::join!(build, check_for_update(&settings));
+                let mut data = data?;
+                data.available_update = available_update;
+                Ok::<_, anyhow::Error>(format_status_text(&data))
             })?;
         Ok::<_, anyhow::Error>((result, clients))
     })?;
@@ -312,8 +318,38 @@ pub struct ProjectStatus {
     pub truncated: bool,
 }
 
+/// A newer release than the running binary, found by `mynd status`'s
+/// best-effort check.
+#[derive(Clone)]
+pub struct AvailableUpdate {
+    pub version: String,
+    /// `mynd upgrade`, or the package-manager command for Homebrew/cargo
+    /// installs.
+    pub upgrade_hint: &'static str,
+}
+
+/// How long `mynd status` waits on GitHub before giving up on the version
+/// check and rendering without it.
+const STATUS_UPDATE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Runs the status version check unless `[update] enabled = false`. Never
+/// fails; `None` means up to date, disabled, or unreachable.
+pub async fn check_for_update(settings: &crate::config::ServerSettings) -> Option<AvailableUpdate> {
+    if !settings.update.enabled {
+        return None;
+    }
+    let version = crate::update::newer_version_available(STATUS_UPDATE_CHECK_TIMEOUT).await?;
+    Some(AvailableUpdate {
+        version,
+        upgrade_hint: crate::update::InstallMethod::detect().upgrade_hint(),
+    })
+}
+
 pub struct StatusData {
     pub version: &'static str,
+    /// Filled in by the caller (not `build_status_data`), since only `mynd
+    /// status` pays for the network round-trip.
+    pub available_update: Option<AvailableUpdate>,
     pub project_label: Option<String>,
     pub server_up: bool,
     pub server_host: String,
@@ -413,6 +449,7 @@ pub async fn build_status_data(
 
     let mut data = StatusData {
         version,
+        available_update: None,
         project_label,
         server_up,
         server_host: probe_host,
@@ -495,11 +532,18 @@ pub fn format_status_text(data: &StatusData) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
+    let update_mark = match &data.available_update {
+        Some(u) => format!(" (v{} available)", u.version),
+        None => String::new(),
+    };
     match &data.project_label {
-        Some(label) => writeln!(out, "Mynd v{} — {label}", data.version).unwrap(),
-        None => writeln!(out, "Mynd v{}", data.version).unwrap(),
+        Some(label) => writeln!(out, "Mynd v{}{update_mark} — {label}", data.version).unwrap(),
+        None => writeln!(out, "Mynd v{}{update_mark}", data.version).unwrap(),
     }
     writeln!(out, "─────────────────────────────────────────────────────").unwrap();
+    if let Some(u) = &data.available_update {
+        writeln!(out, "Update:     v{} available → {}", u.version, u.upgrade_hint).unwrap();
+    }
     if data.server_up {
         writeln!(
             out,

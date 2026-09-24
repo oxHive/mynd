@@ -109,10 +109,18 @@ pub enum Command {
         #[command(subcommand)]
         action: SuggestAction,
     },
-    /// Check for and apply Mynd updates
+    /// Check GitHub releases for a newer Mynd version
     Update {
-        #[command(subcommand)]
-        action: UpdateAction,
+        /// Emit machine-readable JSON instead of a text summary
+        #[arg(long)]
+        json: bool,
+    },
+    /// Upgrade to the latest release (install-script installs only; Homebrew
+    /// and cargo installs get the command to run instead)
+    Upgrade {
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
     /// Show analytics: tag/type/project counts, activity by day, and recall session logs
     Analytics {

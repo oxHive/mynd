@@ -46,6 +46,13 @@ pub async fn run(
     )
     .await?;
 
+    // The version check hits GitHub, so it runs once in the background
+    // rather than on every refresh; the header picks it up when it lands.
+    let check_settings = settings.clone();
+    let mut update_check =
+        tokio::spawn(async move { crate::cli::check_for_update(&check_settings).await });
+    let mut update_checked = false;
+
     let mut ticker = tokio::time::interval(REFRESH_INTERVAL);
     ticker.tick().await; // first tick fires immediately; consume it, we already fetched above
     let no_color = crate::tui::no_color();
@@ -85,7 +92,10 @@ pub async fn run(
         .await
         {
             Ok(new_data) => {
+                // build_status_data never sets this; keep the one-shot result.
+                let available_update = data.available_update.take();
                 *data = new_data;
+                data.available_update = available_update;
                 *last_error = None;
             }
             Err(e) => {
@@ -106,6 +116,10 @@ pub async fn run(
         })?;
 
         tokio::select! {
+            result = &mut update_check, if !update_checked => {
+                update_checked = true;
+                data.available_update = result.ok().flatten();
+            }
             _ = ticker.tick() => {
                 refresh(
                     cwd, global_path, store, db_path, registered_clients, settings,
@@ -446,6 +460,7 @@ mod tests {
     fn sample_data() -> StatusData {
         StatusData {
             version: "0.14.3",
+            available_update: None,
             project_label: None,
             server_up: true,
             server_host: "127.0.0.1".to_string(),
