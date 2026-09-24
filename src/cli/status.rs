@@ -542,7 +542,12 @@ pub fn format_status_text(data: &StatusData) -> String {
     }
     writeln!(out, "─────────────────────────────────────────────────────").unwrap();
     if let Some(u) = &data.available_update {
-        writeln!(out, "Update:     v{} available → {}", u.version, u.upgrade_hint).unwrap();
+        writeln!(
+            out,
+            "Update:     v{} available → {}",
+            u.version, u.upgrade_hint
+        )
+        .unwrap();
     }
     if data.server_up {
         writeln!(

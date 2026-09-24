@@ -708,9 +708,11 @@ async fn build_status_data_matches_render_status_text() {
     });
     let with_update = format_status_text(&data);
     assert!(with_update.contains(" (v99.0.0 available) — test-proj"));
-    assert!(with_update.contains(
-        "Update:     v99.0.0 available → brew update && brew upgrade oxhive/tap/mynd"
-    ));
+    assert!(
+        with_update.contains(
+            "Update:     v99.0.0 available → brew update && brew upgrade oxhive/tap/mynd"
+        )
+    );
 }
 
 /// Fix 1 regression: `build_status_data` (the function `hivemind status`

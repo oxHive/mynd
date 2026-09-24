@@ -62,9 +62,7 @@ pub fn cmd_upgrade(yes: bool) -> Result<()> {
             return Ok(());
         }
         run_install_script(install_dir, ScriptOutput::Inherit).await?;
-        println!(
-            "upgraded. Restart `mynd up` (or the background service) to run the new version."
-        );
+        println!("upgraded. Restart `mynd up` (or the background service) to run the new version.");
         Ok(())
     })
 }

@@ -353,7 +353,9 @@ impl InstallMethod {
             InstallMethod::Homebrew => ("Homebrew", self.upgrade_hint()),
             InstallMethod::Cargo => ("cargo", self.upgrade_hint()),
         };
-        format!("mynd was installed with {how}, so it can't upgrade itself. Upgrade with:\n\n  {cmd}")
+        format!(
+            "mynd was installed with {how}, so it can't upgrade itself. Upgrade with:\n\n  {cmd}"
+        )
     }
 }
 
@@ -392,7 +394,10 @@ pub async fn run_install_script(install_dir: &std::path::Path, output: ScriptOut
     let script = resp.bytes().await.context("reading install script")?;
 
     let (stdout, stderr) = match output {
-        ScriptOutput::Inherit => (std::process::Stdio::inherit(), std::process::Stdio::inherit()),
+        ScriptOutput::Inherit => (
+            std::process::Stdio::inherit(),
+            std::process::Stdio::inherit(),
+        ),
         ScriptOutput::Capture => (std::process::Stdio::piped(), std::process::Stdio::piped()),
     };
     let mut child = tokio::process::Command::new("sh")
@@ -404,7 +409,10 @@ pub async fn run_install_script(install_dir: &std::path::Path, output: ScriptOut
         .spawn()
         .context("failed to run sh for the install script")?;
     {
-        let mut stdin = child.stdin.take().context("install script stdin unavailable")?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("install script stdin unavailable")?;
         stdin
             .write_all(&script)
             .await
@@ -598,8 +606,16 @@ mod tests {
                 .upgrade_hint()
                 .contains("brew upgrade oxhive/tap/mynd")
         );
-        assert!(InstallMethod::Homebrew.refusal_message().contains("Homebrew"));
-        assert!(InstallMethod::Cargo.upgrade_hint().starts_with("cargo install"));
+        assert!(
+            InstallMethod::Homebrew
+                .refusal_message()
+                .contains("Homebrew")
+        );
+        assert!(
+            InstallMethod::Cargo
+                .upgrade_hint()
+                .starts_with("cargo install")
+        );
     }
 
     #[test]
@@ -617,7 +633,8 @@ mod tests {
             "printf '%s' \"$INSTALL_DIR\" > '{}'\nexit 0\n",
             marker.display()
         );
-        let app = Router::new().route("/ok", get(move || async move { script }))
+        let app = Router::new()
+            .route("/ok", get(move || async move { script }))
             .route("/fail", get(|| async { "echo boom >&2\nexit 3\n" }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
