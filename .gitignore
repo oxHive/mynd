@@ -4,6 +4,7 @@
 /.superpowers/
 .mynd.local.toml
 /.testenv/
+/.claude/
 
 # opencode plugin build artifacts
 plugins/opencode/mynd.js
@@ -12,5 +13,4 @@ plugins/opencode/node_modules/
 
 # skills
 skills-lock.json
-.claude/skills
 .agents/skills
