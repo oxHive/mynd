@@ -774,6 +774,37 @@ If `mynd_session_start` errors during a session, the most likely causes are:
 mynd status    # previews exactly what would be injected
 ```
 
+### A background service on a headless box (e.g. Raspberry Pi) keeps restarting
+
+Hive Mode, the Matrix bot, and the Discord bot all store a secret (a device
+signing key or session token) in the OS keyring. On Linux, the default place
+for that is the D-Bus Secret Service (gnome-keyring, kwallet, ...), which
+isn't reachable on a headless box with no desktop login — `systemctl --user
+status mynd` shows `activating (auto-restart)` and running `mynd up` directly
+prints `Error: No default store has been set...`.
+
+Mynd falls back automatically to the Linux kernel keyring (`keyutils`) when no
+secret service is reachable, so this shouldn't happen on a current build; if
+you still see it, upgrade with `mynd upgrade` and check `mynd up`'s own output
+for the actual error, which is more specific than the systemd status line.
+
+**Trade-off**: the kernel-keyring fallback is in-memory only and doesn't
+survive a reboot (that's the kernel's own persistent-keyring expiry, not a
+Mynd choice) — after a reboot, Hive's device identity regenerates (you'll need
+to re-pair, see [docs/HIVE_PAIRING.md](docs/HIVE_PAIRING.md)) and the Matrix
+or Discord bot needs `mynd matrix login` / `mynd discord login` again. Fine
+for a box that's rarely rebooted.
+
+If you want these to survive reboots, you'd need a desktop secret service kept
+unlocked without an interactive login (roughly: `apt install gnome-keyring
+dbus-user-session`, then unlock it non-interactively at boot with
+`dbus-run-session gnome-keyring-daemon --unlock`, feeding it a stored
+passphrase). We don't ship this because it just moves the problem: that
+passphrase then has to live on disk in the clear so it can be fed in
+automatically, which isn't meaningfully more secure than the kernel-keyring
+fallback above. For most headless boxes, accepting the automatic fallback is
+the better trade.
+
 ---
 
 ## FAQ

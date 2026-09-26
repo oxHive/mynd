@@ -11,6 +11,7 @@ pub mod http;
 pub mod matrix;
 pub mod model;
 pub mod prompt_data;
+pub mod secure_store;
 pub mod server;
 pub mod session;
 pub mod store;
