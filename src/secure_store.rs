@@ -30,19 +30,19 @@ fn init_default_store() -> Result<()> {
         unix,
         not(any(target_os = "macos", target_os = "ios", target_os = "android"))
     ))]
-    let store: Arc<keyring_core::CredentialStore> = match zbus_secret_service_keyring_store::Store::new()
-    {
-        Ok(store) => store,
-        Err(e) => {
-            tracing::warn!(
-                "no D-Bus secret service reachable ({e}); falling back to the Linux kernel \
+    let store: Arc<keyring_core::CredentialStore> =
+        match zbus_secret_service_keyring_store::Store::new() {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::warn!(
+                    "no D-Bus secret service reachable ({e}); falling back to the Linux kernel \
                  keyring (keyutils) -- entries won't survive a reboot. See the README's \
                  \"A background service on a headless box keeps restarting\" section for \
                  what this means and how to get persistence."
-            );
-            linux_keyutils_keyring_store::Store::new()?
-        }
-    };
+                );
+                linux_keyutils_keyring_store::Store::new()?
+            }
+        };
 
     #[cfg(all(any(unix, windows), not(any(target_os = "ios", target_os = "android"))))]
     {
