@@ -12,24 +12,24 @@ pub struct KeyringTokenStore;
 
 impl TokenStore for KeyringTokenStore {
     fn save(&self, application_id: &str, token: &str) -> Result<()> {
-        let entry = keyring::Entry::new(SERVICE, application_id)?;
+        let entry = crate::secure_store::entry(SERVICE, application_id)?;
         entry.set_password(token)?;
         Ok(())
     }
 
     fn load(&self, application_id: &str) -> Result<Option<String>> {
-        let entry = keyring::Entry::new(SERVICE, application_id)?;
+        let entry = crate::secure_store::entry(SERVICE, application_id)?;
         match entry.get_password() {
             Ok(pw) => Ok(Some(pw)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(crate::secure_store::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
     fn delete(&self, application_id: &str) -> Result<()> {
-        let entry = keyring::Entry::new(SERVICE, application_id)?;
+        let entry = crate::secure_store::entry(SERVICE, application_id)?;
         match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(crate::secure_store::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.into()),
         }
     }

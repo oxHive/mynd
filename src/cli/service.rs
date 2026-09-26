@@ -396,6 +396,16 @@ fn service_install_linux(
             .unwrap_or(3457);
         messages.push(format!("Dashboard: http://127.0.0.1:{port}"));
     }
+    if matrix || hive || discord {
+        messages.push(String::new());
+        messages.push(
+            "Note: Hive/Matrix/Discord store a secret in the OS keyring. On a headless \
+             box with no D-Bus secret service, Mynd falls back to the Linux kernel keyring \
+             automatically, but that fallback doesn't survive a reboot -- see the README's \
+             \"A background service on a headless box keeps restarting\" section."
+                .to_string(),
+        );
+    }
     messages.push("Check on it any time with `mynd service status`.".to_string());
 
     Ok(messages.join("\n"))

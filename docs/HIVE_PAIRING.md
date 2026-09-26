@@ -77,3 +77,8 @@ with each other directly.
 - **"could not issue a pairing code" / "could not join the hive"**: the
   server's own rejection reason is included (expired/invalid code, peer
   unreachable, or the joining device was previously revoked from this hive).
+- **`mynd up` won't stay running on the headless box, or the device's
+  identity keeps changing after every reboot**: see [the README's "A
+  background service on a headless box keeps restarting"
+  section](../README.md#a-background-service-on-a-headless-box-eg-raspberry-pi-keeps-restarting) —
+  this is about OS keyring availability, not pairing itself.

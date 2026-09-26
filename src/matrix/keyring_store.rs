@@ -16,37 +16,37 @@ pub struct KeyringSessionStore;
 
 impl SessionStore for KeyringSessionStore {
     fn save(&self, user_id: &str, session_json: &str) -> Result<()> {
-        let entry = keyring::Entry::new(SERVICE, user_id)?;
+        let entry = crate::secure_store::entry(SERVICE, user_id)?;
         entry.set_password(session_json)?;
         Ok(())
     }
 
     fn load(&self, user_id: &str) -> Result<Option<String>> {
-        let entry = keyring::Entry::new(SERVICE, user_id)?;
+        let entry = crate::secure_store::entry(SERVICE, user_id)?;
         match entry.get_password() {
             Ok(pw) => return Ok(Some(pw)),
-            Err(keyring::Error::NoEntry) => {}
+            Err(crate::secure_store::Error::NoEntry) => {}
             Err(e) => return Err(e.into()),
         }
         // Fall back to the pre-rename service name; if found, migrate it forward
         // so subsequent loads hit the new name directly.
-        let legacy = keyring::Entry::new(LEGACY_SERVICE, user_id)?;
+        let legacy = crate::secure_store::entry(LEGACY_SERVICE, user_id)?;
         match legacy.get_password() {
             Ok(pw) => {
                 let _ = self.save(user_id, &pw);
                 let _ = legacy.delete_credential();
                 Ok(Some(pw))
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(crate::secure_store::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
     fn delete(&self, user_id: &str) -> Result<()> {
         for service in [SERVICE, LEGACY_SERVICE] {
-            let entry = keyring::Entry::new(service, user_id)?;
+            let entry = crate::secure_store::entry(service, user_id)?;
             match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Ok(()) | Err(crate::secure_store::Error::NoEntry) => {}
                 Err(e) => return Err(e.into()),
             }
         }

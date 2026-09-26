@@ -342,7 +342,7 @@ pub async fn run_up(
     // override is applied after that check. Don't let it become a bypass:
     // keep hive off (loudly) rather than running both sync modes at once --
     // and don't bail, or a stray override would turn into a restart loop.
-    let hive_enabled = if hive_enabled && settings.sync.enabled {
+    let mut hive_enabled = if hive_enabled && settings.sync.enabled {
         tracing::error!(
             "Hive Mode is enabled (dashboard override) but [sync] cloud sync is also enabled; \
              they are mutually exclusive, so Hive Mode stays OFF until [sync] is disabled"
@@ -356,9 +356,27 @@ pub async fn run_up(
     // block further down) so the REST/MCP write handlers wired into `app_router`
     // below can spawn push-on-change attempts (Plan 2 Task 11) using this same
     // identity, instead of each handler needing its own bootstrap call.
+    //
+    // A bootstrap failure (most commonly: no OS keyring/secret-service
+    // available, e.g. a headless Linux box with no D-Bus session) disables
+    // Hive Mode for this run instead of bailing -- same "don't bail" reasoning
+    // as the sync+hive conflict above, so a keyring-less box doesn't end up in
+    // a permanent systemd restart loop just because Hive couldn't start.
     let hive_identity: Option<DeviceIdentity> = if hive_enabled {
         let key_store = crate::hive::keyring_store::KeyringHiveKeyStore;
-        Some(crate::hive::bootstrap_self_identity(&store, &key_store).await?)
+        match crate::hive::bootstrap_self_identity(&store, &key_store).await {
+            Ok(identity) => Some(identity),
+            Err(e) => {
+                tracing::error!(
+                    "Hive Mode is enabled but its device identity could not be bootstrapped \
+                     ({e:#}); Hive Mode stays OFF for this run. This usually means no OS \
+                     keyring/secret-service is reachable (common on a headless Linux box with \
+                     no D-Bus session)."
+                );
+                hive_enabled = false;
+                None
+            }
+        }
     } else {
         None
     };
