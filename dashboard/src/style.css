@@ -1,66 +1,215 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* OxHive Design System tokens (dashboard handoff). Theme colors are CSS
+   variables (light on :root, dark under data-theme="dark", which the theme
+   store stamps on <html>), so every utility below switches theme on its own.
+   Radii follow OxHive (rounded = 2px, -lg = 4px, -xl = 8px) without
+   resetting Tailwind's scale: -sm/-md stay defined for existing screens and
+   -full stays a true circle. */
+@theme {
+  --font-headline: "Hanken Grotesk", sans-serif;
+  --font-body: "Lato", sans-serif;
+  /* "Mono" in OxHive is Hanken Grotesk with tabular numerals; no monospace face. */
+  --font-mono: "Hanken Grotesk", sans-serif;
+
+  --radius: 2px;
+  --radius-xs: 2px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 8px;
+  --radius-pill: 9999px;
+  --radius-circle: 50%;
+
+  --shadow-sm: 0 1px 2px 0 rgba(11,15,16,.05);
+  --shadow-md: 0 4px 6px -1px rgba(11,15,16,.08), 0 2px 4px -1px rgba(11,15,16,.04);
+  --shadow-lg: 0 10px 15px -3px rgba(11,15,16,.10), 0 4px 6px -2px rgba(11,15,16,.05);
+  --shadow-2xl: 0 25px 50px -12px rgba(11,15,16,.20);
+
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-card-hover: var(--card-hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-faint: var(--fg-faint);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-tint: var(--accent-tint);
+  --color-accent-ring: var(--accent-ring);
+  --color-field: var(--field);
+  --color-field-line: var(--field-line);
+  --color-chip: var(--chip);
+  --color-track: var(--track);
+  --color-overlay: var(--overlay);
+  --color-personal: var(--personal);
+  --color-personal-soft: var(--personal-soft);
+  --color-workspace: var(--workspace);
+  --color-workspace-soft: var(--workspace-soft);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-gold-line: var(--gold-line);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-line);
+  --color-danger-tint: var(--danger-tint);
+  --color-ok: var(--ok);
+  --color-ok-line: var(--ok-line);
+  --color-ok-tint: var(--ok-tint);
+
+  /* Sidebar: always dark, fixed values. */
+  --color-primary: #455f88;
+  --color-primary-dark: #7da0d4;
+  --color-gold-dark: #d6b25f;
+  --color-side: #0b0f10;
+  --color-side-hover: #161c1e;
+  --color-side-active: #1d2528;
+  --color-side-card: #0f1517;
+  --color-side-border: #1e2629;
+  --color-side-fg: #e7ecee;
+  --color-side-muted: #9a9d9f;
+  --color-ok-dot: #5fb87a;
+  --color-err-dot: #e0706c;
+
+  --animate-fade: fade .18s ease-out;
+  --animate-modal-in: modal-in .22s cubic-bezier(.22,1,.36,1);
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes modal-in { from { opacity: 0; transform: scale(.95); } to { opacity: 1; transform: scale(1); } }
+}
 
 :root {
-  /* Backgrounds — warm dark, a shade of the hive rather than pure gray */
-  --hm-bg-base: #121110;
-  --hm-bg-surface: #181716;
-  --hm-bg-elevated: #201e1c;
-  --hm-bg-overlay: #2b2825;
+  --bg: #f0f4f7;
+  --panel: #f7f9fb;
+  --card: #ffffff;
+  --card-hover: #f7f9fb;
+  --line: #d9e4ea;
+  --line-strong: #a9b4b9;
+  --fg-strong: #254067;
+  --fg: #2a3439;
+  --fg-muted: #566166;
+  --fg-faint: #717c82;
+  --accent: #455f88;
+  --accent-fg: #f6f7ff;
+  --field: #ffffff;
+  --field-line: #a9b4b9;
+  --chip: #e8eff3;
+  --overlay: rgba(37, 64, 103, .4);
 
-  /* Borders */
-  --hm-border-subtle: #2b2825;
-  --hm-border-default: #3a3732;
-  --hm-border-strong: #524e47;
+  --personal: #455f88;
+  --personal-soft: #d6e3ff;
+  --workspace: #4e7c5c;
+  --workspace-soft: #e1efe5;
+  --gold: #a9791f;
+  --gold-soft: #f5ecd6;
+  --danger: #9f403d;
+  --danger-soft: #fbe4e2;
+  --ok: #4e7c5c;
 
-  /* Text */
-  --hm-text-primary: #f2f0ec;
-  --hm-text-secondary: #a49e95;
-  --hm-text-tertiary: #67625a;
-  --hm-text-disabled: #44403a;
+  /* Not in the handoff (org layer isn't designed yet); kept distinct from
+     the personal blue. */
+  --org: #8a6bbf;
+  --org-soft: #ece5f7;
+}
 
-  /* Brand — Personal (teal) */
-  --hm-personal: #1d9e75;
-  --hm-personal-dim: #0f6e56;
-  --hm-personal-bg: #0d2820;
-  --hm-personal-ring: #1d9e7540;
+:root[data-theme="dark"] {
+  --bg: #0c1112;
+  --panel: #0f1517;
+  --card: #151d20;
+  --card-hover: #1a2327;
+  --line: #232e32;
+  --line-strong: #2e3b40;
+  --fg-strong: #e9eef0;
+  --fg: #d2dadd;
+  --fg-muted: #8d989d;
+  --fg-faint: #677074;
+  --accent: #7da0d4;
+  --accent-fg: #0b0f10;
+  --field: #0d1314;
+  --field-line: #2a363b;
+  --chip: #1c262a;
+  --overlay: rgba(0, 0, 0, .6);
 
-  /* Brand — Workspace (purple) */
-  --hm-workspace: #7f77dd;
-  --hm-workspace-dim: #3c3489;
-  --hm-workspace-bg: #1a1830;
-  --hm-workspace-ring: #7f77dd40;
+  --personal: #7da0d4;
+  --personal-soft: #1e2a3c;
+  --workspace: #74b186;
+  --workspace-soft: #182a1f;
+  --gold: #d6b25f;
+  --gold-soft: #2c2614;
+  --danger: #e08583;
+  --danger-soft: #321e1e;
+  --ok: #74b186;
 
-  /* Brand — Org (blue) */
-  --hm-org: #3d84d9;
-  --hm-org-dim: #1f5da3;
-  --hm-org-bg: #10233b;
-  --hm-org-ring: #3d84d940;
+  --org: #b49ae0;
+  --org-soft: #2a2238;
+}
 
-  /* Semantic states */
-  --hm-warning: #ba7517;
-  --hm-warning-bg: #2a1e0a;
-  --hm-warning-border: #fac775;
-  --hm-danger: #a32d2d;
-  --hm-danger-bg: #220f0f;
-  --hm-danger-border: #f09595;
-  --hm-success: #1d9e75;
-  --hm-pending: #ba7517;
+/* Derived tints, declared on both so they follow the theme. */
+:root, :root[data-theme="dark"] {
+  --accent-tint: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent) 18%, transparent);
+  --gold-line: color-mix(in srgb, var(--gold) 35%, transparent);
+  --ok-line: color-mix(in srgb, var(--ok) 40%, var(--line));
+  --ok-tint: color-mix(in srgb, var(--ok) 6%, var(--card));
+  --danger-line: color-mix(in srgb, var(--danger) 40%, var(--line));
+  --danger-tint: color-mix(in srgb, var(--danger) 4%, var(--card));
+  --track: color-mix(in srgb, var(--line) 45%, transparent);
+}
 
-  /* Monospace surfaces */
-  --hm-mono-bg: #171614;
-  --hm-mono-border: #2b2825;
+/* Legacy --hm-* names, mapped onto the OxHive tokens so screens that still
+   use them pick up the new palette. Values the graph canvas reads via
+   getComputedStyle must stay plain colors (no color-mix). */
+:root {
+  --hm-bg-base: var(--bg);
+  --hm-bg-surface: var(--panel);
+  --hm-bg-elevated: var(--chip);
+  --hm-bg-overlay: var(--card);
 
-  /* Brand accent — honey gold. Used for focus, active markers, and the hex
-     mark only, so teal/purple stay reserved for the layer semantics and
-     amber-orange stays reserved for warnings. */
-  --hm-accent: #d9a441;
-  --hm-accent-ring: #d9a44155;
+  --hm-border-subtle: var(--line);
+  --hm-border-default: var(--line-strong);
+  --hm-border-strong: var(--line-strong);
 
-  /* Typography */
-  --hm-font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --hm-font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", monospace;
+  --hm-text-primary: var(--fg-strong);
+  --hm-text-secondary: var(--fg-muted);
+  --hm-text-tertiary: var(--fg-faint);
+  --hm-text-disabled: color-mix(in srgb, var(--fg-faint) 55%, transparent);
 
-  /* Type scale */
+  --hm-personal: var(--personal);
+  --hm-personal-dim: var(--personal);
+  --hm-personal-bg: var(--personal-soft);
+  --hm-personal-ring: color-mix(in srgb, var(--personal) 25%, transparent);
+
+  --hm-workspace: var(--workspace);
+  --hm-workspace-dim: var(--workspace);
+  --hm-workspace-bg: var(--workspace-soft);
+  --hm-workspace-ring: color-mix(in srgb, var(--workspace) 25%, transparent);
+
+  --hm-org: var(--org);
+  --hm-org-dim: var(--org);
+  --hm-org-bg: var(--org-soft);
+  --hm-org-ring: color-mix(in srgb, var(--org) 25%, transparent);
+
+  --hm-warning: var(--gold);
+  --hm-warning-bg: var(--gold-soft);
+  --hm-warning-border: var(--gold-line);
+  --hm-danger: var(--danger);
+  --hm-danger-bg: var(--danger-soft);
+  --hm-danger-border: var(--danger-line);
+  --hm-success: var(--ok);
+  --hm-pending: var(--gold);
+
+  --hm-mono-bg: var(--chip);
+  --hm-mono-border: var(--line);
+
+  --hm-accent: var(--accent);
+  --hm-accent-ring: var(--accent-ring);
+
+  --hm-font-sans: "Lato", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --hm-font-mono: "Hanken Grotesk", sans-serif;
+
   --hm-text-xs: 10px;
   --hm-text-sm: 11px;
   --hm-text-base: 12px;
@@ -69,40 +218,22 @@
   --hm-text-xl: 15px;
 }
 
-/* Light theme — same warm hive undertone, inverted. Brand hues (personal,
-   workspace, warning, danger, accent) stay the same values as dark so the
-   palette reads as one identity across both modes; only surfaces, borders,
-   text, and the tinted -bg/-border variants (which exist purely for
-   legibility against their surface) change. */
-:root[data-theme="light"] {
-  --hm-bg-base: #f7f4ee;
-  --hm-bg-surface: #ffffff;
-  --hm-bg-elevated: #efeae1;
-  --hm-bg-overlay: #fffdf9;
-
-  --hm-border-subtle: #e7e0d3;
-  --hm-border-default: #d8cfbd;
-  --hm-border-strong: #b6a98e;
-
-  --hm-text-primary: #211d17;
-  --hm-text-secondary: #6e6759;
-  --hm-text-tertiary: #948c7a;
-  --hm-text-disabled: #c2bbaa;
-
-  --hm-personal-bg: #e2f4ec;
-  --hm-workspace-bg: #ecebfa;
-  --hm-org-bg: #e2ecfa;
-
-  --hm-warning-bg: #fbf0dc;
-  --hm-warning-border: #dba14b;
-  --hm-danger-bg: #fbe9e9;
-  --hm-danger-border: #cf6c6c;
-
-  --hm-mono-bg: #f1ece0;
-  --hm-mono-border: #e7e0d3;
-
-  --hm-accent-ring: #d9a44133;
+.material-symbols-outlined {
+  font-variation-settings: "FILL" 0, "wght" 300, "GRAD" 0, "opsz" 24;
+  vertical-align: middle;
+  user-select: none;
 }
+
+.font-mono { font-variant-numeric: tabular-nums; }
+
+/* Range slider (Settings > Appearance). Fill width comes from --pct. */
+.range {
+  -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; margin: 0; outline: none; cursor: pointer;
+  background: linear-gradient(to right, var(--accent) var(--pct), var(--line-strong) var(--pct));
+}
+.range::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--card); border: 2px solid var(--accent); box-shadow: 0 1px 2px rgba(11,15,16,.05); }
+.range::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--card); border: 2px solid var(--accent); }
+.range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-ring); }
 
 html, body, #app {
   height: 100%;
@@ -116,6 +247,7 @@ body {
   color: var(--hm-text-primary);
   background: var(--hm-bg-base);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 .hm-shell {
@@ -130,119 +262,136 @@ body {
   min-width: 760px;
 }
 
-/* Inputs */
-.hm-input {
-  height: 32px;
-  padding: 0 10px;
-  font-size: 13px;
-  font-family: var(--hm-font-sans);
-  background: var(--hm-bg-elevated);
-  border: 0.5px solid var(--hm-border-subtle);
-  border-radius: 6px;
-  color: var(--hm-text-primary);
-  outline: none;
-  width: 100%;
+/* Shared component classes. In the components layer so Tailwind utilities
+   on the same element (font-headline, w-[110px], ...) win over them. */
+@layer components {
+  /* Inputs (OxHive field) */
+  .hm-input {
+    height: 36px;
+    padding: 0 12px;
+    font-size: 14px;
+    font-family: var(--font-body);
+    background: var(--field);
+    border: 1px solid var(--field-line);
+    border-radius: 4px;
+    color: var(--fg);
+    outline: none;
+    width: 100%;
+    transition: border-color .15s, box-shadow .15s;
+  }
+
+  .hm-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+
+  .hm-input::placeholder {
+    color: var(--fg-faint);
+  }
+
+  .hm-input:disabled {
+    opacity: .6;
+    cursor: not-allowed;
+  }
+
+  /* Buttons (OxHive Btn) */
+  .hm-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    font-family: var(--font-headline);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    height: 32px;
+    padding: 0 14px;
+    transition: background .15s, opacity .15s, border-color .15s, color .15s;
+    white-space: nowrap;
+  }
+
+  .hm-btn:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .hm-btn-sm {
+    height: 26px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .hm-btn-primary {
+    background: var(--fg-strong);
+    color: #ffffff;
+  }
+
+  :root[data-theme="dark"] .hm-btn-primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+  }
+
+  .hm-btn-primary:hover:not(:disabled),
+  .hm-btn-danger:hover:not(:disabled) {
+    opacity: .9;
+  }
+
+  .hm-btn-default {
+    background: transparent;
+    border-color: var(--line-strong);
+    color: var(--fg);
+  }
+
+  .hm-btn-default:hover:not(:disabled) {
+    border-color: var(--fg-faint);
+    background: var(--card-hover);
+  }
+
+  .hm-btn-danger {
+    background: var(--danger);
+    color: #ffffff;
+  }
+
+  .hm-btn-ghost {
+    background: transparent;
+    color: var(--fg-muted);
+  }
+
+  .hm-btn-ghost:hover:not(:disabled) {
+    background: var(--chip);
+    color: var(--fg);
+  }
+
+  .hm-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* Section labels (OxHive microLabel) */
+  .hm-label {
+    font-size: 10px;
+    font-family: var(--font-headline);
+    font-weight: 600;
+    line-height: 1;
+    color: var(--fg-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    margin-bottom: 8px;
+    display: block;
+  }
 }
 
-.hm-input:focus {
-  border-color: var(--hm-accent);
-}
-
-.hm-input::placeholder {
-  color: var(--hm-text-tertiary);
-}
-
-/* Buttons */
-.hm-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: 5px;
-  cursor: pointer;
-  border: 0.5px solid transparent;
-  font-family: var(--hm-font-sans);
-  font-size: 12px;
-  height: 32px;
-  padding: 0 14px;
-  transition: background 0.1s;
-  white-space: nowrap;
-}
-
-.hm-btn:focus-visible,
-button:focus-visible {
-  outline: 2px solid var(--hm-accent);
-  outline-offset: 2px;
-}
-
-.hm-btn-sm {
-  height: 28px;
-  padding: 0 10px;
-  font-size: 11px;
-  font-family: var(--hm-font-mono);
-}
-
-/* Primary action: light on dark, so teal/purple keep their layer meaning */
-.hm-btn-primary {
-  background: var(--hm-text-primary);
-  border-color: var(--hm-text-primary);
-  color: var(--hm-bg-base);
-  font-weight: 500;
-}
-
-.hm-btn-primary:hover {
-  background: #ffffff;
-}
-
-.hm-btn-default {
-  background: transparent;
-  border-color: var(--hm-border-subtle);
-  color: var(--hm-text-secondary);
-}
-
-.hm-btn-default:hover {
-  background: var(--hm-bg-elevated);
-}
-
-.hm-btn-danger {
-  background: var(--hm-danger-bg);
-  border-color: var(--hm-danger-border);
-  color: var(--hm-danger);
-}
-
-.hm-btn-danger:hover {
-  background: color-mix(in srgb, var(--hm-danger-bg) 70%, var(--hm-danger));
-}
-
-.hm-btn-ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--hm-text-secondary);
-}
-
-.hm-btn-ghost:hover {
-  background: var(--hm-bg-elevated);
-}
-
-.hm-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* Section labels */
-.hm-label {
-  font-size: var(--hm-text-xs);
-  font-family: var(--hm-font-mono);
-  color: var(--hm-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 6px;
-  display: block;
-}
+/* Unlayered: must beat the Material Symbols stylesheet's own font-size. */
+.hm-btn .material-symbols-outlined { font-size: 18px; }
 
 /* Scrollbars */
-::-webkit-scrollbar { width: 4px; height: 4px; }
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--hm-border-strong); border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
 
 /* Skeleton shimmer */
 @keyframes shimmer {
@@ -251,12 +400,7 @@ button:focus-visible {
 }
 
 .hm-skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--hm-bg-elevated) 25%,
-    var(--hm-bg-overlay) 50%,
-    var(--hm-bg-elevated) 75%
-  );
+  background: linear-gradient(90deg, var(--chip) 25%, var(--line) 37%, var(--chip) 63%);
   background-size: 800px 100%;
   animation: shimmer 1.5s infinite;
   border-radius: 4px;
@@ -270,5 +414,5 @@ button:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .hm-skeleton { animation: none; }
-  * { transition-duration: 0.01ms !important; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }

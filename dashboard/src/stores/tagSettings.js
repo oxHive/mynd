@@ -39,6 +39,10 @@ export const useTagSettingsStore = defineStore('tagSettings', () => {
     savedSnapshot.value = JSON.stringify(namespaces.value)
   }
 
+  function discard() {
+    namespaces.value = JSON.parse(savedSnapshot.value)
+  }
+
   function namespaceFor(tag) {
     const idx = tag.indexOf(':')
     if (idx === -1) return null
@@ -55,6 +59,6 @@ export const useTagSettingsStore = defineStore('tagSettings', () => {
 
   return {
     namespaces, loaded, isDirty, predefined, guardPredefinedNamespaces, isPredefined,
-    fetchNamespaces, save, namespaceFor, colorFor,
+    fetchNamespaces, save, discard, namespaceFor, colorFor,
   }
 })

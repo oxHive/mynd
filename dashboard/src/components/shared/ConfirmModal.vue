@@ -33,18 +33,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 flex items-center justify-center"
-    style="background:rgba(0,0,0,0.6)"
+  <div class="fixed inset-0 z-[150] flex animate-fade items-center justify-center bg-overlay backdrop-blur-[4px]"
     @click.self="$emit('cancel')">
     <div ref="modalRef"
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-modal-title"
-      class="rounded-lg p-6 w-96"
-      style="background:var(--hm-bg-overlay); border:0.5px solid var(--hm-border-default)">
-      <h3 id="confirm-modal-title" class="text-base font-medium mb-3" style="color:var(--hm-text-primary)">{{ title }}</h3>
-      <p class="text-sm mb-5" style="color:var(--hm-text-secondary)">{{ body }}</p>
-      <div class="flex justify-end gap-2">
+      class="w-[440px] max-w-[calc(100vw-40px)] animate-modal-in rounded-xl border border-line bg-card p-6 shadow-2xl">
+      <h3 id="confirm-modal-title" class="mb-2 font-headline text-[19px] font-bold tracking-[-0.025em] text-fg-strong">{{ title }}</h3>
+      <p class="mb-5 mt-0 text-sm leading-[1.6] text-fg-muted">{{ body }}</p>
+      <div class="flex justify-end gap-2.5">
         <button class="hm-btn hm-btn-default" @click="$emit('cancel')">Cancel</button>
         <button
           class="hm-btn"

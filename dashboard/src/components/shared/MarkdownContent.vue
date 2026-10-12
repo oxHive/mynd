@@ -57,7 +57,7 @@ function onClick(e) {
 .hm-markdown {
   font-size: 12px;
   line-height: 1.6;
-  color: var(--hm-text-primary);
+  color: var(--fg);
 }
 .hm-markdown :deep(p) { margin: 0 0 10px; }
 .hm-markdown :deep(p:last-child) { margin-bottom: 0; }
@@ -66,7 +66,7 @@ function onClick(e) {
 .hm-markdown :deep(h3) {
   font-weight: 600;
   margin: 14px 0 6px;
-  color: var(--hm-text-primary);
+  color: var(--fg-strong);
 }
 .hm-markdown :deep(h1:first-child),
 .hm-markdown :deep(h2:first-child),
