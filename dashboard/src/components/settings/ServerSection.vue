@@ -6,14 +6,19 @@ const ui = useUiStore()
 const update = useUpdateStore()
 
 const STATUS_LABEL = { running: 'Running', syncing: 'Syncing', sync_failed: 'Sync failed', unreachable: 'Stopped', checking: 'Checking' }
-const ok = computed(() => ui.serverStatus === 'running' || ui.serverStatus === 'syncing')
+const DOT = {
+  running: 'bg-ok-dot shadow-[0_0_0_3px_rgba(95,184,122,0.18)]',
+  syncing: 'bg-ok-dot shadow-[0_0_0_3px_rgba(95,184,122,0.18)]',
+  sync_failed: 'bg-gold',
+  unreachable: 'bg-err-dot',
+}
 
 const info = computed(() => ui.serverInfo ?? {})
 const storagePath = computed(() => info.value.db_path || info.value.storage_path || info.value.storagePath || '')
 const storageFile = computed(() => storagePath.value.split(/[\\/]/).pop() || '—')
 
 const cell = 'flex min-w-0 flex-col gap-[7px] border-l border-line px-[18px] py-3.5 -ml-px'
-const label = 'font-headline text-[10px] font-semibold uppercase leading-none tracking-[0.18em] text-fg-faint'
+const label = 'hm-label mb-0'
 const val = 'font-headline text-[17px] font-bold leading-[1.2] tracking-[-0.02em] tabular-nums text-fg-strong [overflow-wrap:anywhere]'
 const note = 'mt-1 flex items-center gap-0.5 whitespace-nowrap text-[11px] font-semibold tracking-normal'
 </script>
@@ -23,7 +28,7 @@ const note = 'mt-1 flex items-center gap-0.5 whitespace-nowrap text-[11px] font-
     <div :class="cell">
       <div :class="label">Status</div>
       <div :class="val" class="inline-flex items-center gap-2">
-        <span class="h-[7px] w-[7px] shrink-0 rounded-circle" :class="ok ? 'bg-ok-dot shadow-[0_0_0_3px_rgba(95,184,122,0.18)]' : 'bg-err-dot'"></span>{{ STATUS_LABEL[ui.serverStatus] ?? ui.serverStatus }}
+        <span class="h-[7px] w-[7px] shrink-0 rounded-circle" :class="DOT[ui.serverStatus] ?? 'bg-line-strong'"></span>{{ STATUS_LABEL[ui.serverStatus] ?? ui.serverStatus }}
       </div>
     </div>
     <div :class="cell">

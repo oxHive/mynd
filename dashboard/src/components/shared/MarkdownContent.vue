@@ -84,7 +84,7 @@ function onClick(e) {
   accent-color: var(--hm-accent);
 }
 .hm-markdown :deep(code) {
-  font-family: var(--hm-font-mono);
+  font-family: var(--hm-font-code);
   font-size: 11px;
   background: var(--hm-mono-bg);
   border: 0.5px solid var(--hm-mono-border);
@@ -92,7 +92,7 @@ function onClick(e) {
   padding: 1px 4px;
 }
 .hm-markdown :deep(pre) {
-  font-family: var(--hm-font-mono);
+  font-family: var(--hm-font-code);
   font-size: 11px;
   background: var(--hm-mono-bg);
   border: 0.5px solid var(--hm-mono-border);

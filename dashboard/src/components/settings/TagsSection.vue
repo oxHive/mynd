@@ -58,7 +58,6 @@ async function save() {
 }
 
 const groupHead = 'flex items-baseline gap-2.5 px-0.5'
-const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-none tracking-[0.18em] text-fg-faint'
 </script>
 
 <template>
@@ -66,7 +65,7 @@ const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-no
   <template v-else>
     <div v-if="pre.length" class="flex flex-col gap-2">
       <div :class="groupHead">
-        <span :class="microLabel">Predefined</span>
+        <span class="hm-label mb-0">Predefined</span>
         <span class="text-xs text-fg-faint">{{ tagSettings.guardPredefinedNamespaces ? 'System defaults. Locked.' : 'System defaults. Editable while the guard is off.' }}</span>
       </div>
       <div class="divide-y divide-line overflow-hidden rounded-xl border border-line bg-card">
@@ -76,7 +75,7 @@ const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-no
 
     <div class="flex flex-col gap-2">
       <div :class="groupHead">
-        <span :class="microLabel">Custom</span>
+        <span class="hm-label mb-0">Custom</span>
         <span class="text-xs text-fg-faint">{{ custom.length }} namespace{{ custom.length === 1 ? '' : 's' }}</span>
       </div>
       <div class="divide-y divide-line overflow-hidden rounded-xl border border-line bg-card">

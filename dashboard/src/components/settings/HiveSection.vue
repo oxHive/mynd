@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import QRCode from 'qrcode'
 import { useHiveStore } from '../../stores/hive.js'
 import { useUiStore } from '../../stores/ui.js'
@@ -7,6 +7,7 @@ import { setHiveEnabled, issuePairingCode, addTrustedNetwork, removeTrustedNetwo
 import CopyIdButton from '../shared/CopyIdButton.vue'
 import HiveRevokeModal from './HiveRevokeModal.vue'
 import SettingRow from './SettingRow.vue'
+import Switch from '../shared/Switch.vue'
 
 const hive = useHiveStore()
 const ui = useUiStore()
@@ -38,8 +39,12 @@ onBeforeUnmount(() => {
   if (restartPollTimer) clearInterval(restartPollTimer)
 })
 
-async function onToggleEnabled(e) {
-  const next = e.target.checked
+// Local switch state: flips optimistically on click, snaps back on error,
+// and follows the store whenever hive status is refetched.
+const enabled = ref(hive.enabled)
+watch(() => hive.enabled, v => { enabled.value = v })
+
+async function onToggleEnabled(next) {
   toggleError.value = ''
   try {
     const res = await setHiveEnabled(next)
@@ -57,7 +62,7 @@ async function onToggleEnabled(e) {
       startRestartPoll()
     } else {
       toggleError.value = 'Could not change the hive toggle — server error.'
-      e.target.checked = !next
+      enabled.value = !next
     }
   }
 }
@@ -172,12 +177,7 @@ async function removeTrusted(id) {
     <template v-else>
       <div class="rounded-xl border border-line bg-card px-[18px] py-1">
         <SettingRow label="Hive sync" :hint="restarting ? 'Restarting the server to apply this change…' : undefined">
-          <label class="relative inline-block h-[22px] w-10 shrink-0" :class="restarting ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'">
-            <input type="checkbox" role="switch" aria-label="Enable hive sync" class="peer sr-only"
-              :checked="hive.enabled" :disabled="restarting" @change="onToggleEnabled" />
-            <span class="absolute inset-0 rounded-pill bg-line-strong transition-colors duration-200 peer-checked:bg-accent peer-focus-visible:shadow-[0_0_0_3px_var(--accent-ring)]"></span>
-            <span class="absolute left-[3px] top-[3px] h-4 w-4 rounded-circle bg-white shadow-sm transition-transform duration-200 peer-checked:translate-x-[18px]"></span>
-          </label>
+          <Switch v-model="enabled" label="Enable hive sync" :disabled="restarting" @update:model-value="onToggleEnabled" />
           <span v-if="toggleError" class="ml-3 text-xs text-danger">{{ toggleError }}</span>
         </SettingRow>
 
@@ -198,7 +198,7 @@ async function removeTrusted(id) {
             <div v-else class="flex flex-wrap items-center gap-4">
               <canvas ref="qrCanvas" class="rounded-lg border border-line"></canvas>
               <div class="flex flex-col gap-1.5">
-                <span class="font-headline text-[10px] font-semibold uppercase leading-none tracking-[0.18em] text-fg-faint">Code</span>
+                <span class="hm-label mb-0">Code</span>
                 <span class="font-headline text-lg font-bold tracking-[0.04em] tabular-nums text-fg-strong">{{ pairing.code }}</span>
                 <span class="text-xs text-fg-faint">Expires {{ expiresIn(pairing.expires_at) }}</span>
               </div>
@@ -210,7 +210,7 @@ async function removeTrusted(id) {
       <template v-if="hive.enabled && hive.identity">
         <div class="flex flex-col gap-2">
           <div class="flex items-baseline gap-2.5 px-0.5">
-            <span class="font-headline text-[10px] font-semibold uppercase leading-none tracking-[0.18em] text-fg-faint">Members</span>
+            <span class="hm-label mb-0">Members</span>
             <span v-if="hive.pendingConflictCount" class="text-xs font-bold text-gold">
               {{ hive.pendingConflictCount }} pending conflict{{ hive.pendingConflictCount === 1 ? '' : 's' }}
             </span>
@@ -236,7 +236,7 @@ async function removeTrusted(id) {
 
         <div class="flex flex-col gap-2">
           <div class="flex items-baseline gap-2.5 px-0.5">
-            <span class="font-headline text-[10px] font-semibold uppercase leading-none tracking-[0.18em] text-fg-faint">Trusted networks</span>
+            <span class="hm-label mb-0">Trusted networks</span>
             <span class="text-xs text-fg-faint">Hive sync auto-pauses on networks not in this list.</span>
           </div>
           <div class="divide-y divide-line overflow-hidden rounded-xl border border-line bg-card">

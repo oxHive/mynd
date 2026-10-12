@@ -28,7 +28,8 @@ function navBadgeCount(id) {
   return 0
 }
 
-const connected = computed(() => ui.serverStatus !== 'unreachable' && ui.serverStatus !== 'sync_failed')
+// Reachability of the local server only; sync health is shown separately.
+const connected = computed(() => ['running', 'syncing', 'sync_failed'].includes(ui.serverStatus))
 
 const memoryCount = computed(() => {
   if (!ui.serverInfo) return '—'
@@ -39,6 +40,8 @@ const memoryCount = computed(() => {
 
 const serverAddress = computed(() => (BASE || 'http://localhost:3456').replace(/^https?:\/\//, ''))
 
+const STALE_SEC = 600
+
 function syncedLabel(last) {
   if (!last) return 'not yet synced'
   const diffSec = Math.floor(Date.now() / 1000) - last
@@ -46,8 +49,17 @@ function syncedLabel(last) {
   return `synced ${Math.floor(diffSec / 60)}m ago`
 }
 
-const syncStatusText = computed(() =>
-  ui.syncInfo?.enabled ? syncedLabel(ui.syncInfo.last_synced_at) : null
+// Synced before, but not in the last 10 minutes: background sync may have stalled.
+function isStale(last) {
+  return !!last && Math.floor(Date.now() / 1000) - last > STALE_SEC
+}
+
+const syncStatusText = computed(() => {
+  if (ui.serverStatus === 'sync_failed') return 'sync failed'
+  return ui.syncInfo?.enabled ? syncedLabel(ui.syncInfo.last_synced_at) : null
+})
+const syncWarn = computed(() =>
+  ui.serverStatus === 'sync_failed' || (!!ui.syncInfo?.enabled && isStale(ui.syncInfo.last_synced_at))
 )
 
 const orgSyncStatusText = computed(() => {
@@ -55,6 +67,7 @@ const orgSyncStatusText = computed(() => {
   if (!ui.orgInfo.enabled) return 'sync disabled'
   return syncedLabel(ui.orgInfo.last_synced_at)
 })
+const orgSyncWarn = computed(() => !!ui.orgInfo?.enabled && isStale(ui.orgInfo.last_synced_at))
 
 const conflictCount = computed(() => ui.syncInfo?.conflict_count ?? 0)
 </script>
@@ -113,10 +126,10 @@ const conflictCount = computed(() => ui.syncInfo?.conflict_count ?? 0)
           :class="connected ? 'bg-ok-dot shadow-[0_0_0_3px_rgba(95,184,122,0.18)]' : 'bg-err-dot'"
         ></span>
         <span class="font-headline text-[13px] font-semibold text-side-fg">{{ connected ? 'Connected' : 'Disconnected' }}</span>
-        <span v-if="connected && syncStatusText" class="ml-auto text-[11px] text-side-muted">{{ syncStatusText }}</span>
+        <span v-if="connected && syncStatusText" class="ml-auto text-[11px]" :class="syncWarn ? 'text-gold-dark' : 'text-side-muted'">{{ syncStatusText }}</span>
       </div>
       <div class="ml-[15px] mt-1 font-headline text-[11.5px] tabular-nums text-side-muted">{{ serverAddress }}</div>
-      <div v-if="orgSyncStatusText" class="ml-[15px] mt-1 font-headline text-[11.5px] text-side-muted">org · {{ orgSyncStatusText }}</div>
+      <div v-if="orgSyncStatusText" class="ml-[15px] mt-1 font-headline text-[11.5px]" :class="orgSyncWarn ? 'text-gold-dark' : 'text-side-muted'">org · {{ orgSyncStatusText }}</div>
 
       <div class="mt-3.5 grid grid-cols-2 gap-px overflow-hidden rounded-[4px] bg-side-border">
         <button

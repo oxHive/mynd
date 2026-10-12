@@ -4,7 +4,7 @@ const ui = useUiStore()
 </script>
 
 <template>
-  <div role="status" aria-live="polite" class="fixed bottom-3 left-1/2 -translate-x-1/2 z-50">
+  <div role="status" aria-live="polite" class="fixed bottom-3 left-1/2 -translate-x-1/2 z-[200]">
     <Transition name="toast">
       <div v-if="ui.toast.visible"
         class="whitespace-nowrap rounded-md px-3.5 py-1.5 font-mono text-xs"

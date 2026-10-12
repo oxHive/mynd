@@ -29,7 +29,7 @@ async function handleClear() {
 </script>
 
 <template>
-  <Modal label="Confirm deletion" @close="emit('close')">
+  <Modal label="Confirm deletion" :persistent="working" @close="emit('close')">
     <h3 class="mb-2 font-headline text-[19px] font-bold tracking-[-0.025em] text-fg-strong">Confirm deletion</h3>
     <p class="mb-5 mt-0 text-sm leading-[1.6] text-fg-muted">
       This will permanently delete all <strong>{{ memories.all.filter(m => m.layer !== 'org').length }}</strong> memories, edges, tags, and feedback. This cannot be undone.
@@ -42,7 +42,7 @@ async function handleClear() {
       <input id="confirm-delete" v-model="confirmText" class="hm-input font-headline" autofocus @keydown.enter="canConfirm && !working && handleClear()" />
     </div>
     <div class="mt-5 flex justify-end gap-2.5">
-      <button type="button" class="hm-btn hm-btn-default" @click="emit('close')">Cancel</button>
+      <button type="button" class="hm-btn hm-btn-default" :disabled="working" @click="emit('close')">Cancel</button>
       <button type="button" class="hm-btn hm-btn-danger" :disabled="!canConfirm || working" @click="handleClear">
         {{ working ? 'Deleting…' : 'Clear all' }} <span class="material-symbols-outlined text-[16px]!" aria-hidden="true">warning</span>
       </button>

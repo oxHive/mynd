@@ -35,7 +35,7 @@ async function handleRevoke() {
 </script>
 
 <template>
-  <Modal label="Revoke device" @close="emit('close')">
+  <Modal label="Revoke device" :persistent="working" @close="emit('close')">
     <h3 class="mb-2 font-headline text-[19px] font-bold tracking-[-0.025em] text-fg-strong">Revoke device</h3>
     <p class="mb-5 mt-0 text-sm leading-[1.6] text-fg-muted">
       This will revoke <strong>{{ deviceName }}</strong> from the hive. It will stop syncing
@@ -44,7 +44,7 @@ async function handleRevoke() {
     </p>
     <p v-if="error" class="mb-5 text-[12.5px] text-danger">{{ error }}</p>
     <div class="flex justify-end gap-2.5">
-      <button type="button" class="hm-btn hm-btn-default" @click="emit('close')">Cancel</button>
+      <button type="button" class="hm-btn hm-btn-default" :disabled="working" @click="emit('close')">Cancel</button>
       <button type="button" class="hm-btn hm-btn-danger" :disabled="working" @click="handleRevoke">
         {{ working ? 'Revoking…' : 'Revoke' }}
       </button>

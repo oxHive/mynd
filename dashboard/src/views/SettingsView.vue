@@ -81,7 +81,7 @@ function itemCls(id) {
         <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-[18px] @min-[720px]:grid-cols-[196px_minmax(0,1fr)] @min-[720px]:gap-8">
           <nav class="flex flex-row flex-wrap gap-1 @min-[720px]:sticky @min-[720px]:top-0 @min-[720px]:flex-col @min-[720px]:gap-[18px]" aria-label="Settings sections">
             <div v-for="g in NAV" :key="g.group" class="flex flex-row gap-0.5 @min-[720px]:flex-col">
-              <div class="hidden px-2.5 pb-1.5 font-headline text-[10px] font-semibold uppercase leading-none tracking-[0.18em] text-fg-faint @min-[720px]:block">{{ g.group }}</div>
+              <div class="hidden px-2.5 pb-1.5 hm-label mb-0 @min-[720px]:block">{{ g.group }}</div>
               <button v-for="it in g.items" :key="it.id" type="button" :aria-current="activeTab === it.id ? 'page' : undefined" :class="[navItem, itemCls(it.id)]" @click="selectTab(it.id)">
                 <span class="material-symbols-outlined" aria-hidden="true">{{ it.icon }}</span>{{ it.label }}
               </button>

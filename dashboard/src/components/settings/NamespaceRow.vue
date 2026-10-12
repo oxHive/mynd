@@ -26,6 +26,7 @@ const ro = computed(() => tagSettings.isPredefined(props.name) && tagSettings.gu
 const n = computed(() => ns.value.values.length)
 const mode = computed({ get: () => ns.value.values_mode || 'suggestion', set: v => { ns.value.values_mode = v } })
 const draft = ref('')
+const confirmRemove = ref(false)
 
 function addValue() {
   const v = draft.value.trim().toLowerCase().replace(/\s+/g, '-').replace(/^.*:/, '')
@@ -37,7 +38,6 @@ function removeValue(v) {
 }
 function onKey(e) {
   if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addValue() }
-  if (e.key === 'Backspace' && !draft.value && n.value) ns.value.values.pop()
 }
 
 const warn = computed(() => mode.value === 'fixed' && !n.value && !ro.value)
@@ -45,7 +45,6 @@ const hint = computed(() => {
   if (!n.value) return warn.value ? 'Fixed with no values enforces nothing yet. Add at least one value to start restricting this namespace.' : 'Any value is accepted.'
   return mode.value === 'fixed' ? 'Only these values are accepted, enforced everywhere including for AI agents.' : 'Offered as autocomplete when tagging. Any value is still accepted.'
 })
-const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-none tracking-[0.18em] text-fg-faint'
 </script>
 
 <template>
@@ -75,7 +74,7 @@ const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-no
 
     <div v-if="open" class="flex animate-fade flex-col gap-[18px] px-[18px] pb-4 pt-1 @min-[520px]:pl-[38px]">
       <div class="flex flex-col gap-2">
-        <div :class="microLabel">Description</div>
+        <div class="hm-label mb-0">Description</div>
         <p v-if="ro" class="m-0 max-w-[62ch] text-pretty text-[13.5px] leading-[1.6] text-fg">{{ ns.description || 'No description.' }}</p>
         <textarea
           v-else
@@ -88,7 +87,7 @@ const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-no
       </div>
 
       <div class="flex flex-col gap-2">
-        <div :class="microLabel">Color</div>
+        <div class="hm-label mb-0">Color</div>
         <div v-if="ro" class="flex items-center gap-2 text-[12.5px] text-fg-muted">
           <span class="h-2.5 w-2.5 rounded-circle" :style="{ background: ns.color }"></span><span class="font-headline">{{ ns.color }}</span>
         </div>
@@ -122,7 +121,7 @@ const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-no
 
       <div class="flex flex-col gap-2">
         <div class="flex items-center justify-between gap-3">
-          <span :class="microLabel">Values</span>
+          <span class="hm-label mb-0">Values</span>
           <SegmentedControl v-if="!ro" v-model="mode" :options="MODE_OPTIONS" size="sm" :label="`How ${name} values are enforced`" />
           <span v-else-if="n" class="font-headline text-xs font-semibold text-fg-muted">{{ mode === 'fixed' ? 'Fixed' : 'Suggested' }}</span>
         </div>
@@ -154,8 +153,13 @@ const microLabel = 'font-headline text-[10px] font-semibold uppercase leading-no
         <div class="text-xs" :class="warn ? 'text-gold' : 'text-fg-faint'">{{ hint }}</div>
       </div>
 
-      <div v-if="!ro" class="-mt-1 flex justify-end">
-        <button type="button" class="hm-btn hm-btn-ghost hm-btn-sm text-danger hover:bg-danger-soft" @click="emit('remove')">
+      <div v-if="!ro" class="-mt-1 flex items-center justify-end gap-2">
+        <template v-if="confirmRemove">
+          <span class="mr-1 text-xs text-fg-muted">Remove <span class="font-headline">{{ name }}:*</span> and its values?</span>
+          <button type="button" class="hm-btn hm-btn-ghost hm-btn-sm" @click="confirmRemove = false">Cancel</button>
+          <button type="button" class="hm-btn hm-btn-danger hm-btn-sm" @click="emit('remove')">Remove</button>
+        </template>
+        <button v-else type="button" class="hm-btn hm-btn-ghost hm-btn-sm text-danger hover:bg-danger-soft" @click="confirmRemove = true">
           <span class="material-symbols-outlined text-[17px]!" aria-hidden="true">delete</span>Remove namespace
         </button>
       </div>
