@@ -221,14 +221,20 @@ pub async fn spawn_hive_stack(
     discovery.advertise(&identity.device_id, &identity.device_id, sync_port)?;
     tracing::info!("Hive mDNS: advertising as {}", identity.device_id);
     let discovery_for_browse = discovery.clone();
+    let own_device_id = identity.device_id.clone();
     let discovery_browse = tokio::spawn(async move {
         match discovery_for_browse.browse() {
             Ok(receiver) => {
                 while let Ok(event) = receiver.recv_async().await {
                     if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
-                        tracing::info!("hive peer discovered: {}", info.get_fullname());
                         let fullname = info.get_fullname();
-                        if let Some(device_id) = fullname.strip_suffix("._mynd._tcp.local.") {
+                        let device_id = fullname.strip_suffix("._mynd._tcp.local.");
+                        // Browsing also resolves our own advertisement.
+                        if device_id == Some(own_device_id.as_str()) {
+                            continue;
+                        }
+                        tracing::info!("hive peer discovered: {fullname}");
+                        if let Some(device_id) = device_id {
                             // Prefer an IPv4 address; fall back to the first
                             // IPv6 one, bracketed so it forms a valid URL
                             // authority (a bare `fe80::1:3457` never parses).
