@@ -94,7 +94,7 @@ async fn mark_room_active(status_reply: &Arc<Mutex<StatusReply>>, room_id: &str)
     }
 }
 
-/// Marks a room's session as no longer active (e.g. after `!hm reset`),
+/// Marks a room's session as no longer active (e.g. after `!mynd reset`),
 /// leaving `last_active_at` untouched since it still reflects the last time
 /// the room was genuinely active.
 async fn mark_room_inactive(status_reply: &Arc<Mutex<StatusReply>>, room_id: &str) {

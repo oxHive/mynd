@@ -14,6 +14,8 @@ export async function request(method, path, body) {
   if (!res.ok) {
     const err = new Error(res.status + ' ' + res.statusText)
     err.status = res.status
+    // The API's `{ "error": "..." }` body, when there is one.
+    err.detail = (await res.json().catch(() => null))?.error
     throw err
   }
   return res.status === 204 ? null : res.json()

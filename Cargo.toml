@@ -33,6 +33,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 clap = { version = "4", features = ["derive"] }
 toml = "1.1"
+toml_edit = "0.25"
 tiktoken-rs = "0.12"
 include_dir = "0.7"
 mime_guess = "2"

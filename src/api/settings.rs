@@ -22,10 +22,63 @@ pub(super) async fn get_sync_settings(
     }))
 }
 
-pub(super) async fn save_sync_settings(Json(_): Json<Value>) -> Json<Value> {
-    Json(
-        json!({ "saved": false, "message": "Sync settings are managed via config.toml — restart mynd after editing." }),
-    )
+// --- config.toml editing (loopback-only, see `router()`) ---
+
+/// Set once a dashboard save has written config.toml; process-wide so it
+/// clears on its own when the restart re-execs into a fresh process.
+static CONFIG_RESTART_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(super) async fn get_config_file() -> Result<Json<Value>, ApiError> {
+    let path = crate::config::global_config_path();
+    let text = crate::config::read_global_config_text(&path)?;
+    let mut view = crate::config::dashboard_config_view(&text)?;
+    view["path"] = json!(path);
+    view["restart_required"] =
+        json!(CONFIG_RESTART_PENDING.load(std::sync::atomic::Ordering::Relaxed));
+    Ok(Json(view))
+}
+
+pub(super) async fn save_config_file(
+    Extension(hive): Extension<HivePushConfig>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let patch = body.as_object().ok_or_else(|| {
+        ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "body must be an object".to_string(),
+        )
+    })?;
+    let path = crate::config::global_config_path();
+    // ponytail: read-modify-write without a lock; two simultaneous saves can
+    // drop one. Fine for a single-user settings page.
+    let text = crate::config::read_global_config_text(&path)?;
+    let (out, settings) = crate::config::patch_dashboard_config(&text, patch).map_err(|e| {
+        let status = if e.is::<crate::config::ConfigLocked>() {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        };
+        ApiError(status, format!("{e:#}"))
+    })?;
+    // Hive may be on via the dashboard's DB override, which config.toml's own
+    // [sync]/[hive] check can't see.
+    if settings.sync.enabled && hive.enabled {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "[sync] cannot be enabled while Hive Mode is on; disable Hive Mode first".to_string(),
+        ));
+    }
+    crate::config::write_private_file(&path, &out)?;
+    CONFIG_RESTART_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(Json(json!({ "saved": true, "restart_required": true })))
+}
+
+pub(super) async fn restart_server(
+    Extension(restart_notify): Extension<Arc<tokio::sync::Notify>>,
+) -> Json<Value> {
+    restart_notify.notify_one();
+    Json(json!({ "restarting": true }))
 }
 
 /// Each entry must be an object with a string `color` and an array-of-strings

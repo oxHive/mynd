@@ -3,14 +3,18 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import QRCode from 'qrcode'
 import { useHiveStore } from '../../stores/hive.js'
 import { useUiStore } from '../../stores/ui.js'
-import { setHiveEnabled, issuePairingCode, addTrustedNetwork, removeTrustedNetwork } from '../../api/hive.js'
+import { useConfigFileStore } from '../../stores/configFile.js'
+import { setHiveEnabled, issuePairingCode, addTrustedNetwork } from '../../api/hive.js'
 import CopyIdButton from '../shared/CopyIdButton.vue'
 import HiveRevokeModal from './HiveRevokeModal.vue'
+import TrustedNetworkRemoveModal from './TrustedNetworkRemoveModal.vue'
 import SettingRow from './SettingRow.vue'
 import Switch from '../shared/Switch.vue'
 
 const hive = useHiveStore()
 const ui = useUiStore()
+// The toggle stands in for [hive] enabled, so the config.toml lock covers it.
+const config = useConfigFileStore()
 
 const loading = ref(true)
 const restarting = ref(false)
@@ -25,6 +29,7 @@ const revokeTarget = ref(null) // { device_id, name } | null
 const newTrustedId = ref('')
 const newTrustedLabel = ref('')
 const trustedError = ref('')
+const removeTarget = ref(null) // trusted network { id, label } | null
 
 let restartPollTimer = null
 
@@ -155,16 +160,6 @@ async function addAndRefresh(id, label) {
     trustedError.value = 'Could not add that network — server error.'
   }
 }
-
-async function removeTrusted(id) {
-  trustedError.value = ''
-  try {
-    await removeTrustedNetwork(id)
-    await hive.fetchTrustedNetworks()
-  } catch {
-    trustedError.value = 'Could not remove that network — server error.'
-  }
-}
 </script>
 
 <template>
@@ -177,7 +172,9 @@ async function removeTrusted(id) {
     <template v-else>
       <div class="rounded-xl border border-line bg-card px-[18px] py-1">
         <SettingRow label="Hive sync" :hint="restarting ? 'Restarting the server to apply this change…' : undefined">
-          <Switch v-model="enabled" label="Enable hive sync" :disabled="restarting" @update:model-value="onToggleEnabled" />
+          <span class="inline-flex" :title="config.locked ? 'Locked by [dashboard] allow_config_edit = false in config.toml' : undefined">
+            <Switch v-model="enabled" label="Enable hive sync" :disabled="restarting || config.locked" @update:model-value="onToggleEnabled" />
+          </span>
           <span v-if="toggleError" class="ml-3 text-xs text-danger">{{ toggleError }}</span>
         </SettingRow>
 
@@ -242,7 +239,7 @@ async function removeTrusted(id) {
           <div class="divide-y divide-line overflow-hidden rounded-xl border border-line bg-card">
             <div v-for="net in hive.trustedNetworks" :key="net.id" class="flex items-center gap-3 py-2 pl-[18px] pr-3.5">
               <span class="min-w-0 flex-1 truncate font-headline text-[13px] text-fg">{{ net.label || net.id }}</span>
-              <button type="button" class="hm-btn hm-btn-ghost hm-btn-sm" @click="removeTrusted(net.id)">Remove</button>
+              <button type="button" class="hm-btn hm-btn-ghost hm-btn-sm" @click="removeTarget = net">Remove</button>
             </div>
             <div v-if="hive.currentNetwork && !hive.trustedNetworks.some(n => n.id === hive.currentNetwork)"
               class="flex items-center gap-2.5 bg-gold-soft py-2.5 pl-[18px] pr-3.5">
@@ -265,4 +262,5 @@ async function removeTrusted(id) {
 
   <HiveRevokeModal v-if="revokeTarget" :device-id="revokeTarget.device_id" :device-name="revokeTarget.name"
     @close="revokeTarget = null" />
+  <TrustedNetworkRemoveModal v-if="removeTarget" :network="removeTarget" @close="removeTarget = null" />
 </template>

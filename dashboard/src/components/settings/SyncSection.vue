@@ -1,87 +1,51 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useUiStore } from '../../stores/ui.js'
-import { getSyncSettings, saveSyncSettings } from '../../api/settings.js'
-import Switch from '../shared/Switch.vue'
+import { computed } from 'vue'
+import { useConfigFileStore } from '../../stores/configFile.js'
+import ConfigPane from './ConfigPane.vue'
+import ConfigField from './ConfigField.vue'
 import SettingRow from './SettingRow.vue'
 
-const ui = useUiStore()
-const enabled = ref(false)
-const remoteUrl = ref('')
-const apiKey = ref('')
-const intervalSeconds = ref(300)
-const syncOnStore = ref(true)
-const showKey = ref(false)
-const loading = ref(false)
-const message = ref('')
+const config = useConfigFileStore()
+const SECTIONS = [
+  { id: 'sync', title: 'Cloud sync', env: 'MYND_SYNC_API_KEY' },
+  { id: 'org_sync', title: 'Org sync', env: 'MYND_ORG_SYNC_API_KEY' },
+]
 
-onMounted(async () => {
-  loading.value = true
-  try {
-    const s = await getSyncSettings()
-    enabled.value = s.enabled ?? false
-    remoteUrl.value = s.remote_url ?? ''
-    apiKey.value = s.api_key ?? ''
-    intervalSeconds.value = s.interval_seconds ?? 300
-    syncOnStore.value = s.sync_on_store ?? true
-  } catch {
-    message.value = 'Could not load sync settings.'
-  } finally {
-    loading.value = false
-  }
-})
-
-async function save() {
-  const res = await saveSyncSettings({
-    enabled: enabled.value, remote_url: remoteUrl.value,
-    api_key: apiKey.value, interval_seconds: intervalSeconds.value,
-    sync_on_store: syncOnStore.value,
-  })
-  message.value = res.message ?? 'Edit config.toml to persist sync settings.'
-  ui.showToast(message.value)
+function keyState(s) {
+  const draft = config.apiKeyDrafts[s.id]
+  if (draft === null) return 'Will be removed on save'
+  if (draft !== undefined) return 'Will be replaced on save'
+  return { env: `Set by ${s.env} (overrides the file)`, file: 'Set in config.toml', none: 'Not set' }[config.apiKeys[s.id]]
 }
-
-const fieldLabel = 'font-headline text-[12.5px] font-semibold text-fg'
+function setKey(id, v) {
+  if (v) config.apiKeyDrafts[id] = v
+  else delete config.apiKeyDrafts[id]
+}
+const locked = computed(() => config.locked)
+const card = 'divide-y divide-line rounded-xl border border-line bg-card px-[18px] py-1'
 </script>
 
 <template>
-  <p v-if="loading" class="text-[13px] text-fg-faint">Loading…</p>
-  <template v-else>
-    <div class="rounded-xl border border-line bg-card px-[18px] py-1">
-      <SettingRow label="Sync enabled"><Switch v-model="enabled" label="Sync enabled" /></SettingRow>
-      <div v-if="enabled" class="animate-fade">
-        <hr class="m-0 h-px border-0 bg-line" />
-        <div class="flex flex-col gap-[7px] py-3">
-          <label for="sync-url" :class="fieldLabel">Remote URL</label>
-          <input id="sync-url" v-model="remoteUrl" class="hm-input" placeholder="https://your-server.com or http://192.168.1.x:3456" />
-        </div>
-        <div class="flex flex-col gap-[7px] py-3">
-          <label for="sync-key" :class="fieldLabel">API key</label>
-          <div class="flex items-center gap-2">
-            <input id="sync-key" v-model="apiKey" :type="showKey ? 'text' : 'password'" class="hm-input flex-1 font-headline" placeholder="Leave blank if no auth" />
-            <button type="button" :title="showKey ? 'Hide' : 'Show'" :aria-label="showKey ? 'Hide API key' : 'Show API key'"
-              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors duration-150 hover:bg-chip hover:text-fg"
-              @click="showKey = !showKey">
-              <span class="material-symbols-outlined text-[19px]!" aria-hidden="true">{{ showKey ? 'visibility_off' : 'visibility' }}</span>
-            </button>
+  <ConfigPane>
+    <div v-for="s in SECTIONS" :key="s.id" class="flex flex-col gap-2">
+      <span class="hm-label mb-0 px-0.5">{{ s.title }}</span>
+      <div :class="card">
+        <ConfigField :section="s.id" k="enabled" label="Enabled" type="bool" :placeholder="false" />
+        <ConfigField :section="s.id" k="remote_url" label="Remote URL" placeholder="https://your-server.com" />
+        <SettingRow label="API key" :hint="keyState(s)">
+          <div class="flex items-center gap-2" :title="locked ? 'Locked by [dashboard] allow_config_edit = false in config.toml' : undefined">
+            <input type="password" autocomplete="off" :aria-label="s.title + ' API key'" placeholder="Type to replace" :disabled="locked"
+              class="hm-input flex-1 font-headline" :value="typeof config.apiKeyDrafts[s.id] === 'string' ? config.apiKeyDrafts[s.id] : ''"
+              @change="setKey(s.id, $event.target.value)" />
+            <button v-if="config.apiKeys[s.id] === 'file' && config.apiKeyDrafts[s.id] !== null" type="button" class="hm-btn hm-btn-ghost hm-btn-sm" :disabled="locked"
+              @click="config.apiKeyDrafts[s.id] = null">Clear</button>
           </div>
-        </div>
-        <div class="flex flex-col gap-[7px] py-3">
-          <label for="sync-interval" :class="fieldLabel">Interval</label>
-          <div class="flex items-center gap-[9px]">
-            <input id="sync-interval" v-model.number="intervalSeconds" type="number" min="30" class="hm-input w-[110px] font-headline tabular-nums" />
-            <span class="whitespace-nowrap text-[13px] text-fg-faint">seconds</span>
-          </div>
-        </div>
-        <label class="flex cursor-pointer items-center gap-2.5 pb-3.5 pt-2 text-[13.5px] text-fg-muted">
-          <input v-model="syncOnStore" type="checkbox" class="h-4 w-4 accent-[var(--accent)]" />
-          Sync immediately after storing a memory
-        </label>
+        </SettingRow>
+        <ConfigField :section="s.id" k="interval_seconds" label="Interval" type="number" placeholder="300" unit="seconds" />
+        <ConfigField :section="s.id" k="sync_on_store" label="Sync on store" hint="Push right after a memory is stored." type="bool" :placeholder="true" />
+        <ConfigField :section="s.id" k="sync_on_startup" label="Sync on startup" type="bool" :placeholder="true" />
       </div>
     </div>
-    <div class="flex items-center justify-end gap-3">
-      <span v-if="message" class="mr-auto text-xs text-fg-faint">{{ message }}</span>
-      <button type="button" class="hm-btn hm-btn-primary" @click="save">Save</button>
-    </div>
-  </template>
+    <p class="m-0 px-0.5 text-xs text-fg-faint">Cloud sync and Hive Mode are mutually exclusive.</p>
+  </ConfigPane>
 </template>

@@ -101,6 +101,10 @@ struct RawDashboard {
     /// Set this when the dashboard is accessed via a hostname other than
     /// 127.0.0.1 / localhost (e.g. `http://pi.local:3459`).
     cors_origin: Option<String>,
+    /// `false` makes every config.toml-backed field read-only in the
+    /// dashboard and rejects `POST /api/v1/settings/config`. Never writable
+    /// from the dashboard itself. Default `true`.
+    allow_config_edit: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -341,7 +345,7 @@ pub struct DiscordSettings {
     pub allowed_users: Vec<String>,
     /// One of `"manage_guild"`, `"administrator"`, `"manage_channels"`,
     /// `"manage_messages"`, `"kick_members"`, `"ban_members"` — or `None` to
-    /// leave `/hm` open to every guild member (the default).
+    /// leave `/mynd` open to every guild member (the default).
     pub permission_gate: Option<String>,
     pub channels: Vec<DiscordChannelMapping>,
     pub session_ttl_seconds: u64,
@@ -625,6 +629,10 @@ pub fn load_server_settings(global_path: &std::path::Path) -> anyhow::Result<Ser
             global_path.display()
         );
     }
+    server_settings_from_raw(raw)
+}
+
+fn server_settings_from_raw(raw: RawGlobal) -> Result<ServerSettings> {
     let host = raw.server.host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = raw.server.port.unwrap_or(3456);
     // Not 3457/3458: those are `port + 1` (hive mTLS sync) and `port + 2`
@@ -722,6 +730,10 @@ pub fn load_matrix_settings(global_path: &Path) -> Result<Option<MatrixSettings>
     }
     let raw: RawGlobal = toml::from_str(&std::fs::read_to_string(global_path)?)
         .with_context(|| format!("parsing {}", global_path.display()))?;
+    matrix_settings_from_raw(raw)
+}
+
+fn matrix_settings_from_raw(raw: RawGlobal) -> Result<Option<MatrixSettings>> {
     if raw.matrix.homeserver_url.is_none() && raw.matrix.user_id.is_none() {
         return Ok(None);
     }
@@ -794,6 +806,10 @@ pub fn load_discord_settings(global_path: &Path) -> Result<Option<DiscordSetting
     }
     let raw: RawGlobal = toml::from_str(&std::fs::read_to_string(global_path)?)
         .with_context(|| format!("parsing {}", global_path.display()))?;
+    discord_settings_from_raw(raw)
+}
+
+fn discord_settings_from_raw(raw: RawGlobal) -> Result<Option<DiscordSettings>> {
     let Some(application_id) = raw.discord.application_id else {
         return Ok(None);
     };
@@ -850,6 +866,195 @@ pub fn write_discord_login(global_path: &Path, application_id: &str) -> Result<(
     }
     std::fs::write(global_path, toml::to_string_pretty(&doc)?)?;
     Ok(())
+}
+
+/// `(section, keys)` the dashboard may write to the global config. Left out
+/// on purpose: `[agent]` (names a program the server runs), `[dashboard]
+/// allow_config_edit` (the lock can't unlock itself), `[hive]` (the
+/// dashboard's Hive tab persists DB overrides that win over these), and the
+/// Matrix/Discord identity fields written by `mynd matrix|discord login`.
+pub const DASHBOARD_EDITABLE_KEYS: &[(&str, &[&str])] = &[
+    ("defaults", &["max_inject_tokens"]),
+    ("server", &["host", "port"]),
+    ("dashboard", &["port", "api_url", "cors_origin"]),
+    ("sync", SYNC_KEYS),
+    ("org_sync", SYNC_KEYS),
+    (
+        "update",
+        &["enabled", "check_interval_seconds", "allow_apply_from_api"],
+    ),
+    ("tags", &["guard_predefined_namespaces"]),
+    ("matrix", &["allowed_users", "rooms", "session_ttl_seconds"]),
+    (
+        "discord",
+        &[
+            "allowed_users",
+            "permission_gate",
+            "channels",
+            "session_ttl_seconds",
+        ],
+    ),
+];
+const SYNC_KEYS: &[&str] = &[
+    "enabled",
+    "remote_url",
+    "api_key",
+    "interval_seconds",
+    "sync_on_store",
+    "sync_on_startup",
+];
+
+/// Returned by [`patch_dashboard_config`] when `[dashboard] allow_config_edit
+/// = false`.
+#[derive(Debug)]
+pub struct ConfigLocked;
+
+impl std::fmt::Display for ConfigLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("config.toml editing is disabled by [dashboard] allow_config_edit = false")
+    }
+}
+
+impl std::error::Error for ConfigLocked {}
+
+pub fn read_global_config_text(global_path: &Path) -> Result<String> {
+    if global_path.is_file() {
+        Ok(std::fs::read_to_string(global_path)?)
+    } else {
+        Ok(String::new())
+    }
+}
+
+/// What the dashboard's settings page shows: the file's own values (not
+/// defaults) for every editable section plus read-only `[agent]`. `api_key`
+/// values never leave the server; `api_keys` reports where each comes from
+/// (`"env"`, `"file"` or `"none"`).
+pub fn dashboard_config_view(text: &str) -> Result<serde_json::Value> {
+    let table: toml::Table = toml::from_str(text).context("parsing config.toml")?;
+    let raw: RawGlobal = toml::from_str(text).context("parsing config.toml")?;
+    let mut values = serde_json::Map::new();
+    for section in DASHBOARD_EDITABLE_KEYS
+        .iter()
+        .map(|(s, _)| *s)
+        .chain(["agent"])
+    {
+        if let Some(toml::Value::Table(t)) = table.get(section) {
+            let mut t = t.clone();
+            t.remove("api_key");
+            values.insert(section.to_string(), serde_json::to_value(t)?);
+        }
+    }
+    let key_source = |file: &Option<String>, env: &str| {
+        if env_non_empty(env).is_some() {
+            "env"
+        } else if file.as_deref().is_some_and(|k| !k.is_empty()) {
+            "file"
+        } else {
+            "none"
+        }
+    };
+    Ok(serde_json::json!({
+        "editable": raw.dashboard.allow_config_edit.unwrap_or(true),
+        "values": values,
+        "api_keys": {
+            "sync": key_source(&raw.sync.api_key, SYNC_API_KEY_ENV),
+            "org_sync": key_source(&raw.org_sync.api_key, ORG_SYNC_API_KEY_ENV),
+        },
+    }))
+}
+
+/// Applies a dashboard patch (`{section: {key: value}}`, `null` removes the
+/// key so it falls back to its default) to the config text, keeping comments
+/// and formatting. Returns the new text and the settings it resolves to;
+/// rejects keys outside [`DASHBOARD_EDITABLE_KEYS`], [`ConfigLocked`], and
+/// anything the startup loaders would refuse, so an invalid file is never
+/// returned for writing.
+pub fn patch_dashboard_config(
+    text: &str,
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(String, ServerSettings)> {
+    let mut doc: toml_edit::DocumentMut = text.parse().context("parsing config.toml")?;
+    let raw: RawGlobal = toml::from_str(text).context("parsing config.toml")?;
+    if !raw.dashboard.allow_config_edit.unwrap_or(true) {
+        return Err(ConfigLocked.into());
+    }
+    for (section, fields) in patch {
+        let allowed = DASHBOARD_EDITABLE_KEYS
+            .iter()
+            .find(|(s, _)| s == section)
+            .map(|(_, keys)| *keys)
+            .unwrap_or_default();
+        let fields = fields
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("[{section}] must be an object"))?;
+        for (key, value) in fields {
+            if !allowed.contains(&key.as_str()) {
+                anyhow::bail!("{section}.{key} cannot be edited from the dashboard");
+            }
+            if value.is_null() {
+                if let Some(t) = doc.get_mut(section).and_then(|i| i.as_table_like_mut()) {
+                    t.remove(key);
+                }
+            } else {
+                // Index-assigning into a missing section would create an
+                // inline `section = {}`; a real (implicit) table keeps
+                // `[section]` / `[[section.rows]]` headers instead.
+                if !doc.contains_key(section) {
+                    let mut t = toml_edit::Table::new();
+                    t.set_implicit(true);
+                    doc.insert(section, toml_edit::Item::Table(t));
+                }
+                doc[section.as_str()][key.as_str()] =
+                    json_to_toml_item(value).with_context(|| format!("{section}.{key}"))?;
+            }
+        }
+    }
+    let out = doc.to_string();
+    let parse = || toml::from_str::<RawGlobal>(&out).context("invalid config");
+    let settings = server_settings_from_raw(parse()?)?;
+    matrix_settings_from_raw(parse()?)?;
+    discord_settings_from_raw(parse()?)?;
+    Ok((out, settings))
+}
+
+/// A non-empty array of objects becomes an array of tables (`[[matrix.rooms]]`);
+/// everything else an inline value.
+fn json_to_toml_item(v: &serde_json::Value) -> Result<toml_edit::Item> {
+    let rows = v
+        .as_array()
+        .filter(|a| !a.is_empty() && a.iter().all(serde_json::Value::is_object));
+    let Some(rows) = rows else {
+        return Ok(toml_edit::value(json_to_toml_value(v)?));
+    };
+    let mut aot = toml_edit::ArrayOfTables::new();
+    for row in rows {
+        let mut t = toml_edit::Table::new();
+        for (k, v) in row.as_object().into_iter().flatten() {
+            if !v.is_null() {
+                t[k.as_str()] = toml_edit::value(json_to_toml_value(v)?);
+            }
+        }
+        aot.push(t);
+    }
+    Ok(toml_edit::Item::ArrayOfTables(aot))
+}
+
+fn json_to_toml_value(v: &serde_json::Value) -> Result<toml_edit::Value> {
+    use serde_json::Value as J;
+    Ok(match v {
+        J::Bool(b) => (*b).into(),
+        J::Number(n) => n
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("{n} is not an integer"))?
+            .into(),
+        J::String(s) => s.as_str().into(),
+        J::Array(items) => items
+            .iter()
+            .map(json_to_toml_value)
+            .collect::<Result<toml_edit::Array>>()?
+            .into(),
+        J::Null | J::Object(_) => anyhow::bail!("unsupported value {v}"),
+    })
 }
 
 #[cfg(test)]
@@ -1582,5 +1787,68 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[server]"));
         assert!(raw.contains("port = 3456"));
+    }
+
+    fn patch(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn dashboard_patch_keeps_comments_and_removes_null_keys() {
+        let text = "# my server\n[server]\nport = 4000 # custom\n\n[sync]\ninterval_seconds = 60\n";
+        let (out, settings) = patch_dashboard_config(
+            text,
+            &patch(serde_json::json!({
+                "server": { "host": "0.0.0.0" },
+                "sync": { "interval_seconds": null },
+                "matrix": { "rooms": [{ "room_id": "!a:x", "base_tags": ["t:1"] }] },
+            })),
+        )
+        .unwrap();
+        assert!(out.contains("# my server"), "{out}");
+        assert!(out.contains("port = 4000 # custom"), "{out}");
+        assert!(out.contains("[[matrix.rooms]]"), "{out}");
+        assert!(!out.contains("interval_seconds"), "{out}");
+        assert_eq!(settings.host, "0.0.0.0");
+        assert_eq!(settings.sync.interval_seconds, 300);
+    }
+
+    #[test]
+    fn dashboard_patch_rejects_lock_agent_and_invalid_values() {
+        let locked = "[dashboard]\nallow_config_edit = false\n";
+        let err = patch_dashboard_config(locked, &patch(serde_json::json!({}))).unwrap_err();
+        assert!(err.is::<ConfigLocked>());
+
+        for bad in [
+            serde_json::json!({ "agent": { "command": "/bin/sh" } }),
+            serde_json::json!({ "dashboard": { "allow_config_edit": true } }),
+            serde_json::json!({ "server": { "port": "nope" } }),
+            serde_json::json!({ "server": { "port": 70000 } }),
+            serde_json::json!({ "sync": { "enabled": true }, "hive": { "enabled": true } }),
+        ] {
+            assert!(
+                patch_dashboard_config("", &patch(bad.clone())).is_err(),
+                "{bad}"
+            );
+        }
+        // [hive] isn't editable, but the file's own [hive] still conflicts with [sync].
+        assert!(
+            patch_dashboard_config(
+                "[hive]\nenabled = true\n",
+                &patch(serde_json::json!({ "sync": { "enabled": true } }))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn dashboard_view_hides_api_keys() {
+        let text = "[sync]\nremote_url = \"https://x\"\napi_key = \"secret\"\n[agent]\ncommand = \"claude\"\n";
+        let view = dashboard_config_view(text).unwrap();
+        assert!(!view.to_string().contains("secret"));
+        assert_eq!(view["values"]["sync"]["remote_url"], "https://x");
+        assert_eq!(view["values"]["agent"]["command"], "claude");
+        assert_eq!(view["editable"], true);
+        assert_eq!(view["api_keys"]["org_sync"], "none");
     }
 }

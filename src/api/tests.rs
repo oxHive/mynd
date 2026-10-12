@@ -648,17 +648,51 @@ async fn list_conflicts_returns_empty() {
 }
 
 #[tokio::test]
-async fn save_sync_settings_returns_not_saved() {
+async fn loopback_routes_send_cors_headers_to_the_dashboard() {
+    // The dashboard runs on its own origin, so the browser drops any
+    // response from these routes that lacks Access-Control-Allow-Origin.
     let (app, _dir) = test_router().await;
-    let (status, body) = req(
-        app,
-        "POST",
-        "/api/v1/settings/sync",
-        Some(serde_json::json!({"enabled": true})),
-    )
-    .await;
+    let loopback = axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
+    for (method, uri) in [
+        ("GET", "/api/v1/hive/status"),
+        ("OPTIONS", "/api/v1/settings/config"),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("origin", "http://127.0.0.1:3457")
+                    .header("access-control-request-method", "POST")
+                    .extension(loopback)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("http://127.0.0.1:3457"),
+            "{method} {uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn restart_signals_restart_notify() {
+    let (app, _store, _dir) = test_router_with_store().await;
+    let restart_notify = Arc::new(tokio::sync::Notify::new());
+    let app = app.layer(axum::extract::Extension(restart_notify.clone()));
+    let notified = restart_notify.notified();
+    let (status, body) = req(app, "POST", "/api/v1/restart", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["saved"], false);
+    assert_eq!(body["restarting"], true);
+    tokio::time::timeout(std::time::Duration::from_secs(1), notified)
+        .await
+        .expect("restart must signal the restart Notify");
 }
 
 #[tokio::test]

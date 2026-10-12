@@ -1,7 +1,7 @@
 const MAX_TITLE_CHARS: usize = 60;
 
 /// Derives a short title from free-form content for direct-store memories
-/// (the `/hm store` path has no separate title field — just the text option).
+/// (the `/mynd store` path has no separate title field — just the text option).
 pub fn derive_title(content: &str) -> String {
     let trimmed = content.trim();
     let char_count = trimmed.chars().count();
@@ -17,7 +17,7 @@ use rmcp::ServiceExt;
 use rmcp::transport::TokioChildProcess;
 
 /// Spawns `mynd` in stdio MCP mode and calls `memory_store` directly —
-/// no agent CLI, no LLM interpretation. This is the `/hm store` fast path:
+/// no agent CLI, no LLM interpretation. This is the `/mynd store` fast path:
 /// verbatim, no cost, no tagging/dedup judgment beyond what resolve_target
 /// already decided.
 pub async fn store_memory(
