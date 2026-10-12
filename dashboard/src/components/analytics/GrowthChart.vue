@@ -67,15 +67,15 @@ const tipLeft = computed(() => hover.value == null ? 0 : Math.min(Math.max(cx(ho
         <line :x1="padL" :x2="padL + iw" :y1="yCum(maxCum * (1 - f))" :y2="yCum(maxCum * (1 - f))" stroke="var(--hm-border-default)" stroke-width="1" />
         <text :x="padL - 8" :y="yCum(maxCum * (1 - f)) + 3.5" class="font-mono" style="font-size:9.5px" fill="var(--hm-text-tertiary)" text-anchor="end">{{ Math.round(maxCum * (1 - f)) }}</text>
       </g>
-      <path v-if="areaPath" :d="areaPath" fill="color-mix(in srgb, var(--hm-org) 12%, transparent)" />
+      <path v-if="areaPath" :d="areaPath" fill="color-mix(in srgb, var(--accent) 12%, transparent)" />
       <rect v-for="(b, i) in buckets" :key="'b' + i"
         :x="cx(i) - barW / 2" :y="yNew(b.count)" :width="barW"
         :height="Math.max(b.count ? 1.5 : 0, padT + ih - yNew(b.count))" rx="1"
-        fill="var(--hm-accent)" :style="{ opacity: hover === i ? 1 : 0.78, transition: 'opacity .12s' }" />
-      <path v-if="areaPath" :d="linePath" fill="none" stroke="var(--hm-org)" stroke-width="1.75" stroke-linejoin="round" />
+        fill="var(--gold)" :style="{ opacity: hover === i ? 1 : 0.78, transition: 'opacity .12s' }" />
+      <path v-if="areaPath" :d="linePath" fill="none" stroke="var(--accent)" stroke-width="1.75" stroke-linejoin="round" />
       <template v-if="hb && hover != null">
         <line :x1="cx(hover)" :x2="cx(hover)" :y1="padT" :y2="padT + ih" stroke="var(--hm-text-tertiary)" stroke-width="1" stroke-dasharray="3 3" />
-        <circle :cx="cx(hover)" :cy="yCum(hb.cum)" r="3.5" fill="var(--hm-org)" stroke="var(--hm-bg-elevated)" stroke-width="2" />
+        <circle :cx="cx(hover)" :cy="yCum(hb.cum)" r="3.5" fill="var(--accent)" stroke="var(--hm-bg-elevated)" stroke-width="2" />
       </template>
       <template v-for="(b, i) in buckets" :key="'t' + i">
         <text v-if="i % tickEvery === 0" :x="cx(i)" :y="H - 9" class="font-mono" style="font-size:9.5px" fill="var(--hm-text-tertiary)" text-anchor="middle">{{ tick(b) }}</text>
@@ -83,8 +83,8 @@ const tipLeft = computed(() => hover.value == null ? 0 : Math.min(Math.max(cx(ho
     </svg>
     <div v-if="hb" class="growth-tip" :style="{ left: tipLeft + 'px' }">
       <div class="font-mono" style="font-size:10px; color:#7e8a8e; margin-bottom:4px; white-space:nowrap">{{ tipDate }}</div>
-      <div class="growth-tip-row"><span class="sw" style="background:var(--hm-org)"></span>{{ hb.cum }} total</div>
-      <div class="growth-tip-row"><span class="sw" style="background:var(--hm-accent)"></span>{{ hb.count }} added</div>
+      <div class="growth-tip-row"><span class="sw" style="background:var(--accent)"></span>{{ hb.cum }} total</div>
+      <div class="growth-tip-row"><span class="sw" style="background:var(--gold)"></span>{{ hb.count }} added</div>
     </div>
   </div>
 </template>

@@ -57,7 +57,7 @@ function onClick(e) {
 .hm-markdown {
   font-size: 12px;
   line-height: 1.6;
-  color: var(--hm-text-primary);
+  color: var(--fg);
 }
 .hm-markdown :deep(p) { margin: 0 0 10px; }
 .hm-markdown :deep(p:last-child) { margin-bottom: 0; }
@@ -66,7 +66,7 @@ function onClick(e) {
 .hm-markdown :deep(h3) {
   font-weight: 600;
   margin: 14px 0 6px;
-  color: var(--hm-text-primary);
+  color: var(--fg-strong);
 }
 .hm-markdown :deep(h1:first-child),
 .hm-markdown :deep(h2:first-child),
@@ -84,7 +84,7 @@ function onClick(e) {
   accent-color: var(--hm-accent);
 }
 .hm-markdown :deep(code) {
-  font-family: var(--hm-font-mono);
+  font-family: var(--hm-font-code);
   font-size: 11px;
   background: var(--hm-mono-bg);
   border: 0.5px solid var(--hm-mono-border);
@@ -92,7 +92,7 @@ function onClick(e) {
   padding: 1px 4px;
 }
 .hm-markdown :deep(pre) {
-  font-family: var(--hm-font-mono);
+  font-family: var(--hm-font-code);
   font-size: 11px;
   background: var(--hm-mono-bg);
   border: 0.5px solid var(--hm-mono-border);

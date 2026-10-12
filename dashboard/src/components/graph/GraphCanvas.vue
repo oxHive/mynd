@@ -64,7 +64,7 @@ function scheduleDraw() {
 }
 
 // getComputedStyle can force a style recalc; calling it every frame during a
-// drag adds measurable jank. Cache the two theme colors and invalidate only
+// drag adds measurable jank. Cache the theme colors and invalidate only
 // when the theme actually flips (theme store stamps data-theme on <html>).
 let themeColors = null
 function getThemeColors() {
@@ -74,6 +74,10 @@ function getThemeColors() {
       text: cs.getPropertyValue('--hm-text-primary').trim(),
       draft: cs.getPropertyValue('--hm-warning').trim(),
       halo: cs.getPropertyValue('--hm-bg-base').trim(),
+      personal: cs.getPropertyValue('--personal').trim(),
+      workspace: cs.getPropertyValue('--workspace').trim(),
+      org: cs.getPropertyValue('--org').trim(),
+      pending: cs.getPropertyValue('--gold').trim(),
     }
   }
   return themeColors
@@ -128,13 +132,6 @@ const linkData = computed(() =>
 // Camera scale (d3 zoom `transform.k`) below which per-node text is too
 // small to read on screen — swap to a single cluster label instead.
 const LABEL_MIN_SCALE = 0.55
-
-const COLORS = {
-  personal: '#1d9e75',
-  workspace: '#7f77dd',
-  org: '#3d84d9',
-  pending: '#ba7517',
-}
 
 // Brighter, higher-contrast than the original muted set — at low alpha and
 // 1px width the old colors (#5b8fd9/#c2634a/#9a63d6) were nearly indistinguishable
@@ -304,7 +301,7 @@ function drawClusterBox(ctx, name, members, hue, scale) {
   // instead of shrinking or growing along with everything else in world space.
   const screenPx = 12
   const worldPx = Math.min(32, screenPx / Math.max(scale, 0.05))
-  ctx.font = `bold ${worldPx}px "IBM Plex Mono", monospace`
+  ctx.font = `bold ${worldPx}px "Hanken Grotesk", sans-serif`
   ctx.textAlign = 'left'
   ctx.textBaseline = 'alphabetic'
   ctx.fillStyle = `hsla(${hue}, 70%, 40%, 0.92)`
@@ -401,7 +398,7 @@ function draw() {
     ctx.beginPath()
     if (link.status === 'pending') {
       ctx.setLineDash([4, 4])
-      ctx.strokeStyle = COLORS.pending
+      ctx.strokeStyle = getThemeColors().pending
       ctx.globalAlpha = 0.75
       ctx.lineWidth = 2
     } else {
@@ -411,7 +408,7 @@ function draw() {
       ctx.lineWidth = 2
     }
     if (graph.selectedEdgeId && link.id === graph.selectedEdgeId) {
-      ctx.strokeStyle = COLORS.pending
+      ctx.strokeStyle = getThemeColors().pending
       ctx.globalAlpha = 1
       ctx.lineWidth = 3.5
     }
@@ -446,7 +443,7 @@ function draw() {
     const matchesSearch = !query || node.title.toLowerCase().includes(query)
     const matchesLayer = graph.layerFilter === 'all' || node.layer === graph.layerFilter
     const isMatch = matchesSearch && matchesLayer && graph.matchesTagFilter(node.tags)
-    const color = COLORS[node.layer] || COLORS.personal
+    const color = getThemeColors()[node.layer] || getThemeColors().personal
 
     // Ring for selected
     if (isSelected) {
@@ -472,7 +469,7 @@ function draw() {
       const label = nodeLabel(node)
       const text = truncateLabel(label.text, 20)
       const draftPrefix = label.isDraft ? '[DRAFT] ' : ''
-      ctx.font = '10px "IBM Plex Mono", monospace'
+      ctx.font = '10px "Hanken Grotesk", sans-serif'
       ctx.textAlign = 'left'
       const prefixWidth = draftPrefix ? ctx.measureText(draftPrefix).width : 0
       const textWidth = ctx.measureText(text).width

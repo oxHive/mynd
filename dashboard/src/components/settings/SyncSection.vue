@@ -1,7 +1,9 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useUiStore } from '../../stores/ui.js'
 import { getSyncSettings, saveSyncSettings } from '../../api/settings.js'
+import Switch from '../shared/Switch.vue'
+import SettingRow from './SettingRow.vue'
 
 const ui = useUiStore()
 const enabled = ref(false)
@@ -9,6 +11,7 @@ const remoteUrl = ref('')
 const apiKey = ref('')
 const intervalSeconds = ref(300)
 const syncOnStore = ref(true)
+const showKey = ref(false)
 const loading = ref(false)
 const message = ref('')
 
@@ -38,35 +41,47 @@ async function save() {
   ui.showToast(message.value)
 }
 
-const intervalLabel = computed(() => {
-  const m = Math.round(intervalSeconds.value / 60)
-  return m < 1 ? `${intervalSeconds.value}s` : `${m}m`
-})
+const fieldLabel = 'font-headline text-[12.5px] font-semibold text-fg'
 </script>
 
 <template>
-  <div>
-    <p class="hm-label mb-4">SYNC</p>
-    <p v-if="loading" style="font-size:13px; color:var(--hm-text-tertiary)">Loading…</p>
-    <template v-else>
-      <label class="flex items-center gap-3 mb-5 cursor-pointer">
-        <input type="checkbox" v-model="enabled" class="w-4 h-4" />
-        <span style="font-size:13px; color:var(--hm-text-primary)">Enable sync</span>
-      </label>
-      <template v-if="enabled">
-        <label class="hm-label">REMOTE URL</label>
-        <input class="hm-input mb-4" v-model="remoteUrl" placeholder="http://pi.local:3456" />
-        <label class="hm-label">API KEY</label>
-        <input class="hm-input mb-4" type="password" v-model="apiKey" placeholder="Leave blank if no auth" />
-        <label class="hm-label">SYNC INTERVAL — {{ intervalLabel }}</label>
-        <input class="hm-input mb-4" type="number" min="30" v-model.number="intervalSeconds" />
-        <label class="flex items-center gap-3 mb-5 cursor-pointer">
-          <input type="checkbox" v-model="syncOnStore" class="w-4 h-4" />
-          <span style="font-size:13px; color:var(--hm-text-secondary)">Sync immediately after storing a memory</span>
+  <p v-if="loading" class="text-[13px] text-fg-faint">Loading…</p>
+  <template v-else>
+    <div class="rounded-xl border border-line bg-card px-[18px] py-1">
+      <SettingRow label="Sync enabled"><Switch v-model="enabled" label="Sync enabled" /></SettingRow>
+      <div v-if="enabled" class="animate-fade">
+        <hr class="m-0 h-px border-0 bg-line" />
+        <div class="flex flex-col gap-[7px] py-3">
+          <label for="sync-url" :class="fieldLabel">Remote URL</label>
+          <input id="sync-url" v-model="remoteUrl" class="hm-input" placeholder="https://your-server.com or http://192.168.1.x:3456" />
+        </div>
+        <div class="flex flex-col gap-[7px] py-3">
+          <label for="sync-key" :class="fieldLabel">API key</label>
+          <div class="flex items-center gap-2">
+            <input id="sync-key" v-model="apiKey" :type="showKey ? 'text' : 'password'" class="hm-input flex-1 font-headline" placeholder="Leave blank if no auth" />
+            <button type="button" :title="showKey ? 'Hide' : 'Show'" :aria-label="showKey ? 'Hide API key' : 'Show API key'"
+              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors duration-150 hover:bg-chip hover:text-fg"
+              @click="showKey = !showKey">
+              <span class="material-symbols-outlined text-[19px]!" aria-hidden="true">{{ showKey ? 'visibility_off' : 'visibility' }}</span>
+            </button>
+          </div>
+        </div>
+        <div class="flex flex-col gap-[7px] py-3">
+          <label for="sync-interval" :class="fieldLabel">Interval</label>
+          <div class="flex items-center gap-[9px]">
+            <input id="sync-interval" v-model.number="intervalSeconds" type="number" min="30" class="hm-input w-[110px] font-headline tabular-nums" />
+            <span class="whitespace-nowrap text-[13px] text-fg-faint">seconds</span>
+          </div>
+        </div>
+        <label class="flex cursor-pointer items-center gap-2.5 pb-3.5 pt-2 text-[13.5px] text-fg-muted">
+          <input v-model="syncOnStore" type="checkbox" class="h-4 w-4 accent-[var(--accent)]" />
+          Sync immediately after storing a memory
         </label>
-      </template>
-      <button class="hm-btn hm-btn-primary" @click="save">Save sync settings</button>
-      <p v-if="message" style="font-size:12px; color:var(--hm-text-tertiary)" class="mt-3">{{ message }}</p>
-    </template>
-  </div>
+      </div>
+    </div>
+    <div class="flex items-center justify-end gap-3">
+      <span v-if="message" class="mr-auto text-xs text-fg-faint">{{ message }}</span>
+      <button type="button" class="hm-btn hm-btn-primary" @click="save">Save</button>
+    </div>
+  </template>
 </template>

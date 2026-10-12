@@ -5,67 +5,47 @@ import { useUpdateStore } from '../../stores/update.js'
 const ui = useUiStore()
 const update = useUpdateStore()
 
-const rowsBeforeUpdate = computed(() => [
-  ['Status', ui.serverStatus],
-  ['Version', ui.serverInfo?.version || '—'],
-])
+const STATUS_LABEL = { running: 'Running', syncing: 'Syncing', sync_failed: 'Sync failed', unreachable: 'Stopped', checking: 'Checking' }
+const DOT = {
+  running: 'bg-ok-dot shadow-[0_0_0_3px_rgba(95,184,122,0.18)]',
+  syncing: 'bg-ok-dot shadow-[0_0_0_3px_rgba(95,184,122,0.18)]',
+  sync_failed: 'bg-gold',
+  unreachable: 'bg-err-dot',
+}
 
-const rowsAfterUpdate = computed(() => [
-  ['Memories', ui.serverInfo?.memory_count ?? ui.serverInfo?.memoryCount ?? '—'],
-  ['Storage', ui.serverInfo?.storage_path || ui.serverInfo?.storagePath || '—'],
-  ['Agent', ui.serverInfo?.agent?.kind || '—'],
-])
+const info = computed(() => ui.serverInfo ?? {})
+const storagePath = computed(() => info.value.db_path || info.value.storage_path || info.value.storagePath || '')
+const storageFile = computed(() => storagePath.value.split(/[\\/]/).pop() || '—')
 
-const updateText = computed(() => {
-  if (update.status === 'updating') return 'Updating…'
-  if (update.status === 'failed') return 'Update failed'
-  if (update.available) return `v${update.latestVersion} available`
-  return 'Up to date'
-})
+const cell = 'flex min-w-0 flex-col gap-[7px] border-l border-line px-[18px] py-3.5 -ml-px'
+const label = 'hm-label mb-0'
+const val = 'font-headline text-[17px] font-bold leading-[1.2] tracking-[-0.02em] tabular-nums text-fg-strong [overflow-wrap:anywhere]'
+const note = 'mt-1 flex items-center gap-0.5 whitespace-nowrap text-[11px] font-semibold tracking-normal'
 </script>
 
 <template>
-  <div>
-    <p class="hm-label mb-4">SERVER</p>
-    <div class="flex flex-col">
-      <div v-for="[label, value] in rowsBeforeUpdate" :key="label" class="info-row">
-        <span style="color:var(--hm-text-secondary)">{{ label }}</span>
-        <span class="font-mono text-right" style="color:var(--hm-text-primary); overflow-wrap:anywhere">{{ value }}</span>
-      </div>
-      <div class="info-row">
-        <span style="color:var(--hm-text-secondary)">Update</span>
-        <span class="flex items-center justify-end gap-2">
-          <span class="font-mono text-right"
-            :style="{ color: update.status === 'failed' ? 'var(--hm-danger)' : (update.available ? 'var(--hm-warning)' : 'var(--hm-text-primary)') }">
-            {{ updateText }}
-          </span>
-          <button v-if="update.available && update.platformSupported && update.status !== 'updating'"
-            class="hm-btn hm-btn-default hm-btn-sm" @click="update.changelogOpen = true">View</button>
-        </span>
-      </div>
-      <div v-for="[label, value] in rowsAfterUpdate" :key="label" class="info-row">
-        <span style="color:var(--hm-text-secondary)">{{ label }}</span>
-        <span class="font-mono text-right" style="color:var(--hm-text-primary); overflow-wrap:anywhere">{{ value }}</span>
+  <div class="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] overflow-hidden rounded-xl border border-line bg-card">
+    <div :class="cell">
+      <div :class="label">Status</div>
+      <div :class="val" class="inline-flex items-center gap-2">
+        <span class="h-[7px] w-[7px] shrink-0 rounded-circle" :class="DOT[ui.serverStatus] ?? 'bg-line-strong'"></span>{{ STATUS_LABEL[ui.serverStatus] ?? ui.serverStatus }}
       </div>
     </div>
+    <div :class="cell">
+      <div :class="label">Version</div>
+      <div :class="val">
+        {{ info.version || '—' }}
+        <span v-if="update.status === 'updating'" :class="note" class="text-fg-muted">Updating…</span>
+        <span v-else-if="update.status === 'failed'" :class="note" class="text-danger"><span class="material-symbols-outlined text-[14px]!" aria-hidden="true">error</span>Update failed</span>
+        <button v-else-if="update.available && update.platformSupported" type="button" :class="note" class="text-gold hover:underline" @click="update.changelogOpen = true">
+          <span class="material-symbols-outlined text-[14px]!" aria-hidden="true">upgrade</span>v{{ update.latestVersion }} available
+        </button>
+        <span v-else-if="update.available" :class="note" class="text-gold"><span class="material-symbols-outlined text-[14px]!" aria-hidden="true">upgrade</span>v{{ update.latestVersion }} available</span>
+        <span v-else :class="note" class="text-ok"><span class="material-symbols-outlined text-[14px]!" aria-hidden="true">check</span>Up to date</span>
+      </div>
+    </div>
+    <div :class="cell"><div :class="label">Memories</div><div :class="val">{{ info.memory_count ?? info.memoryCount ?? '—' }}</div></div>
+    <div :class="cell"><div :class="label">Storage</div><div :class="val" :title="storagePath">{{ storageFile }}</div></div>
+    <div :class="cell"><div :class="label">Agent</div><div :class="val">{{ info.agent?.kind || '—' }}</div></div>
   </div>
 </template>
-
-<style scoped>
-.info-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 10px 0;
-  font-size: 13px;
-  border-bottom: 0.5px solid var(--hm-border-subtle);
-}
-
-.info-row:first-child {
-  padding-top: 0;
-}
-
-.info-row:last-child {
-  border-bottom: none;
-}
-</style>

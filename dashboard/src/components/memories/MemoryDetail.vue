@@ -327,7 +327,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
           </div>
         </div>
         <div v-if="pendingDiff" class="mb-6 rounded"
-          style="font-family:var(--hm-font-mono); font-size:12px; line-height:1.6; padding:12px 14px;
+          style="font-family:var(--hm-font-code); font-size:12px; line-height:1.6; padding:12px 14px;
                  background:var(--hm-mono-bg); border:0.5px solid var(--hm-border-subtle)">
           <div style="color:var(--hm-text-secondary); white-space:pre-wrap; word-break:break-word">{{ pendingDiff.context }}</div>
           <div v-if="pendingDiff.removed" style="color:var(--hm-danger); text-decoration:line-through; white-space:pre-wrap; word-break:break-word">- {{ pendingDiff.removed }}</div>
@@ -339,7 +339,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             id="mem-content"
             ref="contentEl"
             class="hm-input resize-none w-full"
-            style="height:40vh; min-height:160px; padding:10px 12px; font-family:var(--hm-font-mono); font-size:12px; line-height:1.6; background:var(--hm-mono-bg)"
+            style="height:40vh; min-height:160px; padding:10px 12px; font-family:var(--hm-font-code); font-size:12px; line-height:1.6; background:var(--hm-mono-bg)"
             :value="memories.draft?.content"
             @input="onContentInput"
             @keydown="onContentKeydown"

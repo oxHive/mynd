@@ -1,44 +1,47 @@
 <script setup>
+import { computed } from 'vue'
 import { useThemeStore } from '../../stores/theme.js'
-import { useFontScaleStore, MIN_PERCENT, MAX_PERCENT } from '../../stores/fontScale.js'
+import { useFontScaleStore, MIN_PERCENT, MAX_PERCENT, DEFAULT_PERCENT } from '../../stores/fontScale.js'
+import SegmentedControl from '../shared/SegmentedControl.vue'
+import SettingRow from './SettingRow.vue'
 
 const theme = useThemeStore()
 const fontScale = useFontScaleStore()
 
-const options = [
-  { id: 'system', label: 'System default' },
-  { id: 'light', label: 'Light' },
-  { id: 'dark', label: 'Dark' },
+const mode = computed({ get: () => theme.mode, set: v => theme.setMode(v) })
+const pct = computed(() => ((fontScale.percent - MIN_PERCENT) / (MAX_PERCENT - MIN_PERCENT)) * 100 + '%')
+
+const THEME_OPTIONS = [
+  { value: 'system', label: 'System', icon: 'computer' },
+  { value: 'light', label: 'Light', icon: 'light_mode' },
+  { value: 'dark', label: 'Dark', icon: 'dark_mode' },
 ]
 </script>
 
 <template>
-  <div>
-    <p class="hm-label mb-4">APPEARANCE</p>
-    <div class="flex gap-1.5 mb-6">
-      <button v-for="opt in options" :key="opt.id"
-        class="hm-btn hm-btn-sm rounded-sm"
-        :aria-pressed="theme.mode === opt.id"
-        :style="theme.mode === opt.id
-          ? 'background:var(--hm-bg-elevated); border-color:var(--hm-border-default); color:var(--hm-text-primary)'
-          : 'background:transparent; border-color:var(--hm-border-subtle); color:var(--hm-text-secondary)'"
-        @click="theme.setMode(opt.id)">
-        {{ opt.label }}
-      </button>
-    </div>
-
-    <p class="hm-label mb-4">FONT SIZE</p>
-    <div class="flex items-center gap-3">
-      <input type="range" :min="MIN_PERCENT" :max="MAX_PERCENT" step="5"
-        :value="fontScale.percent" @input="fontScale.setPercent(+$event.target.value)"
-        style="width:160px" />
-      <span class="font-mono" style="font-size:12px; color:var(--hm-text-secondary); width:44px">
-        {{ fontScale.percent }}%
-      </span>
-      <button class="hm-btn hm-btn-ghost hm-btn-sm" @click="fontScale.reset">Reset</button>
-    </div>
-    <p style="font-size:11px; color:var(--hm-text-tertiary)" class="mt-2">
-      Scales the whole dashboard (text, spacing, layout) up or down. Saved on this device only.
-    </p>
+  <div class="rounded-xl border border-line bg-card px-[18px] py-1">
+    <SettingRow label="Theme"><SegmentedControl v-model="mode" :options="THEME_OPTIONS" label="Theme" /></SettingRow>
+    <hr class="m-0 h-px border-0 bg-line" />
+    <SettingRow label="Text size" hint="Scales text, spacing and layout.">
+      <div class="flex min-w-0 items-center gap-2.5">
+        <div class="flex min-w-0 max-w-[240px] flex-[1_1_140px] items-center gap-2.5">
+          <span class="font-headline text-[11px] font-bold leading-none text-fg-faint">A</span>
+          <input
+            :value="fontScale.percent"
+            type="range"
+            class="range min-w-[60px] flex-1"
+            :min="MIN_PERCENT"
+            :max="MAX_PERCENT"
+            step="5"
+            aria-label="Text size"
+            :style="{ '--pct': pct }"
+            @input="fontScale.setPercent(+$event.target.value)"
+          />
+          <span class="font-headline text-[17px] font-bold leading-none text-fg-faint">A</span>
+        </div>
+        <span class="w-10 text-right font-headline text-[13px] tabular-nums text-fg-strong">{{ fontScale.percent }}%</span>
+        <button type="button" class="hm-btn hm-btn-ghost hm-btn-sm" :disabled="fontScale.percent === DEFAULT_PERCENT" @click="fontScale.reset">Reset</button>
+      </div>
+    </SettingRow>
   </div>
 </template>

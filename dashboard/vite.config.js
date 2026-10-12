@@ -10,6 +10,8 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    // Wipes dist/, including the tracked dist/.gitkeep that src/http.rs's
+    // include_dir! needs on fresh clones; public/.gitkeep copies it back.
     emptyOutDir: true,
   },
   test: {

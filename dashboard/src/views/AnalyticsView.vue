@@ -61,8 +61,8 @@ function openMemory(id) {
         <GrowthChart v-if="growth.buckets.length" :buckets="growth.buckets" :step="growth.step" />
         <EmptyState v-else message="No memories yet" />
         <div v-if="growth.buckets.length" class="anlegend">
-          <span class="anlegend__item"><span class="sw" style="background:var(--hm-org)"></span>Total stored</span>
-          <span class="anlegend__item"><span class="sw" style="background:var(--hm-accent)"></span>Added in period</span>
+          <span class="anlegend__item"><span class="sw" style="background:var(--accent)"></span>Total stored</span>
+          <span class="anlegend__item"><span class="sw" style="background:var(--gold)"></span>Added in period</span>
         </div>
       </AnalyticsPanel>
 

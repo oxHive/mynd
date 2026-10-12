@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useUiStore } from '../../stores/ui.js'
 import { exportMemories, importMemories } from '../../api/memories.js'
+import DataRow from './DataRow.vue'
 
 const ui = useUiStore()
 const fileInput = ref(null)
@@ -36,24 +37,18 @@ async function handleImport(e) {
 </script>
 
 <template>
-  <div>
-    <p class="hm-label mb-4">DATA</p>
-    <div class="flex flex-col gap-5">
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <p style="font-size:13px; font-weight:500; color:var(--hm-text-primary)" class="mb-1.5">Export to JSON</p>
-          <p style="font-size:12px; color:var(--hm-text-tertiary)">Download personal and workspace memories as a JSON file (org-layer memories are not included)</p>
-        </div>
-        <button class="hm-btn hm-btn-default shrink-0" @click="handleExport">Export</button>
-      </div>
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <p style="font-size:13px; font-weight:500; color:var(--hm-text-primary)" class="mb-1.5">Import from JSON</p>
-          <p style="font-size:12px; color:var(--hm-text-tertiary)">Restore personal and workspace memories from a previous export</p>
-        </div>
-        <button class="hm-btn hm-btn-default shrink-0" @click="fileInput.click()">Import</button>
-        <input ref="fileInput" type="file" accept=".json" class="hidden" @change="handleImport" />
-      </div>
-    </div>
+  <div class="rounded-xl border border-line bg-card px-[18px] py-1">
+    <DataRow title="Export all memories as JSON" desc="Download personal and workspace memories as a backup. Org-layer memories are not included.">
+      <button type="button" class="hm-btn hm-btn-default" @click="handleExport">
+        <span class="material-symbols-outlined text-[17px]!" aria-hidden="true">download</span>Export
+      </button>
+    </DataRow>
+    <hr class="m-0 h-px border-0 bg-line" />
+    <DataRow title="Import from JSON" desc="Restore personal and workspace memories from a previous Mynd export.">
+      <button type="button" class="hm-btn hm-btn-default" @click="fileInput.click()">
+        <span class="material-symbols-outlined text-[17px]!" aria-hidden="true">upload</span>Import
+      </button>
+      <input ref="fileInput" type="file" accept=".json" class="hidden" @change="handleImport" />
+    </DataRow>
   </div>
 </template>
