@@ -59,9 +59,9 @@ async fn mark_channel_inactive(status_reply: &Arc<Mutex<StatusReply>>, channel_i
     }
 }
 
-const HELP_TEXT: &str = "/hm store text:<text>  — directly store a memory, skipping the agent\n\
-                          /hm reset              — start a fresh conversation in this channel\n\
-                          /hm help                — show this message\n\
+const HELP_TEXT: &str = "/mynd store text:<text>  — directly store a memory, skipping the agent\n\
+                          /mynd reset              — start a fresh conversation in this channel\n\
+                          /mynd help                — show this message\n\
                           Mention me in a channel, or DM me directly, to chat freely.";
 
 pub struct EventDecision {
@@ -93,7 +93,7 @@ pub fn decide(
     }
 }
 
-/// Whether a `/hm` interaction from `author_id` is authorized: DMs are
+/// Whether a `/mynd` interaction from `author_id` is authorized: DMs are
 /// gated by `[discord] allowed_users` (mirroring `decide()`'s DM path
 /// above), while guild interactions are always allowed here since Discord's
 /// own `default_member_permissions` (`[discord] permission_gate`) already
@@ -103,7 +103,7 @@ pub fn interaction_authorized(settings: &DiscordSettings, is_dm: bool, author_id
 }
 
 /// Maps the `[discord] permission_gate` config string to a Discord permission
-/// bit, used as `/hm`'s `default_member_permissions` at registration time.
+/// bit, used as `/mynd`'s `default_member_permissions` at registration time.
 pub fn parse_permission_gate(value: &str) -> Result<serenity::model::Permissions, String> {
     use serenity::model::Permissions;
     match value {
@@ -129,8 +129,8 @@ struct Handler {
     permission_gate: Option<serenity::model::Permissions>,
 }
 
-fn build_hm_command(permission_gate: Option<serenity::model::Permissions>) -> CreateCommand {
-    let mut cmd = CreateCommand::new("hm")
+fn build_mynd_command(permission_gate: Option<serenity::model::Permissions>) -> CreateCommand {
+    let mut cmd = CreateCommand::new("mynd")
         .description("Mynd memory bot")
         .add_option(
             CreateCommandOption::new(
@@ -151,7 +151,7 @@ fn build_hm_command(permission_gate: Option<serenity::model::Permissions>) -> Cr
         .add_option(CreateCommandOption::new(
             CommandOptionType::SubCommand,
             "help",
-            "List /hm commands",
+            "List /mynd commands",
         ));
     if let Some(perm) = permission_gate {
         cmd = cmd.default_member_permissions(perm);
@@ -216,7 +216,7 @@ async fn respond_ephemeral(ctx: &Context, command: &serenity::all::CommandIntera
 
 /// Sends an ephemeral deferred response, telling Discord "processing" before
 /// the 3-second interaction-response deadline expires. Used ahead of slow
-/// operations (like `/hm store`'s spawn-and-MCP-handshake) whose result is
+/// operations (like `/mynd store`'s spawn-and-MCP-handshake) whose result is
 /// then delivered via [`respond_followup`] instead of `create_response`,
 /// since the initial response can only be sent once.
 async fn defer_ephemeral(ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -229,7 +229,7 @@ async fn defer_ephemeral(ctx: &Context, command: &serenity::all::CommandInteract
         )
         .await
     {
-        tracing::warn!(error = %e, "failed to defer /hm interaction response");
+        tracing::warn!(error = %e, "failed to defer /mynd interaction response");
     }
 }
 
@@ -245,18 +245,21 @@ async fn respond_followup(ctx: &Context, command: &serenity::all::CommandInterac
         )
         .await
     {
-        tracing::warn!(error = %e, "failed to send /hm interaction followup");
+        tracing::warn!(error = %e, "failed to send /mynd interaction followup");
     }
 }
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, _ready: Ready) {
-        tracing::debug!("discord gateway ready, registering /hm command");
+        tracing::debug!("discord gateway ready, registering /mynd command");
+        // Overwrites the whole global command list (this bot only has the
+        // one), which also drops the pre-rename `/hm` from Discord.
         if let Err(e) =
-            Command::create_global_command(&ctx.http, build_hm_command(self.permission_gate)).await
+            Command::set_global_commands(&ctx.http, vec![build_mynd_command(self.permission_gate)])
+                .await
         {
-            tracing::warn!("failed to register /hm command: {e:#}");
+            tracing::warn!("failed to register /mynd command: {e:#}");
         }
         let mut r = self.status_reply.lock().await;
         r.sync_state = "connected".to_string();
@@ -346,7 +349,7 @@ impl EventHandler for Handler {
         let Interaction::Command(command) = interaction else {
             return;
         };
-        if command.data.name != "hm" {
+        if command.data.name != "mynd" {
             return;
         }
         let is_dm = command.guild_id.is_none();
@@ -373,7 +376,7 @@ impl EventHandler for Handler {
             return;
         };
         let channel_id = command.channel_id.to_string();
-        tracing::debug!(channel_id = %channel_id, subcommand = top.name, "dispatching /hm subcommand");
+        tracing::debug!(channel_id = %channel_id, subcommand = top.name, "dispatching /mynd subcommand");
 
         match top.name {
             "help" => respond_ephemeral(&ctx, &command, HELP_TEXT).await,
@@ -400,17 +403,17 @@ impl EventHandler for Handler {
                 };
                 let target =
                     crate::discord::channels::resolve_target(&self.settings, &channel_id, is_dm);
-                tracing::debug!(channel_id = %channel_id, "storing memory via /hm store");
+                tracing::debug!(channel_id = %channel_id, "storing memory via /mynd store");
                 match crate::discord::store_direct::store_memory(&self.mynd_bin, &text, &target)
                     .await
                 {
                     Ok(()) => {
-                        tracing::debug!(channel_id = %channel_id, "/hm store succeeded");
+                        tracing::debug!(channel_id = %channel_id, "/mynd store succeeded");
                         mark_channel_active(&self.status_reply, &channel_id).await;
                         respond_followup(&ctx, &command, "Stored.").await;
                     }
                     Err(e) => {
-                        tracing::debug!(channel_id = %channel_id, error = %e, "/hm store failed");
+                        tracing::debug!(channel_id = %channel_id, error = %e, "/mynd store failed");
                         respond_followup(
                             &ctx,
                             &command,
@@ -769,10 +772,10 @@ mod tests {
     }
 
     #[test]
-    fn build_hm_command_without_permission_gate_has_no_default_permissions() {
-        let cmd = build_hm_command(None);
+    fn build_mynd_command_without_permission_gate_has_no_default_permissions() {
+        let cmd = build_mynd_command(None);
         let json = serde_json::to_value(&cmd).unwrap();
-        assert_eq!(json["name"], "hm");
+        assert_eq!(json["name"], "mynd");
         assert!(json.get("default_member_permissions").is_none());
         let options = json["options"].as_array().unwrap();
         let names: Vec<&str> = options
@@ -783,9 +786,9 @@ mod tests {
     }
 
     #[test]
-    fn build_hm_command_with_permission_gate_sets_default_permissions() {
+    fn build_mynd_command_with_permission_gate_sets_default_permissions() {
         use serenity::model::Permissions;
-        let cmd = build_hm_command(Some(Permissions::MANAGE_GUILD));
+        let cmd = build_mynd_command(Some(Permissions::MANAGE_GUILD));
         let json = serde_json::to_value(&cmd).unwrap();
         assert_eq!(
             json["default_member_permissions"],
@@ -794,8 +797,8 @@ mod tests {
     }
 
     #[test]
-    fn build_hm_command_store_option_requires_text() {
-        let cmd = build_hm_command(None);
+    fn build_mynd_command_store_option_requires_text() {
+        let cmd = build_mynd_command(None);
         let json = serde_json::to_value(&cmd).unwrap();
         let store = json["options"]
             .as_array()
