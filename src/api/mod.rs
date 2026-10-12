@@ -205,7 +205,7 @@ pub fn router(
         )
         .route(
             "/api/v1/settings/sync",
-            get(get_sync_settings).post(save_sync_settings),
+            get(get_sync_settings),
         )
         .route(
             "/api/v1/settings/tags",
@@ -247,19 +247,6 @@ pub fn router(
     } else {
         router
     };
-    let router = router.layer(
-        CorsLayer::new()
-            .allow_origin(localhost_origins(dashboard_origin))
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PATCH,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]),
-    );
-
     // Merged in as its own sub-router (rather than chained into the routes
     // above) so `require_loopback` -- via `route_layer`, which applies to
     // every route already registered in the *same* router value -- only
@@ -313,6 +300,12 @@ pub fn router(
         // `api::tests::set_hive_enabled_persists_override_and_signals_restart`,
         // which layers its own Notify to observe the signal.
         .route("/api/v1/hive/enabled", post(hive_set_enabled))
+        // config.toml can repoint sync at another server; never from off-box.
+        .route(
+            "/api/v1/settings/config",
+            get(get_config_file).post(save_config_file),
+        )
+        .route("/api/v1/restart", post(restart_server))
         .route_layer(middleware::from_fn(require_loopback))
         // `hive_status` needs the hive push-config (for its identity/enabled
         // state) and the sync port; the main router's `.layer(...)` extensions
@@ -340,7 +333,21 @@ pub fn router(
         trusted_networks_router
     };
 
-    router.merge(trusted_networks_router)
+    // CORS goes on after the merge: layered onto `router` alone it never
+    // reached the loopback sub-router, so the dashboard (a different origin,
+    // :3459 vs :3456) couldn't read any hive or config.toml response.
+    router.merge(trusted_networks_router).layer(
+        CorsLayer::new()
+            .allow_origin(localhost_origins(dashboard_origin))
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]),
+    )
 }
 
 /// Server-TLS-only (no client-cert verifier) — this is where a brand-new,

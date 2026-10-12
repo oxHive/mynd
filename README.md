@@ -460,6 +460,7 @@ port = 3456
 port = 3459
 # api_url = "http://127.0.0.1:3456"      # override if the server isn't on the default host/port
 # cors_origin = "http://127.0.0.1:3459"  # override if you run the dashboard separately (e.g. `bun run dev` on :5173)
+# allow_config_edit = false             # make this file read-only in the dashboard's Settings page
 
 [sync]
 enabled = false
@@ -485,6 +486,8 @@ allow_apply_from_api = true    # let the dashboard's Update button re-run the in
 ```
 
 `$XDG_CONFIG_HOME/mynd/config.toml` is used instead if `XDG_CONFIG_HOME` is set.
+
+The dashboard's Settings page (Server, Sync, Integrations) edits this file from the machine running Mynd, keeping comments, then offers a restart to apply. Sync API keys are write-only there. `[agent]` and the Matrix/Discord login fields are shown read-only, and `[hive]` is controlled from the Hive tab. Set `[dashboard] allow_config_edit = false` to lock it; dashboard-only settings (appearance, tags, limits) stay editable.
 
 ### Environment variables
 
@@ -611,8 +614,8 @@ install` automatically adds a second unit once `[matrix]` is configured.
 ### Using it
 
 - Mention the bot in a mapped/unmapped room, or just message it directly in a DM.
-- `!hm store <text>` — direct write, skips the agent (fast, no interpretation).
-- `!hm reset` — starts a fresh conversation in that room (drops continuity, not memory).
+- `!mynd store <text>` — direct write, skips the agent (fast, no interpretation).
+- `!mynd reset` — starts a fresh conversation in that room (drops continuity, not memory).
 - `mynd matrix status` — shows login state, sync status, and per-room session
   activity.
 
@@ -630,7 +633,7 @@ you.
 ## Discord chat interface (optional)
 
 Capture and recall Mynd memories from a Discord channel or DM — mention the bot in a
-channel, use the `/hm` slash command, or DM it directly. Same headless-agent mechanism as
+channel, use the `/mynd` slash command, or DM it directly. Same headless-agent mechanism as
 Matrix and the dashboard's suggest flow: no bespoke NLU, no local model.
 
 This is a separate process from `mynd up` and doesn't depend on it being started —
@@ -662,7 +665,7 @@ Add channel mappings and the DM allowlist to `~/.config/mynd/config.toml`:
 [discord]
 application_id = "123456789012345678"      # written automatically by `discord login`
 allowed_users = ["111111111111111111"]     # required for DMs — anyone else is ignored
-permission_gate = "manage_guild"           # optional; restricts who can invoke /hm in a guild
+permission_gate = "manage_guild"           # optional; restricts who can invoke /mynd in a guild
 
 [[discord.channels]]
 channel_id = "222222222222222222"
@@ -674,7 +677,7 @@ Channels the bot is in but not listed here still work — memories land in the `
 layer tagged `channel:<id-or-alias>` + `source:discord` instead of your configured
 `base_tags`. DMs always use the `personal` layer.
 
-> **Trust boundary:** `permission_gate` only restricts the `/hm` slash command. Freeform
+> **Trust boundary:** `permission_gate` only restricts the `/mynd` slash command. Freeform
 > @mention chat in a guild channel is open to any member of that guild who can see the
 > channel: it's gated by Discord's own channel permissions, not by `permission_gate` or
 > `allowed_users` (`allowed_users` only gates DMs). This mirrors Matrix's trust model,
@@ -694,9 +697,9 @@ install --discord` adds a unit once `[discord]` is configured.
 ### Using it
 
 - Mention the bot in a channel, or message it directly in a DM, for freeform chat.
-- `/hm store text:<text>` — direct write, skips the agent (fast, no interpretation).
-- `/hm reset` — starts a fresh conversation in that channel (drops continuity, not memory).
-- `/hm help` — lists these commands.
+- `/mynd store text:<text>` — direct write, skips the agent (fast, no interpretation).
+- `/mynd reset` — starts a fresh conversation in that channel (drops continuity, not memory).
+- `/mynd help` — lists these commands.
 - `mynd discord status` — shows login state, sync status, and per-channel session
   activity.
 
