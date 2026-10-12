@@ -879,12 +879,20 @@ pub const DASHBOARD_EDITABLE_KEYS: &[(&str, &[&str])] = &[
     ("dashboard", &["port", "api_url", "cors_origin"]),
     ("sync", SYNC_KEYS),
     ("org_sync", SYNC_KEYS),
-    ("update", &["enabled", "check_interval_seconds", "allow_apply_from_api"]),
+    (
+        "update",
+        &["enabled", "check_interval_seconds", "allow_apply_from_api"],
+    ),
     ("tags", &["guard_predefined_namespaces"]),
     ("matrix", &["allowed_users", "rooms", "session_ttl_seconds"]),
     (
         "discord",
-        &["allowed_users", "permission_gate", "channels", "session_ttl_seconds"],
+        &[
+            "allowed_users",
+            "permission_gate",
+            "channels",
+            "session_ttl_seconds",
+        ],
     ),
 ];
 const SYNC_KEYS: &[&str] = &[
@@ -925,7 +933,11 @@ pub fn dashboard_config_view(text: &str) -> Result<serde_json::Value> {
     let table: toml::Table = toml::from_str(text).context("parsing config.toml")?;
     let raw: RawGlobal = toml::from_str(text).context("parsing config.toml")?;
     let mut values = serde_json::Map::new();
-    for section in DASHBOARD_EDITABLE_KEYS.iter().map(|(s, _)| *s).chain(["agent"]) {
+    for section in DASHBOARD_EDITABLE_KEYS
+        .iter()
+        .map(|(s, _)| *s)
+        .chain(["agent"])
+    {
         if let Some(toml::Value::Table(t)) = table.get(section) {
             let mut t = t.clone();
             t.remove("api_key");
@@ -1814,7 +1826,10 @@ mod tests {
             serde_json::json!({ "server": { "port": 70000 } }),
             serde_json::json!({ "sync": { "enabled": true }, "hive": { "enabled": true } }),
         ] {
-            assert!(patch_dashboard_config("", &patch(bad.clone())).is_err(), "{bad}");
+            assert!(
+                patch_dashboard_config("", &patch(bad.clone())).is_err(),
+                "{bad}"
+            );
         }
         // [hive] isn't editable, but the file's own [hive] still conflicts with [sync].
         assert!(

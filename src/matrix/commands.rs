@@ -60,7 +60,10 @@ mod tests {
     fn hm_store_with_no_text_is_chat_not_an_empty_store() {
         // Empty payload is ambiguous/useless as a memory — treat the whole
         // thing as an ordinary chat message instead of storing "".
-        assert_eq!(parse("!mynd store"), Command::Chat("!mynd store".to_string()));
+        assert_eq!(
+            parse("!mynd store"),
+            Command::Chat("!mynd store".to_string())
+        );
         assert_eq!(
             parse("!mynd store   "),
             Command::Chat("!mynd store   ".to_string())

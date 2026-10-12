@@ -203,10 +203,7 @@ pub fn router(
             "/api/v1/conflicts/{id}/resolve",
             post(resolve_conflict_handler),
         )
-        .route(
-            "/api/v1/settings/sync",
-            get(get_sync_settings),
-        )
+        .route("/api/v1/settings/sync", get(get_sync_settings))
         .route(
             "/api/v1/settings/tags",
             get(get_tag_settings).post(save_tag_settings),
