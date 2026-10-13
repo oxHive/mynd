@@ -2360,3 +2360,54 @@ async fn session_start_finds_the_root_for_a_mixed_case_project_name() {
     assert_eq!(val["roots_missing"], false);
     assert!(!val["hint"].as_str().unwrap().contains("/memory-audit"));
 }
+
+#[tokio::test]
+async fn memory_delete_reports_orphaned_children_and_dangling_links() {
+    let (hm, _dir) = test_mynd().await;
+    let idx = store_mem(&hm, "index", "# idx", &["role:index"], None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let child = store_mem(
+        &hm,
+        "child",
+        "c",
+        &[],
+        Some((idx.as_str(), "the only child, open for c")),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store_mem(&hm, "linker", &format!("see [the index]({idx})"), &[], None).await;
+
+    let res = hm
+        .do_memory_delete(MemoryDeleteInput {
+            id: idx.clone(),
+            confirm: true,
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(res["deleted"], true);
+    assert_eq!(res["orphaned_children"][0]["id"], child.as_str());
+    assert_eq!(res["dangling_in"][0]["title"], "linker");
+}
+
+#[tokio::test]
+async fn memory_delete_of_a_missing_id_reports_no_impact() {
+    let (hm, _dir) = test_mynd().await;
+    let res = hm
+        .do_memory_delete(MemoryDeleteInput {
+            id: "mem_00000000000000000000000000000000".to_string(),
+            confirm: true,
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(res["deleted"], false);
+    assert_eq!(res["dangling_in"], serde_json::json!([]));
+    assert_eq!(res["orphaned_children"], serde_json::json!([]));
+}

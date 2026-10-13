@@ -54,6 +54,17 @@ pub struct GroupedEdges {
     pub siblings: Vec<RelatedMemory>,
 }
 
+/// What deleting a memory would break, reported by `memory_delete` so the
+/// agent can offer fixes. Nothing is rewritten automatically.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct DeleteImpact {
+    /// Memories whose content still links to the deleted id.
+    pub dangling_in: Vec<RelatedMemory>,
+    /// Memories whose only home (inbound content `child:` link) is the
+    /// deleted memory. `link_text` is the pointer text they had.
+    pub orphaned_children: Vec<RelatedMemory>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackEntry {
     pub id: String,
@@ -1026,6 +1037,47 @@ impl SqliteStore {
         .await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// Computes `DeleteImpact` for `id` without deleting anything.
+    pub async fn delete_impact(&self, id: &str) -> Result<DeleteImpact> {
+        let mut impact = DeleteImpact::default();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, title FROM memories WHERE id != ?1 AND content LIKE '%' || ?1 || ')%' \
+                 ORDER BY title, id",
+                params![id],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            impact.dangling_in.push(RelatedMemory {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                link_text: None,
+            });
+        }
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT m.id, m.title, e.link_text FROM edges e JOIN memories m ON m.id = e.target_id \
+                 WHERE e.source_id = ?1 AND e.relationship = 'child' AND e.status = 'active' \
+                   AND e.link_text IS NOT NULL \
+                   AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.target_id = e.target_id \
+                     AND e2.relationship = 'child' AND e2.status = 'active' \
+                     AND e2.link_text IS NOT NULL AND e2.source_id != ?1) \
+                 ORDER BY m.title, m.id",
+                params![id],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            impact.orphaned_children.push(RelatedMemory {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                link_text: row.get(2)?,
+            });
+        }
+        Ok(impact)
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool> {

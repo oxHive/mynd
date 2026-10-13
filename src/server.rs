@@ -631,12 +631,19 @@ impl Mynd {
                 None,
             ));
         }
-        let deleted = match self.find_owning_store(&p.id).await? {
-            Some(store) => store
-                .delete(&p.id)
-                .await
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
-            None => false,
+        let (deleted, impact) = match self.find_owning_store(&p.id).await? {
+            Some(store) => {
+                let impact = store
+                    .delete_impact(&p.id)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let deleted = store
+                    .delete(&p.id)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                (deleted, if deleted { impact } else { Default::default() })
+            }
+            None => (false, crate::store::DeleteImpact::default()),
         };
         if deleted {
             self.notify_change();
@@ -644,6 +651,8 @@ impl Mynd {
         Ok(CallToolResult::structured(json!({
             "deleted": deleted,
             "id": p.id,
+            "dangling_in": impact.dangling_in,
+            "orphaned_children": impact.orphaned_children,
         })))
     }
 
@@ -1026,7 +1035,7 @@ impl Mynd {
     }
 
     #[tool(
-        description = "Permanently delete a memory by id. Requires confirm=true; always confirm with the user before calling."
+        description = "Permanently delete a memory by id. Requires confirm=true; always confirm with the user before calling. The response lists dangling_in (memories whose content still links here) and orphaned_children (memories this was the only home of), so you can offer to remove the stale links and re-home the children."
     )]
     async fn memory_delete(
         &self,

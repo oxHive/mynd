@@ -2605,3 +2605,46 @@ async fn store_with_parent_flags_an_oversized_parent_but_still_writes() {
         "the pointer is appended even when the parent ends up over the limit"
     );
 }
+
+#[tokio::test]
+async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
+    let (s, _dir) = make_store().await;
+    let (idx, other_home, only_child, shared_child, linker) =
+        (hid(1), hid(2), hid(3), hid(4), hid(5));
+    for id in [&only_child, &shared_child] {
+        s.store(&test_row(id, "child", "c", &[])).await.unwrap();
+    }
+    s.store(&test_row(
+        &idx,
+        "index",
+        &format!("- [only](child:{only_child})\n- [shared](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &other_home,
+        "other",
+        &format!("- [shared too](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &linker,
+        "linker",
+        &format!("see [the index]({idx})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+
+    let impact = s.delete_impact(&idx).await.unwrap();
+    let ids = |v: &[RelatedMemory]| v.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&impact.dangling_in), vec![linker.clone()]);
+    assert_eq!(ids(&impact.orphaned_children), vec![only_child.clone()]);
+    assert_eq!(
+        impact.orphaned_children[0].link_text.as_deref(),
+        Some("only")
+    );
+}
