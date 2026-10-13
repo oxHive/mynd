@@ -122,6 +122,48 @@ Permanently delete a memory. Cascades to remove its tags and connected edges.
 
 ---
 
+#### `memory_tree`
+
+A project's index tree, with no memory content: cheap enough to call before deciding what to recall.
+
+**Input:**
+```json
+{
+  "project": "mynd",
+  "layer": "workspace"
+}
+```
+
+`layer` is optional: `workspace` (default, also holds personal memories) or `org`.
+
+**Output:**
+```json
+{
+  "project": "mynd",
+  "layer": "workspace",
+  "root_id": "mem_…",
+  "nodes": [
+    {
+      "id": "mem_…",
+      "title": "mynd root",
+      "role": "root",
+      "tokens": 180,
+      "homes": [],
+      "pointers": [ { "target_id": "mem_…", "text": "Sync: libsql replica setup; open when touching sync.rs" } ],
+      "reachable": true,
+      "updated_at": 1760000000,
+      "tags": ["role:root", "project:mynd"],
+      "broken_pointers": [],
+      "parent_links": []
+    }
+  ]
+}
+```
+
+Nodes reachable from the root come first in breadth-first order, then every `project:<name>` memory nothing points to (`reachable: false`), sorted by title. A node with more than one entry in `homes` is linked as a `child:` from several memories. `broken_pointers` lists `child:` links in a node's content whose target is not in this store (deleted, or in the other store); `parent_links` lists deprecated `parent:` links.
+
+---
+
 #### `memory_store_edge`
 
 Store a confirmed connection between two memories. Use this after you or the user has explicitly decided two memories are related — do not infer edges automatically.

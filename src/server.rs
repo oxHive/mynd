@@ -169,6 +169,16 @@ pub struct MemoryGetEdgesInput {
     pub memory_id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MemoryTreeInput {
+    /// Project name, i.e. the value of its project:* tag (e.g. "mynd")
+    pub project: String,
+    /// Which store to walk: "workspace" (default; also holds personal
+    /// memories) or "org"
+    #[serde(default)]
+    pub layer: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Mynd {
     store: Arc<SqliteStore>,
@@ -980,6 +990,37 @@ impl Mynd {
 
         Ok(CallToolResult::structured(result.to_json()))
     }
+
+    pub async fn do_memory_tree(&self, p: MemoryTreeInput) -> Result<CallToolResult, ErrorData> {
+        let project = p.project.trim();
+        if project.is_empty() {
+            return Err(ErrorData::invalid_params("project must not be empty", None));
+        }
+        let layer = p.layer.as_deref().unwrap_or("workspace");
+        let parsed = layer
+            .parse::<crate::model::Layer>()
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let store = if parsed == crate::model::Layer::Org {
+            self.org_store.as_ref().ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "org layer not configured: set [org_sync] in the global config",
+                    None,
+                )
+            })?
+        } else {
+            &self.store
+        };
+        let tree = store
+            .memory_tree(project)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::structured(json!({
+            "project": project.to_lowercase(),
+            "layer": layer,
+            "root_id": tree.root_id,
+            "nodes": tree.nodes,
+        })))
+    }
 }
 
 #[tool_router]
@@ -1212,6 +1253,16 @@ impl Mynd {
             )),
             Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
         }
+    }
+
+    #[tool(
+        description = "Get a project's memory index tree without any content: the root, every memory reachable through [pointer](child:mem_x) links, and the project's memories nothing points to (reachable: false). Each node lists its role, token cost, homes and outgoing pointers. Use to audit structure or see a project's layout cheaply before deciding what to recall."
+    )]
+    async fn memory_tree(
+        &self,
+        Parameters(p): Parameters<MemoryTreeInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.do_memory_tree(p).await
     }
 }
 

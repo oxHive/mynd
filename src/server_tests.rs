@@ -2411,3 +2411,60 @@ async fn memory_delete_of_a_missing_id_reports_no_impact() {
     assert_eq!(res["dangling_in"], serde_json::json!([]));
     assert_eq!(res["orphaned_children"], serde_json::json!([]));
 }
+
+#[tokio::test]
+async fn memory_tree_tool_returns_structure_without_content() {
+    let (hm, _dir) = test_mynd().await;
+    let root = store_mem(&hm, "root", "# r", &["role:root", "project:mynd"], None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store_mem(
+        &hm,
+        "leaf",
+        "secret leaf body",
+        &["project:mynd"],
+        Some((root.as_str(), "leaf: what it holds")),
+    )
+    .await;
+    let v = hm
+        .do_memory_tree(MemoryTreeInput {
+            project: "mynd".to_string(),
+            layer: None,
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(v["root_id"], root.as_str());
+    assert_eq!(v["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(v["nodes"][0]["pointers"][0]["text"], "leaf: what it holds");
+    assert!(
+        !v.to_string().contains("secret leaf body"),
+        "the tree carries no content"
+    );
+}
+
+#[tokio::test]
+async fn memory_tree_tool_rejects_org_layer_without_org_store_and_empty_project() {
+    let (hm, _dir) = test_mynd().await;
+    let err = hm
+        .do_memory_tree(MemoryTreeInput {
+            project: "mynd".to_string(),
+            layer: Some("org".to_string()),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("org layer not configured"),
+        "{err}"
+    );
+    let err = hm
+        .do_memory_tree(MemoryTreeInput {
+            project: "  ".to_string(),
+            layer: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("project"), "{err}");
+}

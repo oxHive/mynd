@@ -2648,3 +2648,110 @@ async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
         Some("only")
     );
 }
+
+#[tokio::test]
+async fn memory_tree_walks_from_root_survives_cycles_and_lists_unreached_project_memories() {
+    let (s, _dir) = make_store().await;
+    let (root, a, b, orphan, outsider) = (hid(1), hid(2), hid(3), hid(4), hid(5));
+    let p: Vec<String> = vec!["project:mynd".into()];
+    s.store(&test_row(&b, "b", "leaf b", &p)).await.unwrap();
+    s.store(&test_row(
+        &a,
+        "a",
+        &format!("- [b: the leaf](child:{b})"),
+        &["project:mynd".into(), "role:index".into()],
+    ))
+    .await
+    .unwrap();
+    // b points back at a: the walk must still terminate.
+    s.store(&test_row(&b, "b", &format!("- [back to a](child:{a})"), &p))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &root,
+        "root",
+        &format!("- [a: everything about a](child:{a})"),
+        &["project:mynd".into(), "role:root".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(&orphan, "orphan", "nobody links me", &p))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &outsider,
+        "other project",
+        "x",
+        &["project:other".into()],
+    ))
+    .await
+    .unwrap();
+
+    let tree = s.memory_tree("Mynd").await.unwrap();
+    assert_eq!(tree.root_id.as_deref(), Some(root.as_str()));
+    let order: Vec<&str> = tree.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        order,
+        vec![root.as_str(), a.as_str(), b.as_str(), orphan.as_str()]
+    );
+    let node = |id: &str| tree.nodes.iter().find(|n| n.id == id).unwrap();
+    assert_eq!(node(&root).role.as_deref(), Some("root"));
+    assert_eq!(node(&a).role.as_deref(), Some("index"));
+    assert!(node(&b).reachable);
+    assert!(!node(&orphan).reachable);
+    assert!(node(&orphan).homes.is_empty());
+    assert_eq!(
+        node(&a).homes,
+        vec![root.clone(), b.clone()],
+        "two homes, sorted"
+    );
+    assert_eq!(node(&root).pointers[0].target_id, a);
+    assert_eq!(node(&root).pointers[0].text, "a: everything about a");
+    assert!(node(&root).tokens > 0);
+    assert!(node(&a).tags.contains(&"role:index".to_string()));
+}
+
+#[tokio::test]
+async fn memory_tree_reports_broken_pointers_and_legacy_parent_links() {
+    let (s, _dir) = make_store().await;
+    let (root, leaf, gone) = (hid(1), hid(2), hid(9));
+    s.store(&test_row(
+        &root,
+        "root",
+        "# r",
+        &["role:root".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &leaf,
+        "leaf",
+        &format!("see [old index]({gone}) and [up](parent:{root}) and [lost](child:{gone})"),
+        &["project:mynd".into(), "part:fragment".into()],
+    ))
+    .await
+    .unwrap();
+    let tree = s.memory_tree("mynd").await.unwrap();
+    let node = tree.nodes.iter().find(|n| n.id == leaf).unwrap();
+    assert_eq!(
+        node.broken_pointers,
+        vec![gone.clone()],
+        "only child: links count as pointers"
+    );
+    assert_eq!(node.parent_links, vec![root.clone()]);
+    assert!(node.tags.contains(&"part:fragment".to_string()));
+    assert!(!node.reachable, "a parent: link is not a home");
+}
+
+#[tokio::test]
+async fn memory_tree_without_a_root_lists_project_memories_unreached_by_title() {
+    let (s, _dir) = make_store().await;
+    let p: Vec<String> = vec!["project:mynd".into()];
+    s.store(&test_row(&hid(1), "zeta", "z", &p)).await.unwrap();
+    s.store(&test_row(&hid(2), "alpha", "a", &p)).await.unwrap();
+    let tree = s.memory_tree("mynd").await.unwrap();
+    assert!(tree.root_id.is_none());
+    let titles: Vec<&str> = tree.nodes.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(titles, vec!["alpha", "zeta"]);
+    assert!(tree.nodes.iter().all(|n| !n.reachable));
+}

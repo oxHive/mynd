@@ -65,6 +65,44 @@ pub struct DeleteImpact {
     pub orphaned_children: Vec<RelatedMemory>,
 }
 
+/// One outgoing `[text](child:target_id)` pointer, in content order.
+#[derive(Debug, Clone, Serialize)]
+pub struct TreePointer {
+    pub target_id: String,
+    pub text: String,
+}
+
+/// One memory in a project's index tree. Carries no content.
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeNode {
+    pub id: String,
+    pub title: String,
+    /// `root` or `index` from the `role:*` tag; `None` for a leaf.
+    pub role: Option<String>,
+    pub tokens: i64,
+    /// Memories whose content holds a `child:` link to this one, sorted.
+    /// More than one means the memory has several homes.
+    pub homes: Vec<String>,
+    pub pointers: Vec<TreePointer>,
+    /// Reached by walking `child:` links from the root.
+    pub reachable: bool,
+    pub updated_at: i64,
+    pub tags: Vec<String>,
+    /// Ids this memory's content links as `child:` that are not in this
+    /// store (deleted, or living in the other store).
+    pub broken_pointers: Vec<String>,
+    /// Ids this memory's content links as `parent:` (deprecated form).
+    pub parent_links: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryTree {
+    pub root_id: Option<String>,
+    /// Reachable nodes in breadth-first order from the root, then every
+    /// unreached `project:<name>` memory sorted by title.
+    pub nodes: Vec<TreeNode>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackEntry {
     pub id: String,
@@ -1078,6 +1116,98 @@ impl SqliteStore {
             });
         }
         Ok(impact)
+    }
+
+    /// The index tree for `project` in this store: a cycle-safe walk of
+    /// content `child:` links from the project root, plus every
+    /// `project:<name>` memory the walk did not reach. Homes and pointers
+    /// are parsed from content (the source of truth for links), counting
+    /// only targets that exist in this store.
+    // ponytail: loads every memory once; fine for a personal store, move the
+    // walk into a recursive CTE if stores grow past a few thousand memories.
+    pub async fn memory_tree(&self, project: &str) -> Result<MemoryTree> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        let project_tag = format!("project:{}", project.to_lowercase());
+        let root_id = self.find_root(Some(project)).await?.map(|r| r.id);
+        let all = self.list_memories(100_000, 0).await?;
+        let by_id: HashMap<&str, &MemoryEntry> = all.iter().map(|m| (m.id.as_str(), m)).collect();
+
+        let mut pointers: HashMap<&str, Vec<TreePointer>> = HashMap::new();
+        let mut homes: HashMap<String, Vec<String>> = HashMap::new();
+        let mut broken: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut parent_links: HashMap<&str, Vec<String>> = HashMap::new();
+        for m in &all {
+            for (text, kind, target) in parse_relationship_links(&m.id, &m.content) {
+                match kind.as_str() {
+                    "child" if by_id.contains_key(target.as_str()) => {
+                        homes.entry(target.clone()).or_default().push(m.id.clone());
+                        pointers
+                            .entry(m.id.as_str())
+                            .or_default()
+                            .push(TreePointer {
+                                target_id: target,
+                                text,
+                            });
+                    }
+                    "child" => broken.entry(m.id.as_str()).or_default().push(target),
+                    "parent" => parent_links.entry(m.id.as_str()).or_default().push(target),
+                    _ => {}
+                }
+            }
+        }
+        for h in homes.values_mut() {
+            h.sort();
+        }
+
+        let mut order: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        if let Some(root) = &root_id {
+            let mut queue = VecDeque::from([root.clone()]);
+            seen.insert(root.clone());
+            while let Some(id) = queue.pop_front() {
+                for p in pointers.get(id.as_str()).into_iter().flatten() {
+                    if seen.insert(p.target_id.clone()) {
+                        queue.push_back(p.target_id.clone());
+                    }
+                }
+                order.push(id);
+            }
+        }
+        let reachable_count = order.len();
+        let mut unreached: Vec<&MemoryEntry> = all
+            .iter()
+            .filter(|m| !seen.contains(&m.id) && m.tags.contains(&project_tag))
+            .collect();
+        unreached.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
+        order.extend(unreached.into_iter().map(|m| m.id.clone()));
+
+        let nodes = order
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let m = by_id.get(id.as_str())?;
+                Some(TreeNode {
+                    id: m.id.clone(),
+                    title: m.title.clone(),
+                    role: m
+                        .tags
+                        .iter()
+                        .find_map(|t| t.strip_prefix("role:").map(str::to_string)),
+                    tokens: m.token_count.unwrap_or_else(|| {
+                        crate::budget::count_entry_tokens(&m.title, &m.content) as i64
+                    }),
+                    homes: homes.get(id).cloned().unwrap_or_default(),
+                    pointers: pointers.get(id.as_str()).cloned().unwrap_or_default(),
+                    reachable: i < reachable_count,
+                    updated_at: m.updated_at,
+                    tags: m.tags.clone(),
+                    broken_pointers: broken.get(id.as_str()).cloned().unwrap_or_default(),
+                    parent_links: parent_links.get(id.as_str()).cloned().unwrap_or_default(),
+                })
+            })
+            .collect();
+        Ok(MemoryTree { root_id, nodes })
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool> {
