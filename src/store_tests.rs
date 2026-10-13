@@ -2309,3 +2309,147 @@ async fn delete_all_also_clears_sync_journal_and_session_start_log() {
         "session_start_log must be cleared too"
     );
 }
+
+/// A real-format memory id (`mem_` + 32 hex), so content links to it parse
+/// and create edges.
+fn hid(n: u128) -> String {
+    format!("mem_{n:032x}")
+}
+
+#[tokio::test]
+async fn role_namespace_accepts_root_and_index_and_rejects_other_values() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(
+        &hid(1),
+        "r",
+        "c",
+        &["role:root".into(), "project:p".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &hid(2),
+        "i",
+        "c",
+        &["role:index".into(), "project:p".into()],
+    ))
+    .await
+    .unwrap();
+    assert!(
+        s.store(&test_row(&hid(3), "x", "c", &["role:leaf".into()]))
+            .await
+            .is_err(),
+        "role is a fixed-values namespace"
+    );
+    assert!(
+        s.store(&test_row(
+            &hid(4),
+            "y",
+            "c",
+            &["role:index".into(), "role:root".into()]
+        ))
+        .await
+        .is_err(),
+        "role is single_value"
+    );
+}
+
+#[tokio::test]
+async fn tag_namespace_registry_backfills_role_over_a_stale_saved_registry() {
+    let (s, _dir) = make_store().await;
+    s.set_meta(
+        "tag_namespaces",
+        r##"{"part": {"color": "#f0883e", "values": ["index", "fragment"], "values_mode": "fixed"}}"##,
+    )
+    .await
+    .unwrap();
+    let registry = s.tag_namespace_registry().await;
+    assert_eq!(
+        registry["role"]["values"],
+        serde_json::json!(["root", "index"])
+    );
+}
+
+#[tokio::test]
+async fn find_root_matches_project_case_insensitively_and_org_wide_root_has_no_project() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(
+        &hid(1),
+        "mynd root",
+        "c",
+        &["role:root".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(&hid(2), "org root", "c", &["role:root".into()]))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &hid(3),
+        "index",
+        "c",
+        &["role:index".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    assert_eq!(s.find_root(Some("Mynd")).await.unwrap().unwrap().id, hid(1));
+    assert_eq!(s.find_root(None).await.unwrap().unwrap().id, hid(2));
+    assert!(s.find_root(Some("other")).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn second_root_for_same_project_is_rejected_on_store_update_and_add_tags() {
+    let (s, _dir) = make_store().await;
+    let root_tags: Vec<String> = vec!["role:root".into(), "project:mynd".into()];
+    s.store(&test_row(&hid(1), "root", "c", &root_tags))
+        .await
+        .unwrap();
+
+    let err = s
+        .store(&test_row(&hid(2), "root 2", "c", &root_tags))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already has a root"), "{err}");
+
+    s.store(&test_row(&hid(3), "leaf", "c", &["project:mynd".into()]))
+        .await
+        .unwrap();
+    assert!(s.update(&hid(3), "leaf", "c", &root_tags).await.is_err());
+    assert!(s.add_tags(&hid(3), &["role:root".into()]).await.is_err());
+
+    // Re-storing the root itself and a root for another project are fine.
+    s.store(&test_row(&hid(1), "root", "c2", &root_tags))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &hid(4),
+        "other root",
+        "c",
+        &["role:root".into(), "project:other".into()],
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn sync_duplicated_roots_stay_editable_and_find_root_returns_the_oldest() {
+    let (s, _dir) = make_store().await;
+    let root_tags: Vec<String> = vec!["role:root".into(), "project:mynd".into()];
+    s.store(&test_row(&hid(1), "first", "c", &root_tags))
+        .await
+        .unwrap();
+    // The hive apply path skips the uniqueness check: a peer's copy must always apply.
+    s.store_with_timestamp(
+        &test_row(&hid(2), "second", "c", &root_tags),
+        chrono_now() + 5,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.find_root(Some("mynd")).await.unwrap().unwrap().id, hid(1));
+    assert!(
+        s.update(&hid(2), "second", "edited", &root_tags)
+            .await
+            .unwrap(),
+        "keeping an existing root claim is allowed"
+    );
+}

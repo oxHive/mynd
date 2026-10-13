@@ -791,10 +791,12 @@ async fn get_tag_settings_returns_seeded_defaults_when_unset() {
     assert_eq!(ns["project"]["values"], json!([]));
     assert_eq!(ns["part"]["values"], json!(["index", "fragment"]));
     assert_eq!(ns["part"]["values_mode"], "fixed");
+    assert_eq!(ns["role"]["values"], json!(["root", "index"]));
+    assert_eq!(ns["role"]["single_value"], true);
 
     let predefined = body["predefined"].as_array().unwrap();
     for name in [
-        "project", "topic", "status", "lang", "kind", "scope", "part",
+        "project", "topic", "status", "lang", "kind", "scope", "part", "role",
     ] {
         assert!(
             predefined.iter().any(|v| v == name),
@@ -3295,4 +3297,62 @@ async fn sse_events_endpoint_responds_with_event_stream_headers() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers()["content-type"], "text/event-stream");
+}
+
+#[tokio::test]
+async fn import_rejects_a_root_that_conflicts_without_writing_anything() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_root_a",
+            title: "root a",
+            content: "c",
+            tags: &["role:root".to_string(), "project:mynd".to_string()],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_plain", "title": "a", "content": "b" },
+            { "id": "mem_root_b", "title": "root b", "content": "c", "tags": ["role:root", "project:mynd"] },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"].as_str().unwrap().contains("mem_root_b:"),
+        "{body}"
+    );
+    assert_eq!(
+        store.count().await.unwrap(),
+        1,
+        "nothing from the import was written"
+    );
+}
+
+#[tokio::test]
+async fn import_rejects_two_roots_for_one_project_in_the_same_batch() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_r1", "title": "r1", "content": "c", "tags": ["role:root", "project:mynd"] },
+            { "id": "mem_r2", "title": "r2", "content": "c", "tags": ["role:root", "project:mynd"] },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"].as_str().unwrap().contains("mem_r2:"),
+        "{body}"
+    );
+    assert_eq!(store.count().await.unwrap(), 0);
 }

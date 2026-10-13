@@ -312,7 +312,11 @@ pub(crate) fn default_tag_namespaces() -> Value {
         },
         "part": {
             "color": "#f0883e", "values": ["index", "fragment"], "values_mode": "fixed", "single_value": true,
-            "description": "Marks a memory's role when content was too large for one memory and got split: index (the short entry point whose content links to each fragment via [phrase](child:mem_xxx)) or fragment (one piece of the split content). Absent on ordinary, unsplit memories."
+            "description": "Deprecated, use role instead. Marked a memory's role when oversized content was split: index (the entry point linking to each fragment) or fragment (one piece). The memory audit migrates part:index to role:index and drops part:fragment."
+        },
+        "role": {
+            "color": "#d4a72c", "values": ["root", "index"], "values_mode": "fixed", "single_value": true,
+            "description": "A memory's place in the project's index tree: root (the project's top-level index, loaded at session start, at most one per project per store) or index (a memory whose content is mainly [pointer text](child:mem_xxx) links to the memories under it). Absent on leaf memories."
         },
     })
 }
@@ -410,6 +414,20 @@ fn validate_project_singleton_fallback(tags: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The scope a `role:root` tag claims: `Some(Some(project))` for a project
+/// root (lowercased), `Some(None)` for an org-wide root (no `project:*`
+/// tag), `None` when `tags` has no `role:root` at all.
+pub(crate) fn root_scope(tags: &[String]) -> Option<Option<String>> {
+    if !tags.iter().any(|t| t.eq_ignore_ascii_case("role:root")) {
+        return None;
+    }
+    Some(tags.iter().find_map(|t| {
+        t.to_lowercase()
+            .strip_prefix("project:")
+            .map(str::to_string)
+    }))
+}
+
 impl SqliteStore {
     pub fn new(conn: Connection) -> Self {
         Self {
@@ -453,6 +471,10 @@ impl SqliteStore {
     }
 
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        // Local writes only. The hive apply path calls store_with_timestamp
+        // directly and must never be refused, or sync would wedge on a
+        // peer's root.
+        self.check_root_unique(m.id, m.tags).await?;
         self.store_with_timestamp(m, chrono_now()).await
     }
 
@@ -571,6 +593,73 @@ impl SqliteStore {
         }
     }
 
+    /// The root index for `project` (`role:root` + `project:<name>`), or the
+    /// org-wide root (`role:root` with no `project:*` tag) when `project` is
+    /// `None`. If sync ever delivers two, the oldest wins so callers stay
+    /// deterministic.
+    pub async fn find_root(&self, project: Option<&str>) -> Result<Option<MemoryEntry>> {
+        const COLS: &str = "SELECT m.id, m.title, m.content, m.created_at, m.updated_at, \
+             m.token_count, m.layer, m.memory_type FROM memories m \
+             WHERE EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = 'role:root')";
+        let mut rows = match project {
+            Some(p) => {
+                let sql = format!(
+                    "{COLS} AND EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = ?1) \
+                     ORDER BY m.created_at, m.id LIMIT 1"
+                );
+                self.conn
+                    .query(&sql, params![format!("project:{}", p.to_lowercase())])
+                    .await?
+            }
+            None => {
+                let sql = format!(
+                    "{COLS} AND NOT EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id \
+                     AND t.tag LIKE 'project:%') ORDER BY m.created_at, m.id LIMIT 1"
+                );
+                self.conn.query(&sql, ()).await?
+            }
+        };
+        match rows.next().await? {
+            Some(row) => {
+                let entry = self.row_to_entry(&row)?;
+                let tags = self.fetch_tags(&entry.id).await?;
+                Ok(Some(MemoryEntry { tags, ..entry }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Rejects `tags` when they would newly claim `role:root` for a scope
+    /// that already has a different root in this store. Keeping a claim the
+    /// memory already holds always passes, so either copy of a
+    /// sync-duplicated root stays editable. Called from local writes only:
+    /// the hive apply path must never be refused.
+    // ponytail: check runs outside the write lock, so two concurrent root
+    // creations can both pass; the audit reports duplicates if that happens.
+    pub async fn check_root_unique(&self, id: &str, tags: &[String]) -> Result<()> {
+        let Some(scope) = root_scope(tags) else {
+            return Ok(());
+        };
+        if root_scope(&self.fetch_tags(id).await?) == Some(scope.clone()) {
+            return Ok(());
+        }
+        if let Some(existing) = self.find_root(scope.as_deref()).await?
+            && existing.id != id
+        {
+            let what = match &scope {
+                Some(p) => format!("project {p}"),
+                None => "the org-wide scope".to_string(),
+            };
+            return Err(anyhow!(
+                "{what} already has a root ({}: {}); a store holds at most one root per project. \
+                 Remove role:root from one of them first.",
+                existing.id,
+                existing.title
+            ));
+        }
+        Ok(())
+    }
+
     /// Loads tags for many entries in one query per `TAG_BATCH` ids rather
     /// than one query per entry: `list_memories` with the default limit
     /// used to issue 201 statements, and `find_by_tag_expr`/export one per
@@ -643,6 +732,7 @@ impl SqliteStore {
     ) -> Result<bool> {
         validate_tag_format(tags)?;
         validate_tags_against_registry(self, tags).await?;
+        self.check_root_unique(id, tags).await?;
         let Some(current) = self.recall_by_id(id).await? else {
             return Ok(false);
         };
@@ -706,6 +796,7 @@ impl SqliteStore {
         }
         validate_tag_format(&merged)?;
         validate_tags_against_registry(self, &merged).await?;
+        self.check_root_unique(id, &merged).await?;
 
         let now = chrono_now();
         let hive_hash = compute_hive_content_hash(

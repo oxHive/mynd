@@ -69,10 +69,14 @@ fn default_edge_status() -> String {
 /// offending ids) instead of leaving a half-applied import behind.
 pub(crate) async fn validate_import_memories<'a>(
     store: &crate::store::SqliteStore,
-    memories: impl Iterator<Item = (&'a str, &'a str, &'a str, &'a str, &'a str)>,
+    memories: impl Iterator<Item = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a [String])>,
 ) -> Result<(), String> {
     let mut problems = Vec::new();
-    for (id, title, content, layer, memory_type) in memories {
+    // Root scopes claimed earlier in this batch, so two imported roots for one
+    // project are caught before either is written.
+    let mut batch_roots: std::collections::HashMap<Option<String>, &str> =
+        std::collections::HashMap::new();
+    for (id, title, content, layer, memory_type, tags) in memories {
         if let Err(e) = layer.parse::<crate::model::Layer>() {
             problems.push(format!("{id}: {e}"));
         }
@@ -81,6 +85,19 @@ pub(crate) async fn validate_import_memories<'a>(
         }
         if let Err(e) = store.check_content_size(title, content).await {
             problems.push(format!("{id}: {e}"));
+        }
+        if let Err(e) = store.check_root_unique(id, tags).await {
+            problems.push(format!("{id}: {e}"));
+        }
+        if let Some(scope) = crate::store::root_scope(tags) {
+            match batch_roots.get(&scope) {
+                Some(first) if *first != id => problems.push(format!(
+                    "{id}: this import already has a root for that scope ({first})"
+                )),
+                _ => {
+                    batch_roots.insert(scope, id);
+                }
+            }
         }
         if problems.len() >= 10 {
             problems.push("…".to_string());
@@ -110,6 +127,7 @@ pub(super) async fn import(
                 m.content.as_str(),
                 m.layer.as_str(),
                 m.memory_type.as_str(),
+                m.tags.as_slice(),
             )
         }),
     )

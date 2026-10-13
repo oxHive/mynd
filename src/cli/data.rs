@@ -142,6 +142,7 @@ fn cmd_import(input: PathBuf) -> Result<()> {
                     m.content.as_str(),
                     m.layer.as_str(),
                     m.memory_type.as_str(),
+                    m.tags.as_slice(),
                 )
             }),
         )
