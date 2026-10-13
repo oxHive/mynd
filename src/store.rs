@@ -1104,26 +1104,43 @@ impl SqliteStore {
                 link_text: None,
             });
         }
+        // Children come from content, not edges: edges are only created for
+        // targets that already exist, so a hive pull that applies the parent
+        // first leaves them missing. Same source of truth as `memory_tree`.
         let mut rows = self
             .conn
-            .query(
-                "SELECT m.id, m.title, e.link_text FROM edges e JOIN memories m ON m.id = e.target_id \
-                 WHERE e.source_id = ?1 AND e.relationship = 'child' AND e.status = 'active' \
-                   AND e.link_text IS NOT NULL \
-                   AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.target_id = e.target_id \
-                     AND e2.relationship = 'child' AND e2.status = 'active' \
-                     AND e2.link_text IS NOT NULL AND e2.source_id != ?1) \
-                 ORDER BY m.title, m.id",
-                params![id],
-            )
+            .query("SELECT content FROM memories WHERE id = ?1", params![id])
             .await?;
-        while let Some(row) = rows.next().await? {
-            impact.orphaned_children.push(RelatedMemory {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                link_text: row.get(2)?,
-            });
+        let Some(row) = rows.next().await? else {
+            return Ok(impact);
+        };
+        let content: String = row.get(0)?;
+        for (link_text, kind, child) in parse_relationship_links(id, &content) {
+            if kind != "child" {
+                continue;
+            }
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT m.title, (SELECT COUNT(*) FROM memories o WHERE o.id != ?2 \
+                       AND o.content LIKE '%(child:' || ?1 || ')%') \
+                     FROM memories m WHERE m.id = ?1",
+                    params![child.clone(), id],
+                )
+                .await?;
+            if let Some(row) = rows.next().await?
+                && row.get::<i64>(1)? == 0
+            {
+                impact.orphaned_children.push(RelatedMemory {
+                    id: child,
+                    title: row.get(0)?,
+                    link_text: Some(link_text),
+                });
+            }
         }
+        impact
+            .orphaned_children
+            .sort_by(|a, b| (&a.title, &a.id).cmp(&(&b.title, &b.id)));
         Ok(impact)
     }
 

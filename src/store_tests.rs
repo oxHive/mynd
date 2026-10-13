@@ -2650,6 +2650,51 @@ async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
 }
 
 #[tokio::test]
+async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
+    // Hive pulls apply memories in id order, so a parent can land before its
+    // children and never get their edges. Content is the source of truth.
+    let (s, _dir) = make_store().await;
+    let (idx, other_home, only_child, shared_child) = (hid(1), hid(2), hid(3), hid(4));
+    s.store(&test_row(
+        &idx,
+        "index",
+        &format!("- [only](child:{only_child})\n- [shared](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &other_home,
+        "other",
+        &format!("- [shared too](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    for id in [&only_child, &shared_child] {
+        s.store(&test_row(id, "child", "c", &[])).await.unwrap();
+    }
+    assert!(
+        s.list_edges(Some(&idx)).await.unwrap().is_empty(),
+        "precondition: the parent-to-child edges were never created"
+    );
+
+    let impact = s.delete_impact(&idx).await.unwrap();
+    assert_eq!(
+        impact
+            .orphaned_children
+            .iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>(),
+        vec![only_child]
+    );
+    assert_eq!(
+        impact.orphaned_children[0].link_text.as_deref(),
+        Some("only")
+    );
+}
+
+#[tokio::test]
 async fn memory_tree_walks_from_root_survives_cycles_and_lists_unreached_project_memories() {
     let (s, _dir) = make_store().await;
     let (root, a, b, orphan, outsider) = (hid(1), hid(2), hid(3), hid(4), hid(5));
