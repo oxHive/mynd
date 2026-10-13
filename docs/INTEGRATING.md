@@ -37,21 +37,22 @@ This is the only tool that reads `.mynd.toml`. All other tools operate on the me
 
 #### `memory_store`
 
-Store a new memory or overwrite an existing one by ID.
+Store a new memory, optionally filed under an index memory (its home).
 
 **Input:**
 ```json
 {
-  "title": "golang preferences",
-  "content": "Always use table-driven tests. Prefer errors.As over type assertions.",
-  "tags": ["golang", "testing"],
-  "id": "mem_abc123"
+  "title": "sync notes",
+  "content": "libsql embedded replica setup and sync triggers.",
+  "tags": ["project:mynd", "topic:sync"],
+  "parent_id": "mem_0123456789abcdef0123456789abcdef",
+  "pointer": "Sync: libsql replica setup and triggers; open when touching sync.rs"
 }
 ```
 
-`id` is optional — omit it and Mynd generates one. Tags trigger automatic edge creation between memories that share a tag.
+`parent_id` and `pointer` are optional but must be passed together. The parent must live in the same store (layer) as the new memory. `pointer` is one line, at most 300 characters, with no `]`. The server appends `- [pointer](child:<new id>)` to the parent in the same write, which creates the parent/child edge.
 
-**Output:** `{ "id": "mem_abc123", "stored": true }`
+**Output:** `{ "id": "mem_…", "title": "sync notes", "parent_id": "mem_…", "parent_oversized": false }`. `parent_id` and `parent_oversized` appear only when a parent was given; `parent_oversized: true` means the parent is now over `max_content_tokens` and should be split.
 
 ---
 
@@ -112,11 +113,54 @@ Permanently delete a memory. Cascades to remove its tags and connected edges.
 **Input:**
 ```json
 {
-  "id": "mem_abc123"
+  "id": "mem_abc123",
+  "confirm": true
 }
 ```
 
-**Output:** `{ "deleted": true, "id": "mem_abc123" }`
+**Output:** `{ "deleted": true, "id": "mem_abc123", "dangling_in": [ { "id", "title", "link_text" } ], "orphaned_children": [ { "id", "title", "link_text" } ] }`. `dangling_in` lists memories whose content still links to the deleted one (`link_text` is always `null` in this list); `orphaned_children` lists memories that had it as their only home (their `link_text` is the old pointer). Nothing else is rewritten.
+
+---
+
+#### `memory_tree`
+
+A project's index tree, with no memory content: cheap enough to call before deciding what to recall.
+
+**Input:**
+```json
+{
+  "project": "mynd",
+  "layer": "workspace"
+}
+```
+
+`layer` is optional: `workspace` (default, also holds personal memories) or `org`.
+
+**Output:**
+```json
+{
+  "project": "mynd",
+  "layer": "workspace",
+  "root_id": "mem_…",
+  "nodes": [
+    {
+      "id": "mem_…",
+      "title": "mynd root",
+      "role": "root",
+      "tokens": 180,
+      "homes": [],
+      "pointers": [ { "target_id": "mem_…", "text": "Sync: libsql replica setup; open when touching sync.rs" } ],
+      "reachable": true,
+      "updated_at": 1760000000,
+      "tags": ["role:root", "project:mynd"],
+      "broken_pointers": [],
+      "parent_links": []
+    }
+  ]
+}
+```
+
+Nodes reachable from the root come first in breadth-first order, then every `project:<name>` memory nothing points to (`reachable: false`), sorted by title. A node with more than one entry in `homes` is linked as a `child:` from several memories. `broken_pointers` lists `child:` links in a node's content whose target is not in this store (deleted, or in the other store); `parent_links` lists deprecated `parent:` links.
 
 ---
 

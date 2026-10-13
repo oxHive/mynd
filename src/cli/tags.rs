@@ -127,6 +127,19 @@ fn validate_predefined_namespaces_unchanged(body: &Value) -> Result<()> {
     Ok(())
 }
 
+/// The registry to edit and hand back to `save_registry`. While the guard is
+/// on, predefined namespaces come from the code defaults so a stale stored
+/// copy does not trip the guard on an unrelated edit.
+async fn load_registry(store: &crate::store::SqliteStore) -> Result<Value> {
+    let settings = crate::config::load_server_settings(&crate::config::global_config_path())?;
+    let registry = store.tag_namespace_registry().await;
+    Ok(if settings.guard_predefined_namespaces {
+        crate::store::overlay_predefined_namespaces(registry)
+    } else {
+        registry
+    })
+}
+
 async fn save_registry(store: &crate::store::SqliteStore, body: Value) -> Result<()> {
     let settings = crate::config::load_server_settings(&crate::config::global_config_path())?;
     validate_tag_namespaces(&body)?;
@@ -214,7 +227,7 @@ pub fn cmd_tags(action: TagsAction) -> Result<()> {
                 return Err(anyhow!("values-mode must be suggestion|fixed"));
             }
             let store = open_store().await?;
-            let mut registry = store.tag_namespace_registry().await;
+            let mut registry = load_registry(&store).await?;
             let obj = registry
                 .as_object_mut()
                 .ok_or_else(|| anyhow!("tag registry is not an object"))?;
@@ -248,7 +261,7 @@ pub fn cmd_tags(action: TagsAction) -> Result<()> {
                 return Err(anyhow!("values-mode must be suggestion|fixed"));
             }
             let store = open_store().await?;
-            let mut registry = store.tag_namespace_registry().await;
+            let mut registry = load_registry(&store).await?;
             let obj = registry
                 .as_object_mut()
                 .ok_or_else(|| anyhow!("tag registry is not an object"))?;
@@ -275,7 +288,7 @@ pub fn cmd_tags(action: TagsAction) -> Result<()> {
         }),
         TagsAction::Rm { name } => block_on(async move {
             let store = open_store().await?;
-            let mut registry = store.tag_namespace_registry().await;
+            let mut registry = load_registry(&store).await?;
             let obj = registry
                 .as_object_mut()
                 .ok_or_else(|| anyhow!("tag registry is not an object"))?;
@@ -288,7 +301,7 @@ pub fn cmd_tags(action: TagsAction) -> Result<()> {
         }),
         TagsAction::ValueAdd { name, value } => block_on(async move {
             let store = open_store().await?;
-            let mut registry = store.tag_namespace_registry().await;
+            let mut registry = load_registry(&store).await?;
             let obj = registry
                 .as_object_mut()
                 .ok_or_else(|| anyhow!("tag registry is not an object"))?;
@@ -312,7 +325,7 @@ pub fn cmd_tags(action: TagsAction) -> Result<()> {
         }),
         TagsAction::ValueRemove { name, value } => block_on(async move {
             let store = open_store().await?;
-            let mut registry = store.tag_namespace_registry().await;
+            let mut registry = load_registry(&store).await?;
             let obj = registry
                 .as_object_mut()
                 .ok_or_else(|| anyhow!("tag registry is not an object"))?;

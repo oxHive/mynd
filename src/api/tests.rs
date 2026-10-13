@@ -69,6 +69,14 @@ async fn test_router() -> (Router, TempDir) {
 
 async fn test_router_with_guard(guard_predefined_namespaces: bool) -> (Router, TempDir) {
     let (store, dir) = test_store().await;
+    test_router_over_store(store, dir, guard_predefined_namespaces).await
+}
+
+async fn test_router_over_store(
+    store: Arc<SqliteStore>,
+    dir: TempDir,
+    guard_predefined_namespaces: bool,
+) -> (Router, TempDir) {
     let (events, _) = broadcast::channel(16);
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
@@ -791,10 +799,12 @@ async fn get_tag_settings_returns_seeded_defaults_when_unset() {
     assert_eq!(ns["project"]["values"], json!([]));
     assert_eq!(ns["part"]["values"], json!(["index", "fragment"]));
     assert_eq!(ns["part"]["values_mode"], "fixed");
+    assert_eq!(ns["role"]["values"], json!(["root", "index"]));
+    assert_eq!(ns["role"]["single_value"], true);
 
     let predefined = body["predefined"].as_array().unwrap();
     for name in [
-        "project", "topic", "status", "lang", "kind", "scope", "part",
+        "project", "topic", "status", "lang", "kind", "scope", "part", "role",
     ] {
         assert!(
             predefined.iter().any(|v| v == name),
@@ -802,6 +812,42 @@ async fn get_tag_settings_returns_seeded_defaults_when_unset() {
         );
     }
     assert_eq!(body["guard_predefined_namespaces"], true);
+}
+
+#[tokio::test]
+async fn tag_settings_round_trip_passes_the_guard_with_a_stale_stored_part_entry() {
+    // A registry saved before the `part` description changed still holds the
+    // old entry; the settings GET must serve current defaults for predefined
+    // namespaces so the dashboard's unchanged re-save is not a 422.
+    let (store, dir) = test_store().await;
+    let stale = json!({ "part": {
+        "color": "#f0883e",
+        "values": ["index", "fragment"],
+        "values_mode": "fixed",
+        "single_value": true,
+        "description": "Marks a memory's role when content was too large for one memory and got split: index (the short entry point whose content links to each fragment via [phrase](child:mem_xxx)) or fragment (one piece of the split content). Absent on ordinary, unsplit memories.",
+    }});
+    store
+        .set_meta("tag_namespaces", &stale.to_string())
+        .await
+        .unwrap();
+    let (app, _dir) = test_router_over_store(store, dir, true).await;
+
+    let (status, body) = req(app.clone(), "GET", "/api/v1/settings/tags", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["namespaces"]["part"],
+        crate::store::default_tag_namespaces()["part"]
+    );
+
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(body["namespaces"].clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -3295,4 +3341,62 @@ async fn sse_events_endpoint_responds_with_event_stream_headers() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers()["content-type"], "text/event-stream");
+}
+
+#[tokio::test]
+async fn import_rejects_a_root_that_conflicts_without_writing_anything() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_root_a",
+            title: "root a",
+            content: "c",
+            tags: &["role:root".to_string(), "project:mynd".to_string()],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_plain", "title": "a", "content": "b" },
+            { "id": "mem_root_b", "title": "root b", "content": "c", "tags": ["role:root", "project:mynd"] },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"].as_str().unwrap().contains("mem_root_b:"),
+        "{body}"
+    );
+    assert_eq!(
+        store.count().await.unwrap(),
+        1,
+        "nothing from the import was written"
+    );
+}
+
+#[tokio::test]
+async fn import_rejects_two_roots_for_one_project_in_the_same_batch() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_r1", "title": "r1", "content": "c", "tags": ["role:root", "project:mynd"] },
+            { "id": "mem_r2", "title": "r2", "content": "c", "tags": ["role:root", "project:mynd"] },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"].as_str().unwrap().contains("mem_r2:"),
+        "{body}"
+    );
+    assert_eq!(store.count().await.unwrap(), 0);
 }

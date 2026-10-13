@@ -1249,6 +1249,7 @@ async fn log_and_list_session_start_round_trip() {
         used_tokens: 120,
         max_tokens: 2000,
         memories_recalled: 0,
+        roots_missing: false,
     };
     store
         .log_session_start("/tmp/demo-project", &result)
@@ -1278,6 +1279,7 @@ async fn list_session_logs_orders_newest_first() {
             used_tokens: used,
             max_tokens: 2000,
             memories_recalled: 0,
+            roots_missing: false,
         };
         store.log_session_start("/tmp/p", &result).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -2292,6 +2294,7 @@ async fn delete_all_also_clears_sync_journal_and_session_start_log() {
             used_tokens: 0,
             max_tokens: 100,
             memories_recalled: 0,
+            roots_missing: false,
         },
     )
     .await
@@ -2308,4 +2311,508 @@ async fn delete_all_also_clears_sync_journal_and_session_start_log() {
         s.list_session_logs(10).await.unwrap().is_empty(),
         "session_start_log must be cleared too"
     );
+}
+
+/// A real-format memory id (`mem_` + 32 hex), so content links to it parse
+/// and create edges.
+fn hid(n: u128) -> String {
+    format!("mem_{n:032x}")
+}
+
+#[tokio::test]
+async fn role_namespace_accepts_root_and_index_and_rejects_other_values() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(
+        &hid(1),
+        "r",
+        "c",
+        &["role:root".into(), "project:p".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &hid(2),
+        "i",
+        "c",
+        &["role:index".into(), "project:p".into()],
+    ))
+    .await
+    .unwrap();
+    assert!(
+        s.store(&test_row(&hid(3), "x", "c", &["role:leaf".into()]))
+            .await
+            .is_err(),
+        "role is a fixed-values namespace"
+    );
+    assert!(
+        s.store(&test_row(
+            &hid(4),
+            "y",
+            "c",
+            &["role:index".into(), "role:root".into()]
+        ))
+        .await
+        .is_err(),
+        "role is single_value"
+    );
+}
+
+#[tokio::test]
+async fn tag_namespace_registry_backfills_role_over_a_stale_saved_registry() {
+    let (s, _dir) = make_store().await;
+    s.set_meta(
+        "tag_namespaces",
+        r##"{"part": {"color": "#f0883e", "values": ["index", "fragment"], "values_mode": "fixed"}}"##,
+    )
+    .await
+    .unwrap();
+    let registry = s.tag_namespace_registry().await;
+    assert_eq!(
+        registry["role"]["values"],
+        serde_json::json!(["root", "index"])
+    );
+}
+
+#[tokio::test]
+async fn find_root_matches_project_case_insensitively_and_org_wide_root_has_no_project() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(
+        &hid(1),
+        "mynd root",
+        "c",
+        &["role:root".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(&hid(2), "org root", "c", &["role:root".into()]))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &hid(3),
+        "index",
+        "c",
+        &["role:index".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    assert_eq!(s.find_root(Some("Mynd")).await.unwrap().unwrap().id, hid(1));
+    assert_eq!(s.find_root(None).await.unwrap().unwrap().id, hid(2));
+    assert!(s.find_root(Some("other")).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn second_root_for_same_project_is_rejected_on_store_update_and_add_tags() {
+    let (s, _dir) = make_store().await;
+    let root_tags: Vec<String> = vec!["role:root".into(), "project:mynd".into()];
+    s.store(&test_row(&hid(1), "root", "c", &root_tags))
+        .await
+        .unwrap();
+
+    let err = s
+        .store(&test_row(&hid(2), "root 2", "c", &root_tags))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already has a root"), "{err}");
+
+    s.store(&test_row(&hid(3), "leaf", "c", &["project:mynd".into()]))
+        .await
+        .unwrap();
+    assert!(s.update(&hid(3), "leaf", "c", &root_tags).await.is_err());
+    assert!(s.add_tags(&hid(3), &["role:root".into()]).await.is_err());
+
+    // Re-storing the root itself and a root for another project are fine.
+    s.store(&test_row(&hid(1), "root", "c2", &root_tags))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &hid(4),
+        "other root",
+        "c",
+        &["role:root".into(), "project:other".into()],
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn sync_duplicated_roots_stay_editable_and_find_root_returns_the_oldest() {
+    let (s, _dir) = make_store().await;
+    let root_tags: Vec<String> = vec!["role:root".into(), "project:mynd".into()];
+    s.store(&test_row(&hid(1), "first", "c", &root_tags))
+        .await
+        .unwrap();
+    // The hive apply path skips the uniqueness check: a peer's copy must always apply.
+    s.store_with_timestamp(
+        &test_row(&hid(2), "second", "c", &root_tags),
+        chrono_now() + 5,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.find_root(Some("mynd")).await.unwrap().unwrap().id, hid(1));
+    assert!(
+        s.update(&hid(2), "second", "edited", &root_tags)
+            .await
+            .unwrap(),
+        "keeping an existing root claim is allowed"
+    );
+}
+
+#[test]
+fn validate_pointer_trims_and_rejects_bad_text() {
+    assert_eq!(
+        validate_pointer("  Sync notes: libsql setup  ").unwrap(),
+        "Sync notes: libsql setup"
+    );
+    assert!(
+        validate_pointer("   ")
+            .unwrap_err()
+            .to_string()
+            .contains("empty")
+    );
+    assert!(
+        validate_pointer(&"x".repeat(301))
+            .unwrap_err()
+            .to_string()
+            .contains("300")
+    );
+    assert!(validate_pointer(&"x".repeat(300)).is_ok());
+    assert!(
+        validate_pointer("a ] b")
+            .unwrap_err()
+            .to_string()
+            .contains(']')
+    );
+    assert!(
+        validate_pointer("two\nlines")
+            .unwrap_err()
+            .to_string()
+            .contains("newline")
+    );
+    assert!(
+        validate_pointer("two\rlines")
+            .unwrap_err()
+            .to_string()
+            .contains("newline")
+    );
+}
+
+#[test]
+fn append_pointer_writes_one_clean_line() {
+    let id = "mem_00000000000000000000000000000001";
+    assert_eq!(append_pointer("", "p", id), format!("- [p](child:{id})"));
+    assert_eq!(
+        append_pointer("   \n\n", "p", id),
+        format!("- [p](child:{id})")
+    );
+    assert_eq!(
+        append_pointer("# Index\n\n- [a](child:x)\n\n\n", "p", id),
+        format!("# Index\n\n- [a](child:x)\n- [p](child:{id})")
+    );
+}
+
+#[tokio::test]
+async fn store_with_parent_writes_child_appends_pointer_and_creates_home_edge() {
+    let (s, _dir) = make_store().await;
+    let (root, first, second) = (hid(1), hid(2), hid(3));
+    s.store(&test_row(
+        &root,
+        "root",
+        "# Root\n\n",
+        &["role:root".into(), "project:p".into()],
+    ))
+    .await
+    .unwrap();
+
+    let out = s
+        .store_with_parent(
+            &test_row(&first, "first", "one", &[]),
+            &root,
+            " first: what one holds ",
+        )
+        .await
+        .unwrap();
+    assert!(!out.parent_oversized);
+    s.store_with_parent(
+        &test_row(&second, "second", "two", &[]),
+        &root,
+        "second: what two holds",
+    )
+    .await
+    .unwrap();
+
+    let parent = s.recall_by_id(&root).await.unwrap().unwrap();
+    assert_eq!(
+        parent.content,
+        format!(
+            "# Root\n- [first: what one holds](child:{first})\n- [second: what two holds](child:{second})"
+        )
+    );
+    assert!(s.recall_by_id(&first).await.unwrap().is_some());
+    let home = s.get_edges_grouped(&second).await.unwrap().parents;
+    assert_eq!(home.len(), 1);
+    assert_eq!(home[0].id, root);
+    assert_eq!(home[0].link_text.as_deref(), Some("second: what two holds"));
+}
+
+#[tokio::test]
+async fn store_with_parent_writes_nothing_when_parent_is_missing_or_pointer_bad() {
+    let (s, _dir) = make_store().await;
+    let err = s
+        .store_with_parent(&test_row(&hid(2), "c", "c", &[]), &hid(9), "ok")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+    s.store(&test_row(&hid(1), "root", "r", &[])).await.unwrap();
+    assert!(
+        s.store_with_parent(&test_row(&hid(2), "c", "c", &[]), &hid(1), "bad ] pointer")
+            .await
+            .is_err()
+    );
+    assert!(
+        s.store_with_parent(&test_row(&hid(1), "self", "c", &[]), &hid(1), "ok")
+            .await
+            .is_err(),
+        "a memory cannot be its own parent"
+    );
+    assert!(s.recall_by_id(&hid(2)).await.unwrap().is_none());
+    assert_eq!(s.recall_by_id(&hid(1)).await.unwrap().unwrap().content, "r");
+}
+
+#[tokio::test]
+async fn store_with_parent_flags_an_oversized_parent_but_still_writes() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "root", "short", &[]))
+        .await
+        .unwrap();
+    s.set_meta("max_content_tokens", "12").await.unwrap();
+    let out = s
+        .store_with_parent(
+            &test_row(&hid(2), "c", "x", &[]),
+            &hid(1),
+            "a long pointer describing the child memory in many many words",
+        )
+        .await
+        .unwrap();
+    assert!(out.parent_oversized);
+    assert!(s.recall_by_id(&hid(2)).await.unwrap().is_some());
+    assert!(
+        s.recall_by_id(&hid(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .contains(&hid(2)),
+        "the pointer is appended even when the parent ends up over the limit"
+    );
+}
+
+#[tokio::test]
+async fn store_with_parent_rejects_a_second_root_without_writing() {
+    let (s, _dir) = make_store().await;
+    let root_tags: Vec<String> = vec!["role:root".into(), "project:mynd".into()];
+    s.store(&test_row(&hid(1), "root", "r", &root_tags))
+        .await
+        .unwrap();
+    let err = s
+        .store_with_parent(&test_row(&hid(2), "root 2", "c", &root_tags), &hid(1), "ok")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already has a root"), "{err}");
+    assert!(s.recall_by_id(&hid(2)).await.unwrap().is_none());
+    assert_eq!(s.recall_by_id(&hid(1)).await.unwrap().unwrap().content, "r");
+}
+
+#[tokio::test]
+async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
+    let (s, _dir) = make_store().await;
+    let (idx, other_home, only_child, shared_child, linker) =
+        (hid(1), hid(2), hid(3), hid(4), hid(5));
+    for id in [&only_child, &shared_child] {
+        s.store(&test_row(id, "child", "c", &[])).await.unwrap();
+    }
+    s.store(&test_row(
+        &idx,
+        "index",
+        &format!("- [only](child:{only_child})\n- [shared](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &other_home,
+        "other",
+        &format!("- [shared too](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &linker,
+        "linker",
+        &format!("see [the index]({idx})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+
+    let impact = s.delete_impact(&idx).await.unwrap();
+    let ids = |v: &[RelatedMemory]| v.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&impact.dangling_in), vec![linker.clone()]);
+    assert_eq!(ids(&impact.orphaned_children), vec![only_child.clone()]);
+    assert_eq!(
+        impact.orphaned_children[0].link_text.as_deref(),
+        Some("only")
+    );
+}
+
+#[tokio::test]
+async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
+    // Hive pulls apply memories in id order, so a parent can land before its
+    // children and never get their edges. Content is the source of truth.
+    let (s, _dir) = make_store().await;
+    let (idx, other_home, only_child, shared_child) = (hid(1), hid(2), hid(3), hid(4));
+    s.store(&test_row(
+        &idx,
+        "index",
+        &format!("- [only](child:{only_child})\n- [shared](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &other_home,
+        "other",
+        &format!("- [shared too](child:{shared_child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    for id in [&only_child, &shared_child] {
+        s.store(&test_row(id, "child", "c", &[])).await.unwrap();
+    }
+    assert!(
+        s.list_edges(Some(&idx)).await.unwrap().is_empty(),
+        "precondition: the parent-to-child edges were never created"
+    );
+
+    let impact = s.delete_impact(&idx).await.unwrap();
+    assert_eq!(
+        impact
+            .orphaned_children
+            .iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>(),
+        vec![only_child]
+    );
+    assert_eq!(
+        impact.orphaned_children[0].link_text.as_deref(),
+        Some("only")
+    );
+}
+
+#[tokio::test]
+async fn memory_tree_walks_from_root_survives_cycles_and_lists_unreached_project_memories() {
+    let (s, _dir) = make_store().await;
+    let (root, a, b, orphan, outsider) = (hid(1), hid(2), hid(3), hid(4), hid(5));
+    let p: Vec<String> = vec!["project:mynd".into()];
+    s.store(&test_row(&b, "b", "leaf b", &p)).await.unwrap();
+    s.store(&test_row(
+        &a,
+        "a",
+        &format!("- [b: the leaf](child:{b})"),
+        &["project:mynd".into(), "role:index".into()],
+    ))
+    .await
+    .unwrap();
+    // b points back at a: the walk must still terminate.
+    s.store(&test_row(&b, "b", &format!("- [back to a](child:{a})"), &p))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &root,
+        "root",
+        &format!("- [a: everything about a](child:{a})"),
+        &["project:mynd".into(), "role:root".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(&orphan, "orphan", "nobody links me", &p))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &outsider,
+        "other project",
+        "x",
+        &["project:other".into()],
+    ))
+    .await
+    .unwrap();
+
+    let tree = s.memory_tree("Mynd").await.unwrap();
+    assert_eq!(tree.root_id.as_deref(), Some(root.as_str()));
+    let order: Vec<&str> = tree.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        order,
+        vec![root.as_str(), a.as_str(), b.as_str(), orphan.as_str()]
+    );
+    let node = |id: &str| tree.nodes.iter().find(|n| n.id == id).unwrap();
+    assert_eq!(node(&root).role.as_deref(), Some("root"));
+    assert_eq!(node(&a).role.as_deref(), Some("index"));
+    assert!(node(&b).reachable);
+    assert!(!node(&orphan).reachable);
+    assert!(node(&orphan).homes.is_empty());
+    assert_eq!(
+        node(&a).homes,
+        vec![root.clone(), b.clone()],
+        "two homes, sorted"
+    );
+    assert_eq!(node(&root).pointers[0].target_id, a);
+    assert_eq!(node(&root).pointers[0].text, "a: everything about a");
+    assert!(node(&root).tokens > 0);
+    assert!(node(&a).tags.contains(&"role:index".to_string()));
+}
+
+#[tokio::test]
+async fn memory_tree_reports_broken_pointers_and_legacy_parent_links() {
+    let (s, _dir) = make_store().await;
+    let (root, leaf, gone) = (hid(1), hid(2), hid(9));
+    s.store(&test_row(
+        &root,
+        "root",
+        "# r",
+        &["role:root".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(
+        &leaf,
+        "leaf",
+        &format!("see [old index]({gone}) and [up](parent:{root}) and [lost](child:{gone})"),
+        &["project:mynd".into(), "part:fragment".into()],
+    ))
+    .await
+    .unwrap();
+    let tree = s.memory_tree("mynd").await.unwrap();
+    let node = tree.nodes.iter().find(|n| n.id == leaf).unwrap();
+    assert_eq!(
+        node.broken_pointers,
+        vec![gone.clone()],
+        "only child: links count as pointers"
+    );
+    assert_eq!(node.parent_links, vec![root.clone()]);
+    assert!(node.tags.contains(&"part:fragment".to_string()));
+    assert!(!node.reachable, "a parent: link is not a home");
+}
+
+#[tokio::test]
+async fn memory_tree_without_a_root_lists_project_memories_unreached_by_title() {
+    let (s, _dir) = make_store().await;
+    let p: Vec<String> = vec!["project:mynd".into()];
+    s.store(&test_row(&hid(1), "zeta", "z", &p)).await.unwrap();
+    s.store(&test_row(&hid(2), "alpha", "a", &p)).await.unwrap();
+    let tree = s.memory_tree("mynd").await.unwrap();
+    assert!(tree.root_id.is_none());
+    let titles: Vec<&str> = tree.nodes.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(titles, vec!["alpha", "zeta"]);
+    assert!(tree.nodes.iter().all(|n| !n.reachable));
 }

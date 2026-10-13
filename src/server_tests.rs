@@ -38,6 +38,8 @@ async fn seed_two(hm: &Mynd) -> (String, String) {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -46,6 +48,30 @@ async fn seed_two(hm: &Mynd) -> (String, String) {
     let a = mems.iter().find(|m| m.title == "alpha").unwrap().id.clone();
     let b = mems.iter().find(|m| m.title == "beta").unwrap().id.clone();
     (a, b)
+}
+
+/// Stores a memory through the MCP handler and returns its structured result.
+async fn store_mem(
+    hm: &Mynd,
+    title: &str,
+    content: &str,
+    tags: &[&str],
+    parent: Option<(&str, &str)>,
+) -> serde_json::Value {
+    hm.do_memory_store(MemoryStoreInput {
+        title: title.to_string(),
+        content: content.to_string(),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        token_count: None,
+        layer: None,
+        memory_type: None,
+        parent_id: parent.map(|(id, _)| id.to_string()),
+        pointer: parent.map(|(_, p)| p.to_string()),
+    })
+    .await
+    .unwrap()
+    .structured_content
+    .unwrap()
 }
 
 #[tokio::test]
@@ -61,6 +87,8 @@ async fn memory_store_rejects_content_over_max_content_tokens() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await;
     assert!(
@@ -73,8 +101,8 @@ async fn memory_store_rejects_content_over_max_content_tokens() {
         "error should name the guardrail: {msg}"
     );
     assert!(
-        msg.contains("child:mem_xxx"),
-        "error should explain how to chunk: {msg}"
+        msg.contains("parent_id"),
+        "error should explain how to split under an index: {msg}"
     );
 }
 
@@ -93,6 +121,8 @@ async fn memory_store_accepts_content_under_max_content_tokens() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await;
     assert!(
@@ -111,6 +141,8 @@ async fn memory_store_with_org_layer_writes_to_org_store_not_primary() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -134,6 +166,8 @@ async fn memory_store_with_org_layer_errors_when_no_org_store_configured() {
             token_count: None,
             layer: Some("org".to_string()),
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await;
     assert!(err.is_err());
@@ -154,6 +188,8 @@ async fn memory_recall_by_id_finds_org_memory_when_not_in_primary() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -189,6 +225,8 @@ async fn memory_update_finds_and_updates_org_memory() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -235,6 +273,8 @@ async fn memory_delete_finds_and_deletes_org_memory() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -389,6 +429,8 @@ async fn memory_store_tool_returns_mem_id() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -407,6 +449,8 @@ async fn memory_recall_by_id_returns_content() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -438,6 +482,8 @@ async fn memory_recall_by_title_returns_content() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -489,6 +535,8 @@ async fn memory_search_returns_snippets() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -541,6 +589,8 @@ async fn memory_search_by_tags_only() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -551,6 +601,8 @@ async fn memory_search_by_tags_only() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -578,6 +630,8 @@ async fn memory_search_query_and_tags_combined() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -588,6 +642,8 @@ async fn memory_search_query_and_tags_combined() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -617,6 +673,8 @@ async fn memory_update_changes_content() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -696,6 +754,8 @@ async fn memory_update_concurrent_with_delete_never_panics() {
                 token_count: None,
                 layer: None,
                 memory_type: None,
+                parent_id: None,
+                pointer: None,
             })
             .await
             .unwrap();
@@ -757,6 +817,8 @@ async fn session_start_loads_configured_recalls() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -851,6 +913,8 @@ async fn memory_status_prompt_includes_count() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -869,6 +933,8 @@ async fn memory_search_prompt_returns_results() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -893,6 +959,8 @@ async fn memory_edit_prompt_returns_formatted_content() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -933,6 +1001,8 @@ async fn memory_flag_prompt_creates_feedback_record() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -969,6 +1039,8 @@ async fn suggest_prompt_keeps_one_line_per_memory_and_marks_content_as_data() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -992,6 +1064,8 @@ async fn suggest_connections_prompt_lists_memories_and_edges() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1002,6 +1076,8 @@ async fn suggest_connections_prompt_lists_memories_and_edges() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1028,6 +1104,8 @@ async fn memory_store_accepts_layer_and_rejects_invalid() {
             token_count: None,
             layer: Some("personal".into()),
             memory_type: Some("preference".into()),
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1054,6 +1132,8 @@ async fn memory_store_accepts_layer_and_rejects_invalid() {
             token_count: None,
             layer: Some("cosmic".into()),
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await;
     assert!(bad.is_err());
@@ -1070,6 +1150,8 @@ async fn review_feedback_prompt_shows_open_items() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1161,6 +1243,8 @@ async fn memory_store_notifies_sync_trigger() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1205,6 +1289,8 @@ async fn memory_list_prompt_with_memories_shows_titles() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1225,6 +1311,8 @@ async fn memory_update_preserves_tags_when_not_specified() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1289,6 +1377,8 @@ async fn memory_get_edges_returns_grouped_connections() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1305,6 +1395,8 @@ async fn memory_get_edges_returns_grouped_connections() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1356,6 +1448,8 @@ async fn memory_delete_requires_confirm() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1486,6 +1580,8 @@ async fn store_edge_between_two_org_memories_succeeds() {
             token_count: None,
             layer: Some("org".to_string()),
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1518,6 +1614,8 @@ async fn store_edge_across_primary_and_org_fails_with_missing_endpoint() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1528,6 +1626,8 @@ async fn store_edge_across_primary_and_org_fails_with_missing_endpoint() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1682,6 +1782,8 @@ async fn memory_recall_by_title_finds_org_memory_when_not_in_primary() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1708,6 +1810,8 @@ async fn memory_search_fills_remaining_limit_from_org_store() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1718,6 +1822,8 @@ async fn memory_search_fills_remaining_limit_from_org_store() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1753,6 +1859,8 @@ async fn memory_search_does_not_need_org_when_primary_already_fills_limit() {
             token_count: None,
             layer: None,
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -1764,6 +1872,8 @@ async fn memory_search_does_not_need_org_when_primary_already_fills_limit() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1800,6 +1910,8 @@ async fn memory_search_prompt_fills_remaining_from_org_store() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1810,6 +1922,8 @@ async fn memory_search_prompt_fills_remaining_from_org_store() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1835,6 +1949,8 @@ async fn memory_list_prompt_reflects_combined_counts_and_marks_org_entries() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1845,6 +1961,8 @@ async fn memory_list_prompt_reflects_combined_counts_and_marks_org_entries() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1872,6 +1990,8 @@ async fn memory_status_prompt_reflects_combined_counts_and_marks_org_entries() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1882,6 +2002,8 @@ async fn memory_status_prompt_reflects_combined_counts_and_marks_org_entries() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1946,6 +2068,8 @@ async fn memory_store_layer_routes_trigger_notifications() {
         token_count: None,
         layer: Some("org".to_string()),
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1965,6 +2089,8 @@ async fn memory_store_layer_routes_trigger_notifications() {
         token_count: None,
         layer: None,
         memory_type: None,
+        parent_id: None,
+        pointer: None,
     })
     .await
     .unwrap();
@@ -1995,6 +2121,8 @@ async fn org_write_checked_against_orgs_own_max_content_tokens_not_primary() {
             token_count: None,
             layer: Some("org".to_string()),
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await;
     assert!(
@@ -2021,6 +2149,8 @@ async fn org_write_rejected_using_orgs_own_max_content_tokens() {
             token_count: None,
             layer: Some("org".to_string()),
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await;
     assert!(
@@ -2040,6 +2170,8 @@ async fn org_update_checked_against_orgs_own_max_content_tokens() {
             token_count: None,
             layer: Some("org".to_string()),
             memory_type: None,
+            parent_id: None,
+            pointer: None,
         })
         .await
         .unwrap();
@@ -2067,4 +2199,296 @@ async fn org_update_checked_against_orgs_own_max_content_tokens() {
         err.is_err(),
         "org update should reject content exceeding org's own configured limit"
     );
+}
+
+#[tokio::test]
+async fn memory_store_with_parent_appends_pointer_and_reports_home() {
+    let (hm, _dir) = test_mynd().await;
+    let root = store_mem(
+        &hm,
+        "mynd root",
+        "# mynd",
+        &["role:root", "project:mynd"],
+        None,
+    )
+    .await;
+    let root_id = root["id"].as_str().unwrap().to_string();
+    let child = store_mem(
+        &hm,
+        "sync notes",
+        "libsql sync details",
+        &["project:mynd"],
+        Some((
+            root_id.as_str(),
+            "Sync: libsql replica setup; open when touching sync.rs",
+        )),
+    )
+    .await;
+    let child_id = child["id"].as_str().unwrap();
+    assert_eq!(child["parent_id"], root_id.as_str());
+    assert_eq!(child["parent_oversized"], false);
+    let parent = hm.store.recall_by_id(&root_id).await.unwrap().unwrap();
+    assert!(
+        parent.content.ends_with(&format!(
+            "\n- [Sync: libsql replica setup; open when touching sync.rs](child:{child_id})"
+        )),
+        "{}",
+        parent.content
+    );
+    let home = hm.store.get_edges_grouped(child_id).await.unwrap().parents;
+    assert_eq!(home.len(), 1);
+    assert_eq!(home[0].id, root_id);
+}
+
+#[tokio::test]
+async fn memory_store_with_parent_flags_an_oversized_parent_but_still_writes() {
+    let (hm, _dir) = test_mynd().await;
+    let root = store_mem(&hm, "root", "short", &["role:root", "project:mynd"], None).await;
+    let root_id = root["id"].as_str().unwrap().to_string();
+    hm.store.set_meta("max_content_tokens", "12").await.unwrap();
+    let child = store_mem(
+        &hm,
+        "c",
+        "x",
+        &[],
+        Some((
+            root_id.as_str(),
+            "a long pointer describing the child memory in many many words",
+        )),
+    )
+    .await;
+    assert_eq!(child["parent_oversized"], true);
+    let child_id = child["id"].as_str().unwrap();
+    assert!(hm.store.recall_by_id(child_id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn memory_store_without_parent_keeps_the_old_response_shape() {
+    let (hm, _dir) = test_mynd().await;
+    let v = store_mem(&hm, "plain", "c", &[], None).await;
+    assert!(v["id"].as_str().unwrap().starts_with("mem_"));
+    assert!(v.get("parent_id").is_none());
+    assert!(v.get("parent_oversized").is_none());
+}
+
+#[tokio::test]
+async fn memory_store_rejects_bad_parent_args_without_writing() {
+    let (hm, _dir) = test_mynd().await;
+    let root = store_mem(&hm, "root", "# r", &["role:root", "project:mynd"], None).await;
+    let root_id = root["id"].as_str().unwrap().to_string();
+    let before = hm.store.count().await.unwrap();
+    let long = "x".repeat(301);
+    let cases: Vec<(Option<&str>, Option<&str>, &str)> = vec![
+        (Some(root_id.as_str()), None, "together"),
+        (None, Some("a pointer"), "together"),
+        (Some(root_id.as_str()), Some("   "), "empty"),
+        (Some(root_id.as_str()), Some(long.as_str()), "300"),
+        (Some(root_id.as_str()), Some("has ] bracket"), "]"),
+        (Some(root_id.as_str()), Some("two\nlines"), "newline"),
+        (
+            Some("mem_00000000000000000000000000000000"),
+            Some("ok pointer"),
+            "not found",
+        ),
+    ];
+    for (parent_id, pointer, needle) in cases {
+        let err = hm
+            .do_memory_store(MemoryStoreInput {
+                title: "t".to_string(),
+                content: "c".to_string(),
+                tags: vec![],
+                token_count: None,
+                layer: None,
+                memory_type: None,
+                parent_id: parent_id.map(str::to_string),
+                pointer: pointer.map(str::to_string),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(needle), "{needle}: {err}");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{needle}");
+    }
+    assert_eq!(
+        hm.store.count().await.unwrap(),
+        before,
+        "no rejected call may write"
+    );
+}
+
+#[tokio::test]
+async fn memory_store_rejects_a_parent_in_the_other_store() {
+    let (hm, _p, _o) = test_mynd_with_org().await;
+    let org_root = hm
+        .do_memory_store(MemoryStoreInput {
+            title: "org root".to_string(),
+            content: "# org".to_string(),
+            tags: vec!["role:root".to_string()],
+            token_count: None,
+            layer: Some("org".to_string()),
+            memory_type: None,
+            parent_id: None,
+            pointer: None,
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let err = hm
+        .do_memory_store(MemoryStoreInput {
+            title: "workspace child".to_string(),
+            content: "c".to_string(),
+            tags: vec![],
+            token_count: None,
+            layer: None,
+            memory_type: None,
+            parent_id: Some(org_root["id"].as_str().unwrap().to_string()),
+            pointer: Some("child of an org root".to_string()),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("not found in the workspace store"),
+        "{err}"
+    );
+    assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(hm.store.count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn session_start_finds_the_root_for_a_mixed_case_project_name() {
+    let (hm, _dir) = test_mynd().await;
+    store_mem(
+        &hm,
+        "Demo root",
+        "# demo index",
+        &["role:root", "project:demo"],
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join(".mynd.toml"),
+        "[project]\nname=\"Demo\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[]\n",
+    )
+    .unwrap();
+    let val = hm
+        .do_session_start(SessionStartInput {
+            project_path: tmp.path().to_string_lossy().into_owned(),
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(val["context_loaded"][0]["title"], "Demo root");
+    assert_eq!(val["context_loaded"][0]["root"], true);
+    assert_eq!(val["roots_missing"], false);
+    assert!(!val["hint"].as_str().unwrap().contains("/memory-audit"));
+}
+
+#[tokio::test]
+async fn memory_delete_reports_orphaned_children_and_dangling_links() {
+    let (hm, _dir) = test_mynd().await;
+    let idx = store_mem(&hm, "index", "# idx", &["role:index"], None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let child = store_mem(
+        &hm,
+        "child",
+        "c",
+        &[],
+        Some((idx.as_str(), "the only child, open for c")),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store_mem(&hm, "linker", &format!("see [the index]({idx})"), &[], None).await;
+
+    let res = hm
+        .do_memory_delete(MemoryDeleteInput {
+            id: idx.clone(),
+            confirm: true,
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(res["deleted"], true);
+    assert_eq!(res["orphaned_children"][0]["id"], child.as_str());
+    assert_eq!(res["dangling_in"][0]["title"], "linker");
+}
+
+#[tokio::test]
+async fn memory_delete_of_a_missing_id_reports_no_impact() {
+    let (hm, _dir) = test_mynd().await;
+    let res = hm
+        .do_memory_delete(MemoryDeleteInput {
+            id: "mem_00000000000000000000000000000000".to_string(),
+            confirm: true,
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(res["deleted"], false);
+    assert_eq!(res["dangling_in"], serde_json::json!([]));
+    assert_eq!(res["orphaned_children"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn memory_tree_tool_returns_structure_without_content() {
+    let (hm, _dir) = test_mynd().await;
+    let root = store_mem(&hm, "root", "# r", &["role:root", "project:mynd"], None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store_mem(
+        &hm,
+        "leaf",
+        "secret leaf body",
+        &["project:mynd"],
+        Some((root.as_str(), "leaf: what it holds")),
+    )
+    .await;
+    let v = hm
+        .do_memory_tree(MemoryTreeInput {
+            project: "mynd".to_string(),
+            layer: None,
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(v["root_id"], root.as_str());
+    assert_eq!(v["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(v["nodes"][0]["pointers"][0]["text"], "leaf: what it holds");
+    assert!(
+        !v.to_string().contains("secret leaf body"),
+        "the tree carries no content"
+    );
+}
+
+#[tokio::test]
+async fn memory_tree_tool_rejects_org_layer_without_org_store_and_empty_project() {
+    let (hm, _dir) = test_mynd().await;
+    let err = hm
+        .do_memory_tree(MemoryTreeInput {
+            project: "mynd".to_string(),
+            layer: Some("org".to_string()),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("org layer not configured"),
+        "{err}"
+    );
+    let err = hm
+        .do_memory_tree(MemoryTreeInput {
+            project: "  ".to_string(),
+            layer: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("project"), "{err}");
 }

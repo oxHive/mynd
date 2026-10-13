@@ -94,6 +94,7 @@ fn sample_result(loaded: bool, skipped: bool) -> crate::session::SessionStartRes
             },
             tokens: 5,
             source: crate::config::RecallSource::Project,
+            is_root: false,
         }]
     } else {
         vec![]
@@ -113,6 +114,7 @@ fn sample_result(loaded: bool, skipped: bool) -> crate::session::SessionStartRes
         used_tokens: 5,
         max_tokens: 2000,
         memories_recalled: if loaded { 1 } else { 0 },
+        roots_missing: false,
     }
 }
 
@@ -145,11 +147,13 @@ fn render_session_start_neutralizes_block_tags_and_keeps_titles_on_one_line() {
             },
             tokens: 5,
             source: crate::config::RecallSource::Project,
+            is_root: false,
         }],
         skipped: vec![],
         used_tokens: 5,
         max_tokens: 2000,
         memories_recalled: 1,
+        roots_missing: false,
     };
     let out = render_session_start(&result, false);
     assert!(
@@ -2260,6 +2264,43 @@ fn tags_predefined_namespace_is_guarded_by_default() {
                 name: "project".to_string()
             })
             .is_err()
+        );
+    });
+}
+
+#[test]
+fn tags_writes_pass_the_guard_with_a_stale_stored_part_entry() {
+    with_isolated_cli_env(|| {
+        let stale = serde_json::json!({ "part": {
+            "color": "#f0883e",
+            "values": ["index", "fragment"],
+            "values_mode": "fixed",
+            "single_value": true,
+            "description": "Marks a memory's role when content was too large for one memory and got split: index (the short entry point whose content links to each fragment via [phrase](child:mem_xxx)) or fragment (one piece of the split content). Absent on ordinary, unsplit memories.",
+        }});
+        common::block_on(async {
+            let store = common::open_store().await?;
+            store.set_meta("tag_namespaces", &stale.to_string()).await
+        })
+        .unwrap();
+
+        cmd_tags(TagsAction::Add {
+            name: "myns".to_string(),
+            color: "#123456".to_string(),
+            description: None,
+            single_value: false,
+            values_mode: "suggestion".to_string(),
+        })
+        .unwrap();
+
+        let registry = common::block_on(async {
+            let store = common::open_store().await?;
+            Ok::<_, anyhow::Error>(store.tag_namespace_registry().await)
+        })
+        .unwrap();
+        assert_eq!(
+            registry["part"],
+            crate::store::default_tag_namespaces()["part"]
         );
     });
 }
