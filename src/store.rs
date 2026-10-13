@@ -620,9 +620,9 @@ impl SqliteStore {
         if tokens > limit {
             return Err(anyhow!(
                 "content is {tokens} tokens, exceeds max_content_tokens ({limit}). \
-                 Split into an index memory plus child memories, linked via \
-                 [phrase](child:mem_xxx) — store each child first, then reference \
-                 their real returned ids from the index's content."
+                 Split it: store a short index memory (tag role:index) first, then store \
+                 each piece with parent_id set to the index's id and a pointer describing \
+                 that piece; the server links each one as [pointer](child:mem_xxx)."
             ));
         }
         Ok(())

@@ -37,21 +37,22 @@ This is the only tool that reads `.mynd.toml`. All other tools operate on the me
 
 #### `memory_store`
 
-Store a new memory or overwrite an existing one by ID.
+Store a new memory, optionally filed under an index memory (its home).
 
 **Input:**
 ```json
 {
-  "title": "golang preferences",
-  "content": "Always use table-driven tests. Prefer errors.As over type assertions.",
-  "tags": ["golang", "testing"],
-  "id": "mem_abc123"
+  "title": "sync notes",
+  "content": "libsql embedded replica setup and sync triggers.",
+  "tags": ["project:mynd", "topic:sync"],
+  "parent_id": "mem_0123456789abcdef0123456789abcdef",
+  "pointer": "Sync: libsql replica setup and triggers; open when touching sync.rs"
 }
 ```
 
-`id` is optional — omit it and Mynd generates one. Tags trigger automatic edge creation between memories that share a tag.
+`parent_id` and `pointer` are optional but must be passed together. The parent must live in the same store (layer) as the new memory. `pointer` is one line, at most 300 characters, with no `]`. The server appends `- [pointer](child:<new id>)` to the parent in the same write, which creates the parent/child edge.
 
-**Output:** `{ "id": "mem_abc123", "stored": true }`
+**Output:** `{ "id": "mem_…", "title": "sync notes", "parent_id": "mem_…", "parent_oversized": false }`. `parent_id` and `parent_oversized` appear only when a parent was given; `parent_oversized: true` means the parent is now over `max_content_tokens` and should be split.
 
 ---
 

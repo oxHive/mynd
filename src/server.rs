@@ -27,6 +27,15 @@ pub struct MemoryStoreInput {
     /// Memory type: "preference" | "project" | "history". Default: project.
     #[serde(default)]
     pub memory_type: Option<String>,
+    /// Id of the index memory to file this under (its home). Pass together
+    /// with `pointer`. Must live in the same store as this memory.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// One line (max 300 chars, no "]" or newline) saying what this memory
+    /// contains and when to open it. Appended to the parent as
+    /// `- [pointer](child:<new id>)`.
+    #[serde(default)]
+    pub pointer: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -329,18 +338,57 @@ impl Mynd {
         self.check_content_size(target_store, &p.title, &p.content)
             .await?;
 
-        target_store
-            .store(&crate::store::NewMemoryRow {
-                id: &id,
-                title: &p.title,
-                content: &p.content,
-                tags: &p.tags,
-                token_count: p.token_count,
-                layer,
-                memory_type,
-            })
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let parent = match (p.parent_id.as_deref(), p.pointer.as_deref()) {
+            (None, None) => None,
+            (Some(pid), Some(ptr)) => {
+                let ptr = crate::store::validate_pointer(ptr)
+                    .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+                let exists = target_store
+                    .recall_by_id(pid)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .is_some();
+                if !exists {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "parent {pid} not found in the {layer} store: a memory's home must live in the same store as the memory"
+                        ),
+                        None,
+                    ));
+                }
+                Some((pid, ptr))
+            }
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    "parent_id and pointer must be passed together",
+                    None,
+                ));
+            }
+        };
+
+        let row = crate::store::NewMemoryRow {
+            id: &id,
+            title: &p.title,
+            content: &p.content,
+            tags: &p.tags,
+            token_count: p.token_count,
+            layer,
+            memory_type,
+        };
+        let mut parent_oversized = false;
+        match parent {
+            Some((pid, ptr)) => {
+                parent_oversized = target_store
+                    .store_with_parent(&row, pid, ptr)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .parent_oversized;
+            }
+            None => target_store
+                .store(&row)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }
         let trigger = if parsed_layer == crate::model::Layer::Org {
             &self.org_sync_trigger
         } else {
@@ -351,10 +399,13 @@ impl Mynd {
         }
         self.notify_change();
         self.spawn_hive_push(&id);
-        Ok(CallToolResult::structured(json!({
-            "id": id,
-            "title": title,
-        })))
+        let mut out = json!({ "id": id, "title": title });
+        if let Some((pid, _)) = parent {
+            self.spawn_hive_push(pid);
+            out["parent_id"] = json!(pid);
+            out["parent_oversized"] = json!(parent_oversized);
+        }
+        Ok(CallToolResult::structured(out))
     }
 
     pub async fn do_memory_recall(
@@ -925,7 +976,7 @@ impl Mynd {
 #[tool_router]
 impl Mynd {
     #[tool(
-        description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones."
+        description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones. To file the memory under an index, pass parent_id (the index's id) and pointer (one line saying what this memory contains and when to open it); the server appends `- [pointer](child:<new id>)` to the parent in the same write. A response with parent_oversized: true means the parent index should be split."
     )]
     async fn memory_store(
         &self,
