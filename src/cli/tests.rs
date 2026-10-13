@@ -236,6 +236,15 @@ fn ensure_line_appends_to_empty_file() {
 }
 
 #[test]
+fn ensure_line_reports_updated_for_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".gitignore");
+    fs::write(&path, "target/\n").unwrap();
+    let (_, status) = ensure_line(&path, "*.log").unwrap();
+    assert_eq!(status, "updated");
+}
+
+#[test]
 fn ensure_line_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(".gitignore");
@@ -266,7 +275,7 @@ fn append_block_if_absent_appends_when_marker_missing() {
     fs::write(&path, "# My rules\n").unwrap();
     let (_, status) =
         append_block_if_absent(&path, "# HiveMind", "# HiveMind\nsome block\n").unwrap();
-    assert_eq!(status, "created");
+    assert_eq!(status, "updated");
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("My rules"));
     assert!(content.contains("# HiveMind"));
@@ -360,7 +369,7 @@ fn scaffold_migrates_an_existing_legacy_global_block() {
     fs::create_dir_all(global.parent().unwrap()).unwrap();
     fs::write(&global, SAMPLE_LEGACY_BLOCK).unwrap();
 
-    scaffold(proj.path(), home.path(), cfg.path()).unwrap();
+    scaffold(proj.path(), home.path(), cfg.path(), true).unwrap();
 
     let gc = fs::read_to_string(&global).unwrap();
     assert_eq!(gc.matches("Mynd Memory System").count(), 1);
@@ -374,7 +383,7 @@ fn ensure_project_claude_md_prepends_notice_on_foreign_file() {
     fs::write(&path, "# My rules\nAlways write tests first.\n").unwrap();
 
     let (_, status) = ensure_project_claude_md(&path, "myproj").unwrap();
-    assert_eq!(status, "created");
+    assert_eq!(status, "updated");
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.starts_with(PROJECT_CLAUDE_NOTICE_MARKER));
     assert!(content.contains(".mynd.toml"));
@@ -390,6 +399,47 @@ fn ensure_project_claude_md_prepends_notice_on_foreign_file() {
             .count(),
         1
     );
+}
+
+#[test]
+fn ensure_project_claude_md_rewrites_legacy_ignore_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    fs::write(
+        &path,
+        format!("{LEGACY_PROJECT_CLAUDE_NOTICE}\n# Team rules\nUse pnpm.\n"),
+    )
+    .unwrap();
+
+    let (_, status) = ensure_project_claude_md(&path, "myproj").unwrap();
+    assert_eq!(status, "migrated");
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.starts_with(PROJECT_CLAUDE_NOTICE));
+    assert!(!content.contains("ignore the rest"));
+    assert!(content.contains("Use pnpm."));
+
+    let (_, status2) = ensure_project_claude_md(&path, "myproj").unwrap();
+    assert_eq!(status2, "exists");
+}
+
+#[test]
+fn scaffold_without_claude_skips_claude_files() {
+    let proj = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    scaffold(proj.path(), home.path(), cfg.path(), false).unwrap();
+
+    assert!(proj.path().join(".mynd.toml").is_file());
+    assert!(cfg.path().join("config.toml").is_file());
+    assert!(!proj.path().join("CLAUDE.md").exists());
+    assert!(!proj.path().join(".claude").exists());
+    assert!(!home.path().join(".claude").exists());
+}
+
+#[test]
+fn mcp_install_claude_points_at_plugin() {
+    let err = cmd_mcp_install("claude").unwrap_err().to_string();
+    assert!(err.contains("claude plugin install mynd@mynd"));
 }
 
 #[test]
@@ -412,7 +462,7 @@ fn scaffold_creates_all_files() {
     let proj = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let cfg = tempfile::tempdir().unwrap();
-    let report = scaffold(proj.path(), home.path(), cfg.path()).unwrap();
+    let report = scaffold(proj.path(), home.path(), cfg.path(), true).unwrap();
 
     assert!(proj.path().join(".mynd.toml").is_file());
     assert!(proj.path().join(".mynd.local.toml").is_file());
@@ -438,8 +488,8 @@ fn scaffold_is_idempotent_and_does_not_duplicate_global_block() {
     let home = tempfile::tempdir().unwrap();
     let cfg = tempfile::tempdir().unwrap();
 
-    scaffold(proj.path(), home.path(), cfg.path()).unwrap();
-    let report2 = scaffold(proj.path(), home.path(), cfg.path()).unwrap();
+    scaffold(proj.path(), home.path(), cfg.path(), true).unwrap();
+    let report2 = scaffold(proj.path(), home.path(), cfg.path(), true).unwrap();
 
     assert!(report2.iter().all(|(_, status)| *status == "exists"));
 
@@ -460,7 +510,7 @@ fn scaffold_preserves_existing_user_claude_md() {
     fs::create_dir_all(global.parent().unwrap()).unwrap();
     fs::write(&global, "# My personal rules\nAlways write tests first.\n").unwrap();
 
-    scaffold(proj.path(), home.path(), cfg.path()).unwrap();
+    scaffold(proj.path(), home.path(), cfg.path(), true).unwrap();
 
     let gc = fs::read_to_string(&global).unwrap();
     assert!(
@@ -887,6 +937,49 @@ fn detect_registered_clients_ignores_claude_files_without_hivemind() {
 }
 
 #[test]
+fn detect_registered_clients_ignores_project_paths_but_sees_plugin() {
+    let home = tempfile::tempdir().unwrap();
+    // ~/.claude.json lists every opened project by path
+    fs::write(
+        home.path().join(".claude.json"),
+        r#"{"projects":{"/home/me/src/mynd":{}}}"#,
+    )
+    .unwrap();
+    assert!(detect_registered_clients(home.path()).is_empty());
+
+    let claude_dir = home.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    fs::write(
+        claude_dir.join("settings.json"),
+        r#"{"enabledPlugins":{"mynd@mynd":true}}"#,
+    )
+    .unwrap();
+    assert!(detect_registered_clients(home.path()).contains(&"claude"));
+}
+
+#[test]
+fn init_root_prefers_existing_config_then_git_root() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path().canonicalize().unwrap();
+    let repo = home.join("repo");
+    let sub = repo.join("a").join("b");
+    fs::create_dir_all(&sub).unwrap();
+    // no .git anywhere: cwd itself
+    assert_eq!(init_root(&sub, &home), sub);
+    // inside a git repo: the repo root
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    assert_eq!(init_root(&sub, &home), repo);
+    // an ancestor already initialized wins over the git root
+    fs::write(repo.join("a").join(".mynd.toml"), "").unwrap();
+    assert_eq!(init_root(&sub, &home), repo.join("a"));
+    // a dotfiles repo at $HOME is not a project root
+    let other = home.join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::create_dir_all(home.join(".git")).unwrap();
+    assert_eq!(init_root(&other, &home), other);
+}
+
+#[test]
 fn detect_registered_clients_cursor() {
     let home = tempfile::tempdir().unwrap();
     let dir = home.path().join(".cursor");
@@ -992,7 +1085,7 @@ fn append_block_if_absent_no_trailing_newline_in_existing_file() {
     let path = dir.path().join("CLAUDE.md");
     fs::write(&path, "# Existing content").unwrap();
     let (_, status) = append_block_if_absent(&path, "# HiveMind", "# HiveMind\nblock\n").unwrap();
-    assert_eq!(status, "created");
+    assert_eq!(status, "updated");
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("Existing content"));
     assert!(content.contains("# HiveMind"));
@@ -1284,12 +1377,12 @@ fn scaffold_writes_claude_session_start_hook() {
     let proj = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let cfg = tempfile::tempdir().unwrap();
-    scaffold(proj.path(), home.path(), cfg.path()).unwrap();
+    scaffold(proj.path(), home.path(), cfg.path(), true).unwrap();
     let settings = fs::read_to_string(proj.path().join(".claude").join("settings.json")).unwrap();
     assert!(settings.contains("SessionStart"));
     assert!(settings.contains("mynd session-start"));
     // idempotent
-    scaffold(proj.path(), home.path(), cfg.path()).unwrap();
+    scaffold(proj.path(), home.path(), cfg.path(), true).unwrap();
     let again = fs::read_to_string(proj.path().join(".claude").join("settings.json")).unwrap();
     assert_eq!(again.matches("mynd session-start").count(), 1);
 }
@@ -2427,11 +2520,11 @@ fn suggest_lifecycle_against_mock_server() {
 
 // ── more coverage: mcp install, status, and find_owning's org branch ────────
 //
-// `claude` itself is on PATH in this sandbox (it's the CLI running these
-// tests), so `cmd_mcp_install("claude")` is never exercised here — doing so
-// for real would register/mutate this environment's actual Claude Code MCP
-// servers. opencode/kimi/codex/cursor/windsurf have no CLI on PATH, so their
-// "write the config file directly" branches run deterministically.
+// `cmd_mcp_install("claude")` only points at the plugin (no CLI call), and
+// `install_claude_plugin` is never run here: it would mutate this
+// environment's real Claude Code plugins. opencode/kimi/codex/cursor/windsurf
+// have no CLI on PATH, so their "write the config file directly" branches run
+// deterministically.
 
 fn with_isolated_home<T>(f: impl FnOnce(&Path) -> T) -> T {
     let _lock = crate::test_env_lock::ENV_MUTEX.lock().unwrap();

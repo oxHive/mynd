@@ -10,9 +10,13 @@ use super::init::home_dir;
 pub(crate) const SERVER_KEY: &str = "mynd";
 pub(crate) const LEGACY_KEY: &str = "hivemind";
 
-/// True if a client's `mcp list` / config text mentions either key.
+/// True if a client's JSON config registers either key, as an MCP server
+/// (`"mynd"`) or a Claude Code plugin (`"mynd@<marketplace>"`). Quoted so a
+/// project path like `"/home/me/mynd"` in ~/.claude.json doesn't count.
 pub(crate) fn already_registered(haystack: &str) -> bool {
-    haystack.contains(SERVER_KEY) || haystack.contains(LEGACY_KEY)
+    [SERVER_KEY, LEGACY_KEY]
+        .iter()
+        .any(|k| haystack.contains(&format!("\"{k}\"")) || haystack.contains(&format!("\"{k}@")))
 }
 
 pub(crate) fn exe_path() -> String {
@@ -22,68 +26,47 @@ pub(crate) fn exe_path() -> String {
         .unwrap_or_else(|| "mynd".to_string())
 }
 
+/// Shown wherever a user still has to register Mynd with a client.
+pub const REGISTER_HINT: &str = "Register Mynd with your AI client (once per machine):
+  Claude Code:  claude plugin marketplace add oxHive/mynd
+                claude plugin install mynd@mynd
+  Others:       mynd mcp install <cursor|windsurf|opencode|kimi|codex>";
+
 pub fn cmd_mcp_install(client: &str) -> Result<()> {
     match client {
-        "claude" => install_claude(),
+        "claude" => anyhow::bail!(
+            "Claude Code uses the Mynd plugin (MCP server + slash commands):\n  \
+             claude plugin marketplace add oxHive/mynd\n  \
+             claude plugin install mynd@mynd"
+        ),
         "opencode" => install_opencode(),
         "kimi" => install_kimi(),
         "codex" => install_codex(),
         "cursor" => install_cursor(),
         "windsurf" => install_windsurf(),
         other => anyhow::bail!(
-            "unknown client \"{other}\" — supported: claude, opencode, kimi, codex, cursor, windsurf"
+            "unknown client \"{other}\"; supported: opencode, kimi, codex, cursor, windsurf \
+             (Claude Code: use the Mynd plugin)"
         ),
     }
 }
 
-fn install_claude() -> Result<()> {
-    // Verify the claude CLI is available.
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() {
-        anyhow::bail!(
-            "claude CLI not found in PATH\n\
-             Install Claude Code first: https://claude.ai/download\n\
-             Then re-run: mynd mcp install claude"
-        );
+/// Install the Mynd Claude Code plugin via the `claude` CLI: adds the
+/// marketplace, then the plugin. Re-running either step is harmless.
+pub(crate) fn install_claude_plugin() -> Result<()> {
+    for args in [
+        &["plugin", "marketplace", "add", "oxHive/mynd"][..],
+        &["plugin", "install", "mynd@mynd"][..],
+    ] {
+        let status = std::process::Command::new("claude")
+            .args(args)
+            .status()
+            .map_err(|e| anyhow::anyhow!("could not run the claude CLI: {e}"))?;
+        if !status.success() {
+            anyhow::bail!("`claude {}` failed", args.join(" "));
+        }
     }
-
-    // Check if already registered so we can skip gracefully.
-    let list_out = std::process::Command::new("claude")
-        .args(["mcp", "list"])
-        .output()?;
-    let list_str = String::from_utf8_lossy(&list_out.stdout);
-    if list_str.contains(SERVER_KEY) {
-        println!("Mynd is already registered with Claude Code.");
-        println!("Open a new Claude Code session to use it.");
-        return Ok(());
-    }
-    // Drop a stale pre-rename registration before adding the new one.
-    if list_str.contains(LEGACY_KEY) {
-        let _ = std::process::Command::new("claude")
-            .args(["mcp", "remove", "--scope", "user", LEGACY_KEY])
-            .status();
-    }
-
-    // Register as stdio using the full binary path so Claude Code can find it
-    // regardless of whether ~/.cargo/bin is in its subprocess PATH. User scope:
-    // the default (local) scope is per project directory, but registration is
-    // meant to happen once per machine.
-    let exe = exe_path();
-    let status = std::process::Command::new("claude")
-        .args(["mcp", "add", "--scope", "user", SERVER_KEY, "--", &exe])
-        .status()?;
-
-    if !status.success() {
-        anyhow::bail!("claude mcp add failed. Run `claude mcp list` to inspect existing servers");
-    }
-
-    println!("Mynd registered with Claude Code.");
-    println!();
-    println!("Next steps:");
-    println!("  1. Open a new Claude Code session");
-    println!("  2. Type /memory-status to verify");
+    println!("Mynd plugin installed for Claude Code.");
     Ok(())
 }
 

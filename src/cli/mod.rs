@@ -224,7 +224,8 @@ pub enum HiveAction {
 pub enum McpAction {
     /// Register Mynd as an MCP server in a supported AI coding client
     Install {
-        /// Client to register with: claude, opencode, kimi, codex, cursor, windsurf
+        /// Client to register with: opencode, kimi, codex, cursor, windsurf
+        /// (Claude Code: install the Mynd plugin instead)
         client: String,
     },
 }

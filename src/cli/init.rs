@@ -30,44 +30,105 @@ pub(crate) fn with_spinner<T>(msg: &str, f: impl FnOnce() -> T) -> T {
 }
 
 pub fn cmd_init() -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    use std::io::IsTerminal as _;
+
     let home = home_dir();
-    let report = scaffold(&cwd, &home, &crate::config::global_config_dir())?;
-    for (path, status) in &report {
-        println!("  {status:7}  {}", path.display());
+    let root = init_root(&std::env::current_dir()?, &home);
+    let installed = installed_clients(&home);
+    let claude = installed.contains(&"claude");
+    let report = scaffold(&root, &home, &crate::config::global_config_dir(), claude)?;
+    let changed: Vec<_> = report.iter().filter(|(_, s)| *s != "exists").collect();
+    if changed.is_empty() {
+        println!(
+            "Mynd is already set up in {}",
+            display_path(&root, &root, &home)
+        );
+    } else {
+        println!("Mynd initialized in {}", display_path(&root, &root, &home));
+        for (path, status) in changed {
+            println!("  {status:8} {}", display_path(path, &root, &home));
+        }
+    }
+    if !claude {
+        println!("  Claude Code not found: skipped CLAUDE.md and its session hook.");
+        println!("  Re-run `mynd init` here after installing it.");
+    }
+
+    // Registration is per machine, not per project: only nag until one client has it.
+    let mut registered = !detect_registered_clients(&home).is_empty();
+    if !registered && std::io::stdin().is_terminal() {
+        for client in &installed {
+            println!();
+            if super::common::confirm(&format!("Register Mynd with {client}?"), false)? {
+                if *client == "claude" {
+                    super::install_claude_plugin()?;
+                } else {
+                    super::cmd_mcp_install(client)?;
+                }
+                registered = true;
+            }
+        }
+    }
+    if !registered {
+        println!();
+        println!("{}", super::REGISTER_HINT);
+        return Ok(());
     }
     println!();
-
-    let registered_clients = with_spinner("checking registered MCP clients...", || {
-        detect_registered_clients(&home)
-    });
-    match registered_clients {
-        registered if registered.is_empty() => {
-            println!("Mynd initialized.");
-            println!();
-            println!("Next steps:");
-            println!("  1. Register with your AI coding client (run once, not per project):");
-            println!("       mynd mcp install claude      # Claude Code");
-            println!("       mynd mcp install cursor      # Cursor");
-            println!("       mynd mcp install windsurf    # Windsurf");
-            println!("       mynd mcp install opencode    # OpenCode");
-            println!("       mynd mcp install kimi        # Kimi Code CLI");
-            println!("       mynd mcp install codex       # OpenAI Codex CLI");
-            println!("  2. Start the server:  mynd service install  (or: mynd up)");
-            println!("  3. Open a new session in your AI client. Memory hooks are now active.");
-        }
-        registered => {
-            let list = registered.join(", ");
-            println!("Mynd initialized.");
-            println!("MCP client already registered: {list}");
-            println!();
-            println!("Next steps:");
-            println!("  1. Start the server:  mynd service install  (or: mynd up)");
-            println!("  2. Open a new session. Memory hooks are now active.");
-        }
-    }
-
+    println!("Open a new session in your AI client to load project memory.");
     Ok(())
+}
+
+/// Where `mynd init` scaffolds: the nearest ancestor that already has a
+/// `.mynd.toml`, else the enclosing git repo root, else `cwd`. Keeps a run
+/// from a subdirectory from creating a nested project. A `.git` in `home`
+/// (dotfiles repo) is ignored so it doesn't swallow every project under it.
+pub(crate) fn init_root(cwd: &Path, home: &Path) -> PathBuf {
+    crate::config::discover_project_root(cwd)
+        .or_else(|| {
+            cwd.ancestors()
+                .find(|d| *d != home && d.join(".git").exists())
+                .map(Path::to_path_buf)
+        })
+        .unwrap_or_else(|| cwd.to_path_buf())
+}
+
+/// `path` relative to the project `root`, or `~`-prefixed under `home`.
+fn display_path(path: &Path, root: &Path, home: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(root)
+        && !rel.as_os_str().is_empty()
+    {
+        return rel.display().to_string();
+    }
+    match path.strip_prefix(home) {
+        Ok(rel) => format!("~/{}", rel.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// AI clients that look installed on this machine: CLI on PATH, or (for the
+/// editors) their config dir exists.
+pub(crate) fn installed_clients(home: &Path) -> Vec<&'static str> {
+    let on_path = |bin: &str| {
+        std::env::var_os("PATH")
+            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
+    };
+    [
+        // ~/.claude.json: Claude Code's own state file, for installs whose
+        // `claude` binary isn't on this shell's PATH
+        (
+            "claude",
+            on_path("claude") || home.join(".claude.json").is_file(),
+        ),
+        ("cursor", home.join(".cursor").is_dir()),
+        ("windsurf", home.join(".codeium").join("windsurf").is_dir()),
+        ("opencode", on_path("opencode")),
+        ("kimi", on_path("kimi")),
+        ("codex", on_path("codex")),
+    ]
+    .into_iter()
+    .filter_map(|(name, found)| found.then_some(name))
+    .collect()
 }
 
 /// Returns names of AI clients that already have Mynd registered.
@@ -143,30 +204,37 @@ pub(crate) fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Create project + global config files and CLAUDE.md integration.
-/// Returns (path, "created"|"exists") for each target. Idempotent.
+/// Create project + global config files, plus the Claude Code integration
+/// (CLAUDE.md files and SessionStart hook) when `claude` is set.
+/// Returns (path, "created"|"updated"|"migrated"|"exists") for each target.
+/// Idempotent.
 pub fn scaffold(
     project_root: &Path,
     home: &Path,
     config_dir: &Path,
+    claude: bool,
 ) -> Result<Vec<(PathBuf, &'static str)>> {
     let project_name = project_root
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "project".to_string());
 
-    let report = vec![
+    let mut report = vec![
         write_if_absent(
             &project_root.join(".mynd.toml"),
             &project_toml(&project_name),
         )?,
         write_if_absent(&project_root.join(".mynd.local.toml"), LOCAL_TOML)?,
         ensure_line(&project_root.join(".gitignore"), ".mynd.local.toml")?,
-        ensure_project_claude_md(&project_root.join("CLAUDE.md"), &project_name)?,
-        ensure_global_claude_block(&home.join(".claude").join("CLAUDE.md"))?,
         write_private_if_absent(&config_dir.join("config.toml"), GLOBAL_CONFIG)?,
-        ensure_claude_settings_hook(project_root)?,
     ];
+    if claude {
+        report.extend([
+            ensure_project_claude_md(&project_root.join("CLAUDE.md"), &project_name)?,
+            ensure_global_claude_block(&home.join(".claude").join("CLAUDE.md"))?,
+            ensure_claude_settings_hook(project_root)?,
+        ]);
+    }
 
     Ok(report)
 }
@@ -219,17 +287,30 @@ pub(crate) fn ensure_line(path: &Path, line: &str) -> Result<(PathBuf, &'static 
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
+    let status = if body.is_empty() {
+        "created"
+    } else {
+        "updated"
+    };
     body.push_str(line);
     body.push('\n');
     write_atomic(path, &body)?;
-    Ok((path.to_path_buf(), "created"))
+    Ok((path.to_path_buf(), status))
 }
 
 /// Marker for the notice prepended to a pre-existing project `CLAUDE.md`
 /// (one `mynd init` did not create), pointing it at `.mynd.toml`.
-pub(crate) const PROJECT_CLAUDE_NOTICE_MARKER: &str = "# Mynd Memory Override";
+pub(crate) const PROJECT_CLAUDE_NOTICE_MARKER: &str = "# Mynd Memory";
 
-pub(crate) const PROJECT_CLAUDE_NOTICE: &str = "# Mynd Memory Override\n\n\
+/// Additive on purpose: the file is usually shared with a team, so the notice
+/// must never tell the agent to drop the instructions that follow it.
+pub(crate) const PROJECT_CLAUDE_NOTICE: &str = "# Mynd Memory\n\n\
+This project uses Mynd memory (.mynd.toml): load session context from Mynd as\n\
+described in ~/.claude/CLAUDE.md. The instructions below still apply.\n";
+
+/// Notice written by earlier releases, which told the agent to ignore the rest of the
+/// file; [`ensure_project_claude_md`] rewrites it to the current one.
+pub(crate) const LEGACY_PROJECT_CLAUDE_NOTICE: &str = "# Mynd Memory Override\n\n\
 Check if .mynd.toml exists in this project root. If it does, defer to Mynd\n\
 memory (see ~/.claude/CLAUDE.md) for session context and ignore the rest of\n\
 this file.\n";
@@ -255,6 +336,13 @@ pub(crate) fn ensure_project_claude_md(
     if existing.contains(PROJECT_CLAUDE_OWNED_MARKER) {
         return Ok((path.to_path_buf(), "exists"));
     }
+    if existing.contains(LEGACY_PROJECT_CLAUDE_NOTICE) {
+        write_atomic(
+            path,
+            &existing.replacen(LEGACY_PROJECT_CLAUDE_NOTICE, PROJECT_CLAUDE_NOTICE, 1),
+        )?;
+        return Ok((path.to_path_buf(), "migrated"));
+    }
     prepend_block_if_absent(path, PROJECT_CLAUDE_NOTICE_MARKER, PROJECT_CLAUDE_NOTICE)
 }
 
@@ -273,9 +361,14 @@ pub(crate) fn prepend_block_if_absent(
         body.push('\n');
     }
     body.push('\n');
+    let status = if existing.is_empty() {
+        "created"
+    } else {
+        "updated"
+    };
     body.push_str(&existing);
     write_atomic(path, &body)?;
-    Ok((path.to_path_buf(), "created"))
+    Ok((path.to_path_buf(), status))
 }
 
 /// Append `block` to the file unless `marker` is already present.
@@ -288,6 +381,11 @@ pub(crate) fn append_block_if_absent(
     if existing.contains(marker) {
         return Ok((path.to_path_buf(), "exists"));
     }
+    let status = if existing.is_empty() {
+        "created"
+    } else {
+        "updated"
+    };
     let mut body = existing;
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
@@ -297,7 +395,7 @@ pub(crate) fn append_block_if_absent(
     }
     body.push_str(block);
     write_atomic(path, &body)?;
-    Ok((path.to_path_buf(), "created"))
+    Ok((path.to_path_buf(), status))
 }
 
 /// Merge a SessionStart hook running `mynd session-start` into the
@@ -308,6 +406,7 @@ pub(crate) fn ensure_claude_settings_hook(project_root: &Path) -> Result<(PathBu
     use anyhow::Context as _;
 
     let path = project_root.join(".claude").join("settings.json");
+    let status = if path.exists() { "updated" } else { "created" };
     let existing = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
     if existing.contains("mynd session-start") || existing.contains("hivemind session-start") {
         return Ok((path, "exists"));
@@ -335,7 +434,7 @@ pub(crate) fn ensure_claude_settings_hook(project_root: &Path) -> Result<(PathBu
         }));
     std::fs::create_dir_all(path.parent().unwrap())?;
     write_atomic(&path, &serde_json::to_string_pretty(&root)?)?;
-    Ok((path, "created"))
+    Ok((path, status))
 }
 
 pub(crate) fn project_toml(name: &str) -> String {
@@ -348,9 +447,9 @@ pub(crate) fn project_toml(name: &str) -> String {
          [hooks.on_session_start]\n\
          max_tokens = 2000\n\
          recalls = [\n\
-         \x20 # Exact memory titles to auto-load at session start, e.g.:\n\
+         \x20 # Memories to auto-load at session start: exact titles or tag queries, e.g.:\n\
          \x20 # \"golang preferences\",\n\
-         \x20 # \"project/{name}\",\n\
+         \x20 # \"tag:project:{name}\",\n\
          ]\n"
     )
 }

@@ -13,7 +13,7 @@ Persistent memory for AI coding agents. Mynd is a local MCP server that gives Cl
 
 ## How it works
 
-1. You register Mynd with your AI client once: `mynd mcp install claude`.
+1. You register Mynd with your AI client once: the Mynd plugin for Claude Code, or `mynd mcp install <client>` for others.
 2. Your AI client spawns Mynd as a subprocess. No server to start or keep running.
 3. At the start of every session, Claude automatically recalls the memories configured for your project.
 4. You ask Claude to store anything worth keeping. It never auto-stores.
@@ -123,13 +123,7 @@ claude plugin install mynd@mynd
 
 Verify with `/plugin` in a Claude Code session — Mynd should be listed as installed, with its MCP server connected under `/mcp`. The slash commands appear in the `/` menu.
 
-**Manual alternative (MCP only, no slash commands):**
-
-```sh
-mynd mcp install claude
-```
-
-This registers the MCP server at user scope (once per machine, available in every project) without the plugin skills. Useful if you only want the tools and session start, not the slash commands.
+The plugin is the only supported way to register Mynd with Claude Code; `mynd mcp install claude` just prints these commands.
 
 In addition, `mynd init` installs a Claude Code SessionStart hook in the project's `.claude/settings.json` that runs `mynd session-start`. This injects the configured memory context deterministically at the start of every session, without relying on Claude deciding to call the MCP tool. The `mynd_session_start` MCP tool remains available for other clients and for on-demand use.
 
@@ -307,21 +301,28 @@ mynd service status    # check if running
 mynd service uninstall # stop and remove
 ```
 
-`mynd init` creates:
+`mynd init` scaffolds the project root: the nearest directory that already has a `.mynd.toml`, else the git repo root, else the current directory. It creates:
 
 | File | Description |
 |------|-------------|
 | `.mynd.toml` | Project config (commit this) |
 | `.mynd.local.toml` | Personal recalls, gitignored |
-| `CLAUDE.md` | Instructs Claude to call `mynd_session_start` |
 | `.gitignore` | Adds `.mynd.local.toml` entry |
+| `~/.config/mynd/config.toml` | Global config, if missing |
 
-It also appends a Mynd block to `~/.claude/CLAUDE.md` (preserving any existing content) so Claude knows how to use the MCP tools globally.
+When Claude Code is installed (`claude` on `PATH` or `~/.claude.json` present), it also sets up the Claude Code side:
 
-> **If you already have a project `CLAUDE.md`**, init will not modify it. Add this line manually:
-> ```
-> At the start of every session, call `mynd_session_start` if .mynd.toml exists in the project root.
-> ```
+| File | Description |
+|------|-------------|
+| `CLAUDE.md` | Instructs Claude to call `mynd_session_start` |
+| `.claude/settings.json` | Adds the `mynd session-start` SessionStart hook (merged into existing settings) |
+| `~/.claude/CLAUDE.md` | Appends the Mynd block (existing content preserved) so Claude knows how to use the MCP tools |
+
+Install Claude Code later? Re-run `mynd init`. Re-running is always safe: existing files are left alone.
+
+If no AI client has Mynd registered yet, init lists how to register and, in an interactive terminal, offers to do it for each client it finds (the plugin for Claude Code, `mynd mcp install <client>` for the rest).
+
+> **If you already have a project `CLAUDE.md`**, init prepends a short "Mynd Memory" notice pointing Claude at `.mynd.toml` and saying the rest of the file still applies. The older notice that told Claude to ignore the rest of the file is rewritten in place on the next `mynd init`.
 
 The `CLAUDE.md` created by `mynd init` only covers how to **use** Mynd. It tells Claude when to call `mynd_session_start` and nothing else. It does not document your project's own codebase. If you want Claude Code to understand your codebase architecture, run `/init` in Claude Code after `mynd init`. The `/init` command reads your source code and generates a comprehensive `CLAUDE.md` with build commands, architecture overview, and key design decisions.
 
@@ -336,7 +337,6 @@ mynd init                    Scaffold config files for the current project
 mynd status                  Show config, memory count, and session-start preview
 mynd migrate                 Move the database from the legacy ~/.hivemind path to the XDG data dir
 mynd session-start [--json]  Print the session-start context; used by the Claude Code SessionStart hook
-mynd mcp install claude      Register with Claude Code
 mynd mcp install opencode    Register with OpenCode (manual; the npm plugin does this automatically)
 mynd mcp install kimi        Register with Kimi Code CLI
 mynd mcp install codex       Register with OpenAI Codex CLI
@@ -730,14 +730,15 @@ cd ~/projects/myapp
 mynd init
 ```
 
-This creates `.mynd.toml`, scaffolds CLAUDE.md, and writes the global config file that makes the hint go away.
+This creates `.mynd.toml`, sets up CLAUDE.md (when Claude Code is installed), and writes the global config file that makes the hint go away.
 
 ### "hint: no AI client is registered with Mynd yet"
 
 You ran `mynd init` but haven't told your AI client about the MCP server yet. The server will start, but your AI client won't connect to it. Run the install command for your client once:
 
 ```sh
-mynd mcp install claude      # Claude Code
+claude plugin marketplace add oxHive/mynd   # Claude Code
+claude plugin install mynd@mynd
 mynd mcp install cursor      # Cursor
 mynd mcp install windsurf    # Windsurf
 mynd mcp install opencode    # OpenCode
