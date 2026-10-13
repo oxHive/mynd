@@ -41,8 +41,7 @@ pub fn warn_if_not_initialized() {
     if detect_registered_clients(&home).is_empty() {
         eprintln!("hint: no AI client is registered with Mynd yet.");
         eprintln!("      The server will start, but your AI client won't connect to it.");
-        eprintln!("      Register once with:  mynd mcp install claude");
-        eprintln!("      (or cursor, windsurf, opencode, kimi, codex)");
+        eprintln!("{}", super::REGISTER_HINT);
         eprintln!();
     }
 }
@@ -132,8 +131,7 @@ pub fn cmd_status(plain: bool) -> Result<()> {
     println!("{out}");
     if clients.is_empty() {
         eprintln!("hint: no AI client is registered with Mynd yet.");
-        eprintln!("      Register once with:  mynd mcp install claude");
-        eprintln!("      (or cursor, windsurf, opencode, kimi, codex)");
+        eprintln!("{}", super::REGISTER_HINT);
     }
     Ok(())
 }
