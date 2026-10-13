@@ -160,7 +160,10 @@ pub(super) async fn get_tag_settings(
     State(store): State<Store>,
     Extension(guard): Extension<GuardPredefinedNamespaces>,
 ) -> Result<Json<Value>, ApiError> {
-    let namespaces = store.tag_namespace_registry().await;
+    let mut namespaces = store.tag_namespace_registry().await;
+    if guard.0 {
+        namespaces = crate::store::overlay_predefined_namespaces(namespaces);
+    }
     let defaults = crate::store::default_tag_namespaces();
     let predefined: Vec<&String> = defaults
         .as_object()

@@ -549,6 +549,15 @@ fn merge_tag_namespaces(defaults: Value, stored: Value) -> Value {
     Value::Object(merged)
 }
 
+/// The registry with the code defaults laid over every predefined namespace
+/// (the inverse of `tag_namespace_registry`'s merge: defaults win). Read paths
+/// that feed a save use it while the predefined-namespace guard is on, so a
+/// stale stored copy (e.g. an old `part` description) is replaced by the
+/// current default instead of being echoed back and rejected by the guard.
+pub(crate) fn overlay_predefined_namespaces(registry: Value) -> Value {
+    merge_tag_namespaces(registry, default_tag_namespaces())
+}
+
 /// Validates `tags` against the `tag_namespaces` registry: at most one tag
 /// per namespace marked `single_value` (falls back to `["project"]` alone
 /// when the registry has no singleton namespaces at all), and — for any

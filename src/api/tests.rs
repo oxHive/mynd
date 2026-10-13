@@ -69,6 +69,14 @@ async fn test_router() -> (Router, TempDir) {
 
 async fn test_router_with_guard(guard_predefined_namespaces: bool) -> (Router, TempDir) {
     let (store, dir) = test_store().await;
+    test_router_over_store(store, dir, guard_predefined_namespaces).await
+}
+
+async fn test_router_over_store(
+    store: Arc<SqliteStore>,
+    dir: TempDir,
+    guard_predefined_namespaces: bool,
+) -> (Router, TempDir) {
     let (events, _) = broadcast::channel(16);
     let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
@@ -804,6 +812,42 @@ async fn get_tag_settings_returns_seeded_defaults_when_unset() {
         );
     }
     assert_eq!(body["guard_predefined_namespaces"], true);
+}
+
+#[tokio::test]
+async fn tag_settings_round_trip_passes_the_guard_with_a_stale_stored_part_entry() {
+    // A registry saved before the `part` description changed still holds the
+    // old entry; the settings GET must serve current defaults for predefined
+    // namespaces so the dashboard's unchanged re-save is not a 422.
+    let (store, dir) = test_store().await;
+    let stale = json!({ "part": {
+        "color": "#f0883e",
+        "values": ["index", "fragment"],
+        "values_mode": "fixed",
+        "single_value": true,
+        "description": "Marks a memory's role when content was too large for one memory and got split: index (the short entry point whose content links to each fragment via [phrase](child:mem_xxx)) or fragment (one piece of the split content). Absent on ordinary, unsplit memories.",
+    }});
+    store
+        .set_meta("tag_namespaces", &stale.to_string())
+        .await
+        .unwrap();
+    let (app, _dir) = test_router_over_store(store, dir, true).await;
+
+    let (status, body) = req(app.clone(), "GET", "/api/v1/settings/tags", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["namespaces"]["part"],
+        crate::store::default_tag_namespaces()["part"]
+    );
+
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/settings/tags",
+        Some(body["namespaces"].clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
