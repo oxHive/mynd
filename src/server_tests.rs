@@ -2329,3 +2329,34 @@ async fn memory_store_rejects_a_parent_in_the_other_store() {
     );
     assert_eq!(hm.store.count().await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn session_start_finds_the_root_for_a_mixed_case_project_name() {
+    let (hm, _dir) = test_mynd().await;
+    store_mem(
+        &hm,
+        "Demo root",
+        "# demo index",
+        &["role:root", "project:demo"],
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join(".mynd.toml"),
+        "[project]\nname=\"Demo\"\n[hooks.on_session_start]\nmax_tokens=2000\nrecalls=[]\n",
+    )
+    .unwrap();
+    let val = hm
+        .do_session_start(SessionStartInput {
+            project_path: tmp.path().to_string_lossy().into_owned(),
+        })
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(val["context_loaded"][0]["title"], "Demo root");
+    assert_eq!(val["context_loaded"][0]["root"], true);
+    assert_eq!(val["roots_missing"], false);
+    assert!(!val["hint"].as_str().unwrap().contains("/memory-audit"));
+}

@@ -1249,6 +1249,7 @@ async fn log_and_list_session_start_round_trip() {
         used_tokens: 120,
         max_tokens: 2000,
         memories_recalled: 0,
+        roots_missing: false,
     };
     store
         .log_session_start("/tmp/demo-project", &result)
@@ -1278,6 +1279,7 @@ async fn list_session_logs_orders_newest_first() {
             used_tokens: used,
             max_tokens: 2000,
             memories_recalled: 0,
+            roots_missing: false,
         };
         store.log_session_start("/tmp/p", &result).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -2292,6 +2294,7 @@ async fn delete_all_also_clears_sync_journal_and_session_start_log() {
             used_tokens: 0,
             max_tokens: 100,
             memories_recalled: 0,
+            roots_missing: false,
         },
     )
     .await

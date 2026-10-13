@@ -94,6 +94,7 @@ fn sample_result(loaded: bool, skipped: bool) -> crate::session::SessionStartRes
             },
             tokens: 5,
             source: crate::config::RecallSource::Project,
+            is_root: false,
         }]
     } else {
         vec![]
@@ -113,6 +114,7 @@ fn sample_result(loaded: bool, skipped: bool) -> crate::session::SessionStartRes
         used_tokens: 5,
         max_tokens: 2000,
         memories_recalled: if loaded { 1 } else { 0 },
+        roots_missing: false,
     }
 }
 
@@ -145,11 +147,13 @@ fn render_session_start_neutralizes_block_tags_and_keeps_titles_on_one_line() {
             },
             tokens: 5,
             source: crate::config::RecallSource::Project,
+            is_root: false,
         }],
         skipped: vec![],
         used_tokens: 5,
         max_tokens: 2000,
         memories_recalled: 1,
+        roots_missing: false,
     };
     let out = render_session_start(&result, false);
     assert!(
