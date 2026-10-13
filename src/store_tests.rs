@@ -2453,3 +2453,152 @@ async fn sync_duplicated_roots_stay_editable_and_find_root_returns_the_oldest() 
         "keeping an existing root claim is allowed"
     );
 }
+
+#[test]
+fn validate_pointer_trims_and_rejects_bad_text() {
+    assert_eq!(
+        validate_pointer("  Sync notes: libsql setup  ").unwrap(),
+        "Sync notes: libsql setup"
+    );
+    assert!(
+        validate_pointer("   ")
+            .unwrap_err()
+            .to_string()
+            .contains("empty")
+    );
+    assert!(
+        validate_pointer(&"x".repeat(301))
+            .unwrap_err()
+            .to_string()
+            .contains("300")
+    );
+    assert!(validate_pointer(&"x".repeat(300)).is_ok());
+    assert!(
+        validate_pointer("a ] b")
+            .unwrap_err()
+            .to_string()
+            .contains(']')
+    );
+    assert!(
+        validate_pointer("two\nlines")
+            .unwrap_err()
+            .to_string()
+            .contains("newline")
+    );
+    assert!(
+        validate_pointer("two\rlines")
+            .unwrap_err()
+            .to_string()
+            .contains("newline")
+    );
+}
+
+#[test]
+fn append_pointer_writes_one_clean_line() {
+    let id = "mem_00000000000000000000000000000001";
+    assert_eq!(append_pointer("", "p", id), format!("- [p](child:{id})"));
+    assert_eq!(
+        append_pointer("   \n\n", "p", id),
+        format!("- [p](child:{id})")
+    );
+    assert_eq!(
+        append_pointer("# Index\n\n- [a](child:x)\n\n\n", "p", id),
+        format!("# Index\n\n- [a](child:x)\n- [p](child:{id})")
+    );
+}
+
+#[tokio::test]
+async fn store_with_parent_writes_child_appends_pointer_and_creates_home_edge() {
+    let (s, _dir) = make_store().await;
+    let (root, first, second) = (hid(1), hid(2), hid(3));
+    s.store(&test_row(
+        &root,
+        "root",
+        "# Root\n\n",
+        &["role:root".into(), "project:p".into()],
+    ))
+    .await
+    .unwrap();
+
+    let out = s
+        .store_with_parent(
+            &test_row(&first, "first", "one", &[]),
+            &root,
+            " first: what one holds ",
+        )
+        .await
+        .unwrap();
+    assert!(!out.parent_oversized);
+    s.store_with_parent(
+        &test_row(&second, "second", "two", &[]),
+        &root,
+        "second: what two holds",
+    )
+    .await
+    .unwrap();
+
+    let parent = s.recall_by_id(&root).await.unwrap().unwrap();
+    assert_eq!(
+        parent.content,
+        format!(
+            "# Root\n- [first: what one holds](child:{first})\n- [second: what two holds](child:{second})"
+        )
+    );
+    assert!(s.recall_by_id(&first).await.unwrap().is_some());
+    let home = s.get_edges_grouped(&second).await.unwrap().parents;
+    assert_eq!(home.len(), 1);
+    assert_eq!(home[0].id, root);
+    assert_eq!(home[0].link_text.as_deref(), Some("second: what two holds"));
+}
+
+#[tokio::test]
+async fn store_with_parent_writes_nothing_when_parent_is_missing_or_pointer_bad() {
+    let (s, _dir) = make_store().await;
+    let err = s
+        .store_with_parent(&test_row(&hid(2), "c", "c", &[]), &hid(9), "ok")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+    s.store(&test_row(&hid(1), "root", "r", &[])).await.unwrap();
+    assert!(
+        s.store_with_parent(&test_row(&hid(2), "c", "c", &[]), &hid(1), "bad ] pointer")
+            .await
+            .is_err()
+    );
+    assert!(
+        s.store_with_parent(&test_row(&hid(1), "self", "c", &[]), &hid(1), "ok")
+            .await
+            .is_err(),
+        "a memory cannot be its own parent"
+    );
+    assert!(s.recall_by_id(&hid(2)).await.unwrap().is_none());
+    assert_eq!(s.recall_by_id(&hid(1)).await.unwrap().unwrap().content, "r");
+}
+
+#[tokio::test]
+async fn store_with_parent_flags_an_oversized_parent_but_still_writes() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "root", "short", &[]))
+        .await
+        .unwrap();
+    s.set_meta("max_content_tokens", "12").await.unwrap();
+    let out = s
+        .store_with_parent(
+            &test_row(&hid(2), "c", "x", &[]),
+            &hid(1),
+            "a long pointer describing the child memory in many many words",
+        )
+        .await
+        .unwrap();
+    assert!(out.parent_oversized);
+    assert!(s.recall_by_id(&hid(2)).await.unwrap().is_some());
+    assert!(
+        s.recall_by_id(&hid(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .contains(&hid(2)),
+        "the pointer is appended even when the parent ends up over the limit"
+    );
+}

@@ -228,6 +228,117 @@ async fn sync_relationship_edges(
     Ok(())
 }
 
+/// Inserts or overwrites one memory row with its tags on `tx`, clears its
+/// tombstone, syncs its content links to edges and journals it. Shared by
+/// `store_with_timestamp` and `store_with_parent`.
+async fn insert_memory_tx(
+    tx: &libsql::Transaction,
+    m: &NewMemoryRow<'_>,
+    now: i64,
+    token_count: i64,
+    hive_hash: &str,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           content = excluded.content,
+           updated_at = excluded.updated_at,
+           token_count = excluded.token_count,
+           layer = excluded.layer,
+           memory_type = excluded.memory_type,
+           hive_content_hash = excluded.hive_content_hash",
+        params![m.id, m.title, m.content, now, now, token_count, m.layer, m.memory_type, hive_hash],
+    )
+    .await?;
+
+    tx.execute(
+        "DELETE FROM memory_tags WHERE memory_id = ?1",
+        params![m.id],
+    )
+    .await?;
+    for tag in m.tags {
+        let tag_lower = tag.to_lowercase();
+        tx.execute(
+            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
+            params![m.id, tag_lower.as_str()],
+        )
+        .await?;
+    }
+
+    // A (re)written memory is alive again: drop any tombstone for its id
+    // so the manifest doesn't advertise both a live row and a deletion,
+    // and so `apply_incoming_memory`'s no-resurrect check doesn't keep
+    // blocking newer versions of it from peers.
+    tx.execute(
+        "DELETE FROM hive_tombstones WHERE memory_id = ?1",
+        params![m.id],
+    )
+    .await?;
+
+    sync_relationship_edges(tx, m.id, m.content, now).await?;
+
+    // Journal the write
+    tx.execute(
+        "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(memory_id) DO UPDATE SET
+           content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
+        params![m.id, m.content, now],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Rewrites an existing memory's title, content and tags on `tx`, syncs its
+/// content links to edges and journals it. Returns `false` (having written
+/// nothing) when no row has `id`. Shared by `update` and `store_with_parent`.
+#[allow(clippy::too_many_arguments)]
+async fn rewrite_memory_tx(
+    tx: &libsql::Transaction,
+    id: &str,
+    title: &str,
+    content: &str,
+    tags: &[String],
+    now: i64,
+    token_count: i64,
+    hive_hash: &str,
+) -> Result<bool> {
+    let changed = tx
+        .execute(
+            "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4, hive_content_hash = ?5 WHERE id = ?6",
+            params![title, content, now, token_count, hive_hash, id],
+        )
+        .await?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    tx.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])
+        .await?;
+    for tag in tags {
+        let tag_lower = tag.to_lowercase();
+        tx.execute(
+            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
+            params![id, tag_lower.as_str()],
+        )
+        .await?;
+    }
+
+    sync_relationship_edges(tx, id, content, now).await?;
+
+    // Journal the write
+    tx.execute(
+        "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(memory_id) DO UPDATE SET
+           content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
+        params![id, content, now],
+    )
+    .await?;
+    Ok(true)
+}
+
 /// Quote a raw user query for FTS5 MATCH: every whitespace-separated term is
 /// wrapped in double quotes (FTS5 string syntax) with embedded quotes doubled,
 /// so characters like / + ' - can never be parsed as FTS5 operators.
@@ -254,6 +365,53 @@ fn validate_tag_format(tags: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Longest pointer text `store_with_parent` accepts.
+pub(crate) const MAX_POINTER_CHARS: usize = 300;
+
+/// Validates pointer text for a `[pointer](child:mem_x)` line and returns it
+/// trimmed. `]` would end the link label early and a newline would break the
+/// one-pointer-per-line layout of an index.
+pub(crate) fn validate_pointer(pointer: &str) -> Result<&str> {
+    let p = pointer.trim();
+    if p.is_empty() {
+        return Err(anyhow!("pointer must not be empty"));
+    }
+    let len = p.chars().count();
+    if len > MAX_POINTER_CHARS {
+        return Err(anyhow!(
+            "pointer is {len} characters, max {MAX_POINTER_CHARS}"
+        ));
+    }
+    if p.contains(']') {
+        return Err(anyhow!("pointer must not contain \"]\""));
+    }
+    if p.contains('\n') || p.contains('\r') {
+        return Err(anyhow!("pointer must be one line, without a newline"));
+    }
+    Ok(p)
+}
+
+/// `content` with `- [pointer](child:child_id)` appended as its last line,
+/// trailing whitespace trimmed first so repeated appends never leave blank
+/// lines between pointers.
+pub(crate) fn append_pointer(content: &str, pointer: &str, child_id: &str) -> String {
+    let line = format!("- [{pointer}](child:{child_id})");
+    let base = content.trim_end();
+    if base.is_empty() {
+        line
+    } else {
+        format!("{base}\n{line}")
+    }
+}
+
+/// Outcome of `SqliteStore::store_with_parent`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParentAppend {
+    /// The parent's content is now over `max_content_tokens`. The write
+    /// still happened; the caller should suggest splitting the parent.
+    pub parent_oversized: bool,
 }
 
 pub(crate) fn compute_hive_content_hash(
@@ -504,59 +662,79 @@ impl SqliteStore {
             compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
         let _w = self.write().await;
         let tx = self.begin().await?;
-        tx.execute(
-            "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO UPDATE SET
-               title = excluded.title,
-               content = excluded.content,
-               updated_at = excluded.updated_at,
-               token_count = excluded.token_count,
-               layer = excluded.layer,
-               memory_type = excluded.memory_type,
-               hive_content_hash = excluded.hive_content_hash",
-            params![m.id, m.title, m.content, now, now, token_count, m.layer, m.memory_type, hive_hash],
-        )
-        .await?;
-
-        tx.execute(
-            "DELETE FROM memory_tags WHERE memory_id = ?1",
-            params![m.id],
-        )
-        .await?;
-        for tag in m.tags {
-            let tag_lower = tag.to_lowercase();
-            tx.execute(
-                "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-                params![m.id, tag_lower.as_str()],
-            )
-            .await?;
-        }
-
-        // A (re)written memory is alive again: drop any tombstone for its id
-        // so the manifest doesn't advertise both a live row and a deletion,
-        // and so `apply_incoming_memory`'s no-resurrect check doesn't keep
-        // blocking newer versions of it from peers.
-        tx.execute(
-            "DELETE FROM hive_tombstones WHERE memory_id = ?1",
-            params![m.id],
-        )
-        .await?;
-
-        sync_relationship_edges(&tx, m.id, m.content, now).await?;
-
-        // Journal the write
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![m.id, m.content, now],
-        )
-        .await?;
-
+        insert_memory_tx(&tx, m, now, token_count, &hive_hash).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Stores `m` and, in the same transaction, appends
+    /// `- [pointer](child:<m.id>)` to `parent_id`'s content, making the parent
+    /// the new memory's home. The parent must live in this store. The write
+    /// succeeds even when the parent ends up over `max_content_tokens`;
+    /// `ParentAppend::parent_oversized` reports that.
+    pub async fn store_with_parent(
+        &self,
+        m: &NewMemoryRow<'_>,
+        parent_id: &str,
+        pointer: &str,
+    ) -> Result<ParentAppend> {
+        let pointer = validate_pointer(pointer)?;
+        if parent_id == m.id {
+            return Err(anyhow!("a memory cannot be its own parent"));
+        }
+        m.layer.parse::<crate::model::Layer>()?;
+        m.memory_type.parse::<crate::model::MemoryType>()?;
+        validate_tag_format(m.tags)?;
+        validate_tags_against_registry(self, m.tags).await?;
+        self.check_content_size(m.title, m.content).await?;
+        self.check_root_unique(m.id, m.tags).await?;
+        let limit = self.max_content_tokens().await;
+        let now = chrono_now();
+        let token_count = m
+            .token_count
+            .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
+        let hive_hash =
+            compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
+
+        let _w = self.write().await;
+        // Read the parent under the write lock so a concurrent edit to it
+        // cannot be lost between this read and the append.
+        let Some(parent) = self.recall_by_id(parent_id).await? else {
+            return Err(anyhow!(
+                "parent {parent_id} not found in this store: a memory's home must live in the same store as the memory"
+            ));
+        };
+        let parent_content = append_pointer(&parent.content, pointer, m.id);
+        let parent_tokens =
+            crate::budget::count_entry_tokens(&parent.title, &parent_content) as i64;
+        let parent_hash = compute_hive_content_hash(
+            &parent.title,
+            &parent_content,
+            &parent.tags,
+            &parent.layer,
+            &parent.memory_type,
+        );
+        let tx = self.begin().await?;
+        insert_memory_tx(&tx, m, now, token_count, &hive_hash).await?;
+        if !rewrite_memory_tx(
+            &tx,
+            parent_id,
+            &parent.title,
+            &parent_content,
+            &parent.tags,
+            now,
+            parent_tokens,
+            &parent_hash,
+        )
+        .await?
+        {
+            // Dropping `tx` rolls the child insert back too.
+            return Err(anyhow!("parent {parent_id} was deleted during the write"));
+        }
+        tx.commit().await?;
+        Ok(ParentAppend {
+            parent_oversized: parent_tokens > limit,
+        })
     }
 
     pub async fn recall_by_id(&self, id: &str) -> Result<Option<MemoryEntry>> {
@@ -743,38 +921,9 @@ impl SqliteStore {
             compute_hive_content_hash(title, content, tags, &current.layer, &current.memory_type);
         let _w = self.write().await;
         let tx = self.begin().await?;
-        let changed = tx
-            .execute(
-                "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4, hive_content_hash = ?5 WHERE id = ?6",
-                params![title, content, now, token_count, hive_hash, id],
-            )
-            .await?;
-        if changed == 0 {
+        if !rewrite_memory_tx(&tx, id, title, content, tags, now, token_count, &hive_hash).await? {
             return Ok(false);
         }
-        tx.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])
-            .await?;
-        for tag in tags {
-            let tag_lower = tag.to_lowercase();
-            tx.execute(
-                "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-                params![id, tag_lower.as_str()],
-            )
-            .await?;
-        }
-
-        sync_relationship_edges(&tx, id, content, now).await?;
-
-        // Journal the write
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, content, now],
-        )
-        .await?;
-
         tx.commit().await?;
         Ok(true)
     }
