@@ -118,7 +118,7 @@ Permanently delete a memory. Cascades to remove its tags and connected edges.
 }
 ```
 
-**Output:** `{ "deleted": true, "id": "mem_abc123", "dangling_in": [ { "id", "title", "link_text" } ], "orphaned_children": [ { "id", "title", "link_text" } ] }`. `dangling_in` lists memories whose content still links to the deleted one; `orphaned_children` lists memories that had it as their only home (their `link_text` is the old pointer). Nothing else is rewritten.
+**Output:** `{ "deleted": true, "id": "mem_abc123", "dangling_in": [ { "id", "title", "link_text" } ], "orphaned_children": [ { "id", "title", "link_text" } ] }`. `dangling_in` lists memories whose content still links to the deleted one (`link_text` is always `null` in this list); `orphaned_children` lists memories that had it as their only home (their `link_text` is the old pointer). Nothing else is rewritten.
 
 ---
 

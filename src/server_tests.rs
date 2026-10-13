@@ -2241,6 +2241,28 @@ async fn memory_store_with_parent_appends_pointer_and_reports_home() {
 }
 
 #[tokio::test]
+async fn memory_store_with_parent_flags_an_oversized_parent_but_still_writes() {
+    let (hm, _dir) = test_mynd().await;
+    let root = store_mem(&hm, "root", "short", &["role:root", "project:mynd"], None).await;
+    let root_id = root["id"].as_str().unwrap().to_string();
+    hm.store.set_meta("max_content_tokens", "12").await.unwrap();
+    let child = store_mem(
+        &hm,
+        "c",
+        "x",
+        &[],
+        Some((
+            root_id.as_str(),
+            "a long pointer describing the child memory in many many words",
+        )),
+    )
+    .await;
+    assert_eq!(child["parent_oversized"], true);
+    let child_id = child["id"].as_str().unwrap();
+    assert!(hm.store.recall_by_id(child_id).await.unwrap().is_some());
+}
+
+#[tokio::test]
 async fn memory_store_without_parent_keeps_the_old_response_shape() {
     let (hm, _dir) = test_mynd().await;
     let v = store_mem(&hm, "plain", "c", &[], None).await;
@@ -2284,6 +2306,7 @@ async fn memory_store_rejects_bad_parent_args_without_writing() {
             .await
             .unwrap_err();
         assert!(err.to_string().contains(needle), "{needle}: {err}");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{needle}");
     }
     assert_eq!(
         hm.store.count().await.unwrap(),
@@ -2327,6 +2350,7 @@ async fn memory_store_rejects_a_parent_in_the_other_store() {
         err.to_string().contains("not found in the workspace store"),
         "{err}"
     );
+    assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(hm.store.count().await.unwrap(), 0);
 }
 

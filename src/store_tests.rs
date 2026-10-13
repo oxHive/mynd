@@ -2607,6 +2607,22 @@ async fn store_with_parent_flags_an_oversized_parent_but_still_writes() {
 }
 
 #[tokio::test]
+async fn store_with_parent_rejects_a_second_root_without_writing() {
+    let (s, _dir) = make_store().await;
+    let root_tags: Vec<String> = vec!["role:root".into(), "project:mynd".into()];
+    s.store(&test_row(&hid(1), "root", "r", &root_tags))
+        .await
+        .unwrap();
+    let err = s
+        .store_with_parent(&test_row(&hid(2), "root 2", "c", &root_tags), &hid(1), "ok")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already has a root"), "{err}");
+    assert!(s.recall_by_id(&hid(2)).await.unwrap().is_none());
+    assert_eq!(s.recall_by_id(&hid(1)).await.unwrap().unwrap().content, "r");
+}
+
+#[tokio::test]
 async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
     let (s, _dir) = make_store().await;
     let (idx, other_home, only_child, shared_child, linker) =
