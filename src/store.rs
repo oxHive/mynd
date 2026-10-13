@@ -697,8 +697,9 @@ impl SqliteStore {
             compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
 
         let _w = self.write().await;
-        // Read the parent under the write lock so a concurrent edit to it
-        // cannot be lost between this read and the append.
+        // Read the parent inside the IMMEDIATE transaction so no other writer,
+        // in this process or another, can change it before the append commits.
+        let tx = self.begin().await?;
         let Some(parent) = self.recall_by_id(parent_id).await? else {
             return Err(anyhow!(
                 "parent {parent_id} not found in this store: a memory's home must live in the same store as the memory"
@@ -714,7 +715,6 @@ impl SqliteStore {
             &parent.layer,
             &parent.memory_type,
         );
-        let tx = self.begin().await?;
         insert_memory_tx(&tx, m, now, token_count, &hive_hash).await?;
         if !rewrite_memory_tx(
             &tx,
