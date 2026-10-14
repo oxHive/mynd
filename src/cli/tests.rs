@@ -2904,3 +2904,51 @@ fn project_toml_does_not_suggest_bulk_loading_the_project() {
     assert!(t.contains("root index loads automatically"), "{t}");
     toml::from_str::<toml::Value>(&t).expect("template stays valid TOML");
 }
+
+#[cfg(unix)]
+#[test]
+fn upgrade_global_claude_block_leaves_a_symlinked_file_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("dotfiles-CLAUDE.md");
+    fs::write(&target, GLOBAL_CLAUDE_BLOCK_V1).unwrap();
+    let link = dir.path().join("CLAUDE.md");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    assert_eq!(
+        upgrade_global_claude_block(&link).unwrap(),
+        BlockUpgrade::Customized
+    );
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), GLOBAL_CLAUDE_BLOCK_V1);
+}
+
+#[cfg(unix)]
+#[test]
+fn write_atomic_keeps_the_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    fs::write(&path, "old").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    write_atomic(&path, "new").unwrap();
+
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn write_atomic_does_not_share_its_temp_path_with_another_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    // Another process mid-write holds the shared temp name.
+    fs::create_dir(dir.path().join(".CLAUDE.md.mynd-tmp")).unwrap();
+
+    write_atomic(&path, "mine").unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+}

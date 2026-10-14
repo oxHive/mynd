@@ -254,8 +254,13 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-    let tmp = parent.join(format!(".{file_name}.mynd-tmp"));
+    // Per-process name: the MCP server and the session hook can start together
+    // and both write the same file.
+    let tmp = parent.join(format!(".{file_name}.{}.mynd-tmp", std::process::id()));
     std::fs::write(&tmp, contents)?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        std::fs::set_permissions(&tmp, meta.permissions())?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -685,6 +690,11 @@ pub(crate) fn upgrade_global_claude_block(path: &Path) -> Result<BlockUpgrade> {
         .iter()
         .any(|b| b.trim_end() == block)
     {
+        return Ok(BlockUpgrade::Customized);
+    }
+    // A symlinked file belongs to a dotfiles manager; renaming over it would
+    // replace the link with a plain file. Leave it for `mynd init` to explain.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         return Ok(BlockUpgrade::Customized);
     }
     write_atomic(path, &splice_block(&existing, start, end))?;
