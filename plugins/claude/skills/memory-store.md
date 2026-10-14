@@ -25,7 +25,7 @@ The home is the index memory this one is filed under.
 
 1. The memory has no `project:*` tag and is not going to the org layer (for example a personal preference): it needs no home. Skip to step 5 (Pick tags).
 2. Find the root. For the workspace layer it is the memory tagged `role:root` and `project:<name>`; for the org layer (`layer: "org"`) it is the org-layer memory tagged `role:root` and `project:<name>`, or, for an org memory with no project tag, the org-layer `role:root` memory with no `project:*` tag.
-   - The root is already in context (session start injected it under a `## root: <title> (<id>)` heading or marked it `root: true`, or you recalled it earlier this session): use it as it is.
+   - The root is already in context (session start injected it under a `## root: <title> (<id>)` heading, `(<id>, org)` for a root in the org store, or marked it `root: true`, or you recalled it earlier this session): use it as it is.
    - Otherwise: `memory_search` with those tags, then `memory_recall` the match by id.
 3. Read the root's pointer lines, `[pointer text](child:mem_x)`. Pick the one whose text covers this content. If that target is an index (`role:index`), `memory_recall` it and repeat this step on its pointers. Recall only the index on your path.
 4. Stop at the most specific index that fits. That index is the home. It must be in the same layer's store as the new memory: an org memory gets an org home, a workspace memory a workspace home.

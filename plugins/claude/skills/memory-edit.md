@@ -28,6 +28,7 @@ Content, title, tags, or a move to another index. Wait for the answer. For a tag
 Work out every write before making any:
 
 - **Content or title change:** compare the new content with the home pointer. The pointer no longer matches (a fact in it changed, or the memory now covers more or less): draft a new pointer, one line of roughly 10 to 30 words with no `]`, stating what the memory covers, its key facts, and when to open it. Plan a replacement of that one line in the home.
+- **Any new home** (a move, or the new place for a child that loses its line): it must be in the same store as the memory it will hold; compare the `layer` that `memory_recall` shows for both. An index in the other store cannot be its home: say so and ask for another.
 - **Move to index Y:** plan two writes in this order: first append `- [pointer](child:<this id>)` to Y, then remove this memory's line from the old home. Adding first means a failure in between leaves two homes, never none.
 - **The memory is an index (`role:index` or `role:root`) and the change removes a `child:` pointer line:** name the memory that would lose its home and ask where it goes: another index, the root, or deletion of that memory too. Plan the line removal only together with that memory's new home, which is written first.
 - **A tag change removes `role:index` while the content still has `child:` pointers:** keep `role:index` and explain why.
@@ -35,10 +36,13 @@ Work out every write before making any:
 
 ### 5. Confirm, then apply
 
-Show every planned write: the memory's changed fields, and for each other memory touched, the exact line added, removed or replaced. Wait for confirmation, then apply in the planned order:
+Show every planned write: the memory's changed fields, and for each other memory touched, the exact line added, removed or replaced. Wait for confirmation, then apply in this order, so a failure part way never leaves a memory without a home:
 
-1. `memory_update` on the memory itself (skip when only its home changes). `tags` replaces the whole list: pass every tag you keep plus the changes.
-2. For each other memory touched: `memory_recall` it for its current full content, then `memory_update` it with that content changed only at the planned line.
+1. Every write that adds a pointer line to a new home.
+2. `memory_update` on the memory itself (skip when only its home changes). `tags` replaces the whole list: pass every tag you keep plus the changes.
+3. Every other write: a pointer line removed or replaced.
+
+For each write to another memory, `memory_recall` it first for its current full content, then `memory_update` it with that content changed only at the planned line.
 
 ### 6. Report
 
