@@ -175,6 +175,7 @@ pub fn router(
     let router = Router::new()
         .route("/api/v1/memories", get(list_memories).post(create_memory))
         .route("/api/v1/memories/count-tokens", post(count_tokens))
+        .route("/api/v1/projects/{name}/tree", get(project_tree))
         .route(
             "/api/v1/memories/all",
             axum::routing::delete(delete_all_memories),

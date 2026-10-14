@@ -12,3 +12,5 @@ export const exportMemories = () => request('GET', '/api/v1/export')
 export const importMemories = (body) => request('POST', '/api/v1/import', body)
 export const getStatus = () => request('GET', '/api/v1/status')
 export const countTokens = (body) => request('POST', '/api/v1/memories/count-tokens', body)
+export const getProjectTree = (name, layer = 'workspace') =>
+  request('GET', `/api/v1/projects/${encodeURIComponent(name)}/tree?layer=${layer}`)
