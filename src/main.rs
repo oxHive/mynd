@@ -13,7 +13,8 @@ fn main() -> Result<()> {
     oxmynd::dir_migrate::run_startup_migration();
     match cli.command {
         None => run_server(),
-        Some(Command::Init) => cli::cmd_init(),
+        Some(Command::Init { print_block: true }) => cli::cmd_print_block(),
+        Some(Command::Init { .. }) => cli::cmd_init(),
         Some(Command::Status { plain }) => cli::cmd_status(plain),
         Some(Command::Up { headless, plain }) => run_up(headless, plain),
         Some(Command::Dashboard { open }) => run_dashboard(open),

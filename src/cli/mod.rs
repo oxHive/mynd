@@ -14,7 +14,12 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Scaffold .mynd.toml + CLAUDE.md integration for this project
-    Init,
+    Init {
+        /// Print the current ~/.claude/CLAUDE.md memory block and exit, for
+        /// merging into a customized one by hand
+        #[arg(long)]
+        print_block: bool,
+    },
     /// Show config and preview what session start will inject
     Status {
         /// Force plain-text output even on a real terminal
