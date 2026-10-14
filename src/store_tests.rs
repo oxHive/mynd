@@ -2670,6 +2670,28 @@ async fn rewriting_a_memory_keeps_a_rejected_content_edge_rejected() {
 }
 
 #[tokio::test]
+async fn a_link_to_a_memory_that_arrives_later_gets_its_edge() {
+    // A hive pull can apply an index before the child it points to; the
+    // child's arrival must still create the index's child edge.
+    let (s, _dir) = make_store().await;
+    let content = format!("- [the child](child:{})", hid(2));
+    s.store(&test_row(&hid(1), "index", &content, &[]))
+        .await
+        .unwrap();
+    s.store(&test_row(&hid(2), "child", "c", &[]))
+        .await
+        .unwrap();
+
+    let edges = s.list_edges(Some(&hid(1))).await.unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|e| e.source_id == hid(1) && e.target_id == hid(2) && e.relationship == "child"),
+        "{edges:?}"
+    );
+}
+
+#[tokio::test]
 async fn hive_apply_accepts_a_memory_over_max_content_tokens() {
     // store_with_parent lets a parent grow past the limit; a peer must still
     // apply it, or every pull round would abort on it.
