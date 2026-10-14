@@ -2805,3 +2805,83 @@ fn find_owning_falls_back_to_org_store_and_reports_true_miss() {
     })
     .unwrap();
 }
+
+#[test]
+fn upgrade_global_claude_block_replaces_a_known_old_block_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    fs::write(
+        &path,
+        format!("# My rules\n\nkeep me\n\n{GLOBAL_CLAUDE_BLOCK_V1}\n# After\n\nkeep me too\n"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        upgrade_global_claude_block(&path).unwrap(),
+        BlockUpgrade::Upgraded
+    );
+    let gc = fs::read_to_string(&path).unwrap();
+    assert!(
+        gc.starts_with("# My rules\n\nkeep me\n\n# Mynd Memory System"),
+        "{gc}"
+    );
+    assert!(gc.contains("## Reading memory: navigate from the root"));
+    assert!(gc.contains("# After\n\nkeep me too"));
+    assert!(!gc.contains('\u{2014}'), "the new block has no em dash");
+    assert_eq!(
+        upgrade_global_claude_block(&path).unwrap(),
+        BlockUpgrade::Current
+    );
+}
+
+#[test]
+fn upgrade_global_claude_block_leaves_a_customized_block_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    let custom = format!("{GLOBAL_CLAUDE_BLOCK_V1}\nAlso: always answer in German.\n");
+    fs::write(&path, &custom).unwrap();
+
+    assert_eq!(
+        upgrade_global_claude_block(&path).unwrap(),
+        BlockUpgrade::Customized
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), custom);
+
+    let (_, status) = ensure_global_claude_block(&path).unwrap();
+    assert_eq!(status, "outdated");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        custom,
+        "still untouched"
+    );
+}
+
+#[test]
+fn upgrade_global_claude_block_reports_absent_without_creating_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    assert_eq!(
+        upgrade_global_claude_block(&path).unwrap(),
+        BlockUpgrade::Absent
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn ensure_global_claude_block_upgrades_a_known_old_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CLAUDE.md");
+    fs::write(&path, GLOBAL_CLAUDE_BLOCK_V1).unwrap();
+    let (_, status) = ensure_global_claude_block(&path).unwrap();
+    assert_eq!(status, "updated");
+    assert_eq!(fs::read_to_string(&path).unwrap(), GLOBAL_CLAUDE_BLOCK);
+}
+
+#[test]
+fn init_print_block_flag_parses() {
+    let cli = Cli::try_parse_from(["mynd", "init", "--print-block"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Init { print_block: true })
+    ));
+}

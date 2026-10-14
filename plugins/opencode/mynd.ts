@@ -6,13 +6,14 @@ import { homedir } from "node:os"
 const MYND_INSTRUCTIONS = `# Mynd Memory System
 
 You have access to Mynd via MCP tools: memory_store, memory_recall,
-memory_search, memory_update, memory_delete, memory_store_edge, mynd_session_start.
+memory_search, memory_update, memory_delete, memory_store_edge,
+memory_get_edges, memory_tree, mynd_session_start.
 
 At the start of every session, before doing anything else:
 
 1. Check if .mynd.toml exists in the project root.
 2. If it exists, call mynd_session_start with the project root path immediately.
-3. Incorporate the returned context silently -- do not narrate it.
+3. Incorporate the returned context silently: do not narrate it.
 
 After calling mynd_session_start:
 
@@ -20,6 +21,8 @@ After calling mynd_session_start:
   due to token budget. Run mynd status to review."
 - If any skipped entry has reason not_found, mention once which recalls were not
   found so the user can check their .mynd.toml.
+- If roots_missing is true, say in your first reply: "This project has no
+  memory index yet. Run /memory-audit to build one."
 - Then proceed normally.
 
 If .mynd.toml does not exist:
@@ -29,10 +32,32 @@ If .mynd.toml does not exist:
 - If the user seems to be starting a new project, suggest: "Run mynd init
   to set up memory hooks for this project."
 
-## Suggest storing -- never auto-store
+## Reading memory: navigate from the root
+
+The project root (the entry marked root at session start) is a map. Each
+[pointer text](child:mem_x) line says what that memory holds.
+
+- To answer from memory, follow only the pointer whose text matches the task:
+  memory_recall it by id, and repeat inside an index. Stop once you have what
+  you need; a pointer's text alone may already answer the question.
+- Given a title, an id, or a precise fact to look up: memory_recall or
+  memory_search directly instead of walking the tree.
+- Another project: memory_search with tags ["role:root", "project:<name>"],
+  then walk down from that root.
+- An index already in this session's context is never fetched again.
+- Any recalled memory, leaf or index, may hold [text](mem_x) cross-references.
+  Follow one only when its text names what the task still needs.
+
+## Writing memory
+
+New project memories need a home in the tree: use /memory-store, which picks
+the index and writes the pointer. Change memories with /memory-edit, which
+keeps their pointers accurate.
+
+## Suggest storing, never auto-store
 
 When the user shares something worth persisting (preferences, project context,
-design decisions), suggest: "That seems worth remembering -- should I store it?"
+design decisions), suggest: "That seems worth remembering. Should I store it?"
 Wait for explicit confirmation before calling memory_store.
 `
 
