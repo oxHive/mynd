@@ -2885,3 +2885,22 @@ fn init_print_block_flag_parses() {
         Some(Command::Init { print_block: true })
     ));
 }
+
+#[test]
+fn render_session_start_flags_a_missing_root_even_when_nothing_loaded() {
+    let mut result = sample_result(false, false);
+    result.roots_missing = true;
+    let out = render_session_start(&result, false);
+    assert!(
+        out.contains("mynd: this project has no root index yet; run /memory-audit to build one"),
+        "{out}"
+    );
+}
+
+#[test]
+fn project_toml_does_not_suggest_bulk_loading_the_project() {
+    let t = project_toml("demo");
+    assert!(!t.contains("tag:project:demo"), "{t}");
+    assert!(t.contains("root index loads automatically"), "{t}");
+    toml::from_str::<toml::Value>(&t).expect("template stays valid TOML");
+}

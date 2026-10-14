@@ -206,7 +206,7 @@ pub(crate) fn render_session_start(
     if json {
         return serde_json::to_string_pretty(&result.to_json()).unwrap_or_default();
     }
-    if result.loaded.is_empty() && result.skipped.is_empty() {
+    if result.loaded.is_empty() && result.skipped.is_empty() && !result.roots_missing {
         return String::new();
     }
     use crate::prompt_data::{DATA_NOTICE, neutralize_context_tags, single_line};
@@ -235,6 +235,9 @@ pub(crate) fn render_session_start(
         ));
     }
     out.push_str("</mynd-context>\n");
+    if result.roots_missing {
+        out.push_str("mynd: this project has no root index yet; run /memory-audit to build one\n");
+    }
     for s in &result.skipped {
         out.push_str(&format!(
             "mynd: skipped recall \"{}\" ({})\n",
