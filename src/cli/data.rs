@@ -131,7 +131,7 @@ fn cmd_export(output: Option<PathBuf>) -> Result<()> {
 fn cmd_import(input: PathBuf) -> Result<()> {
     block_on(async {
         let text = std::fs::read_to_string(&input)?;
-        let mut body: ImportBody = serde_json::from_str(&text)?;
+        let body: ImportBody = serde_json::from_str(&text)?;
         let store = open_store().await?;
         crate::api::transfer::validate_import_memories(
             &store,
@@ -142,20 +142,15 @@ fn cmd_import(input: PathBuf) -> Result<()> {
                     m.content.as_str(),
                     m.layer.as_str(),
                     m.memory_type.as_str(),
-                    m.tags.as_slice(),
                 )
             }),
         )
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-        // Non-roots first, so a batch that moves a root claim drops the old
-        // one before the new one is checked.
-        body.memories
-            .sort_by_key(|m| crate::store::root_scope(&m.tags).is_some());
         let mut mem_count = 0usize;
         for m in &body.memories {
             store
-                .store(&crate::store::NewMemoryRow {
+                .restore(&crate::store::NewMemoryRow {
                     id: &m.id,
                     title: &m.title,
                     content: &m.content,
@@ -172,19 +167,17 @@ fn cmd_import(input: PathBuf) -> Result<()> {
             if !["active", "pending", "rejected"].contains(&e.status.as_str()) {
                 continue;
             }
-            if matches!(
-                store
-                    .create_edge_with_status(
-                        &e.source_id,
-                        &e.target_id,
-                        &e.relationship,
-                        &e.status,
-                        e.link_text.as_deref(),
-                        e.reason.as_deref(),
-                    )
-                    .await?,
-                crate::model::EdgeCreate::Created(_)
-            ) {
+            if store
+                .import_edge(
+                    &e.source_id,
+                    &e.target_id,
+                    &e.relationship,
+                    &e.status,
+                    e.link_text.as_deref(),
+                    e.reason.as_deref(),
+                )
+                .await?
+            {
                 edge_count += 1;
             }
         }
