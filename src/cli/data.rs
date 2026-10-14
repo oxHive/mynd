@@ -131,7 +131,7 @@ fn cmd_export(output: Option<PathBuf>) -> Result<()> {
 fn cmd_import(input: PathBuf) -> Result<()> {
     block_on(async {
         let text = std::fs::read_to_string(&input)?;
-        let body: ImportBody = serde_json::from_str(&text)?;
+        let mut body: ImportBody = serde_json::from_str(&text)?;
         let store = open_store().await?;
         crate::api::transfer::validate_import_memories(
             &store,
@@ -148,6 +148,10 @@ fn cmd_import(input: PathBuf) -> Result<()> {
         )
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
+        // Non-roots first, so a batch that moves a root claim drops the old
+        // one before the new one is checked.
+        body.memories
+            .sort_by_key(|m| crate::store::root_scope(&m.tags).is_some());
         let mut mem_count = 0usize;
         for m in &body.memories {
             store

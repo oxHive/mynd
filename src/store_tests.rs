@@ -2622,6 +2622,54 @@ async fn store_with_parent_flags_an_oversized_parent_but_still_writes() {
 }
 
 #[tokio::test]
+async fn an_index_oversized_by_pointers_stays_editable_but_its_own_text_is_limited() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "root", "short", &[]))
+        .await
+        .unwrap();
+    s.set_meta("max_content_tokens", "12").await.unwrap();
+    for n in 2..5 {
+        s.store_with_parent(
+            &test_row(&hid(n), "c", "x", &[]),
+            &hid(1),
+            "a long pointer describing the child memory in many many words",
+        )
+        .await
+        .unwrap();
+    }
+    let parent = s.recall_by_id(&hid(1)).await.unwrap().unwrap();
+    let edited = parent.content.replace("short", "short, edited");
+    assert!(
+        s.update(&hid(1), "root", &edited, &[]).await.unwrap(),
+        "pointer lines don't count toward the limit"
+    );
+    let padded = parent.content.replace("short", &"word ".repeat(50));
+    assert!(s.update(&hid(1), "root", &padded, &[]).await.is_err());
+}
+
+#[tokio::test]
+async fn rewriting_a_memory_keeps_a_rejected_content_edge_rejected() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "target", "t", &[]))
+        .await
+        .unwrap();
+    let content = format!("see [the target]({})", hid(1));
+    s.store(&test_row(&hid(2), "index", &content, &[]))
+        .await
+        .unwrap();
+    let edge_id = s.list_edges(Some(&hid(2))).await.unwrap()[0].id.clone();
+    s.set_edge_status(&edge_id, "rejected").await.unwrap();
+
+    s.store_with_parent(&test_row(&hid(3), "c", "x", &[]), &hid(2), "child")
+        .await
+        .unwrap();
+
+    let edges = s.list_edges(Some(&hid(2))).await.unwrap();
+    let e = edges.iter().find(|e| e.id == edge_id).unwrap();
+    assert_eq!(e.status, "rejected");
+}
+
+#[tokio::test]
 async fn hive_apply_accepts_a_memory_over_max_content_tokens() {
     // store_with_parent lets a parent grow past the limit; a peer must still
     // apply it, or every pull round would abort on it.
