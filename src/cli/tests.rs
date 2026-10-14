@@ -128,6 +128,14 @@ fn render_session_start_text_wraps_in_mynd_context_tags() {
 }
 
 #[test]
+fn render_session_start_text_marks_a_root_with_its_id() {
+    let mut result = sample_result(true, false);
+    result.loaded[0].is_root = true;
+    let out = render_session_start(&result, false);
+    assert!(out.contains("\n## root: pref a (mem_1)\n"), "{out}");
+}
+
+#[test]
 fn render_session_start_neutralizes_block_tags_and_keeps_titles_on_one_line() {
     use crate::session::{LoadedEntry, SessionStartResult};
     let result = SessionStartResult {
