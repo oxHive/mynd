@@ -1271,7 +1271,7 @@ impl Mynd {
     }
 
     #[tool(
-        description = "Get a project's memory index tree without any content: the root, every memory reachable through [pointer](child:mem_x) links, and the project's memories that walk does not reach (reachable: false): ones nothing points to, and subtrees cut off from the root. Each node lists its role, token cost, homes and outgoing pointers. Use to audit structure or see a project's layout cheaply before deciding what to recall."
+        description = "Get a project's memory index tree without any content: the root, every memory reachable through [pointer](child:mem_x) links, and the project's memories that walk does not reach (reachable: false): ones nothing points to, and subtrees cut off from the root. Each node lists its role, token cost, homes, outgoing pointers and outgoing [text](mem_x) cross-references. Use to audit structure or see a project's layout cheaply before deciding what to recall."
     )]
     async fn memory_tree(
         &self,

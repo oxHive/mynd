@@ -65,7 +65,8 @@ pub struct DeleteImpact {
     pub orphaned_children: Vec<RelatedMemory>,
 }
 
-/// One outgoing `[text](child:target_id)` pointer, in content order.
+/// One outgoing `[text](child:target_id)` pointer or `[text](target_id)`
+/// cross-reference, in content order.
 #[derive(Debug, Clone, Serialize)]
 pub struct TreePointer {
     pub target_id: String,
@@ -93,6 +94,12 @@ pub struct TreeNode {
     pub broken_pointers: Vec<String>,
     /// Ids this memory's content links as `parent:` (deprecated form).
     pub parent_links: Vec<String>,
+    /// Bare `[text](mem_x)` links to memories in this store. Any memory may
+    /// hold them; they are never a home.
+    pub cross_refs: Vec<TreePointer>,
+    /// Ids this memory's content links bare that are not in this store
+    /// (deleted, or living in the other store).
+    pub broken_cross_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1179,6 +1186,8 @@ impl SqliteStore {
         let mut homes: HashMap<String, Vec<String>> = HashMap::new();
         let mut broken: HashMap<&str, Vec<String>> = HashMap::new();
         let mut parent_links: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut cross_refs: HashMap<&str, Vec<TreePointer>> = HashMap::new();
+        let mut broken_cross: HashMap<&str, Vec<String>> = HashMap::new();
         for m in &all {
             for (text, kind, target) in parse_relationship_links(&m.id, &m.content) {
                 match kind.as_str() {
@@ -1194,7 +1203,14 @@ impl SqliteStore {
                     }
                     "child" => broken.entry(m.id.as_str()).or_default().push(target),
                     "parent" => parent_links.entry(m.id.as_str()).or_default().push(target),
-                    _ => {}
+                    _ if by_id.contains_key(target.as_str()) => cross_refs
+                        .entry(m.id.as_str())
+                        .or_default()
+                        .push(TreePointer {
+                            target_id: target,
+                            text,
+                        }),
+                    _ => broken_cross.entry(m.id.as_str()).or_default().push(target),
                 }
             }
         }
@@ -1246,6 +1262,8 @@ impl SqliteStore {
                     tags: m.tags.clone(),
                     broken_pointers: broken.get(id.as_str()).cloned().unwrap_or_default(),
                     parent_links: parent_links.get(id.as_str()).cloned().unwrap_or_default(),
+                    cross_refs: cross_refs.get(id.as_str()).cloned().unwrap_or_default(),
+                    broken_cross_refs: broken_cross.get(id.as_str()).cloned().unwrap_or_default(),
                 })
             })
             .collect();

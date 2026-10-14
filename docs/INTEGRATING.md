@@ -154,13 +154,15 @@ A project's index tree, with no memory content: cheap enough to call before deci
       "updated_at": 1760000000,
       "tags": ["role:root", "project:mynd"],
       "broken_pointers": [],
-      "parent_links": []
+      "parent_links": [],
+      "cross_refs": [],
+      "broken_cross_refs": []
     }
   ]
 }
 ```
 
-Nodes reachable from the root come first in breadth-first order, then every `project:<name>` memory the walk did not reach (`reachable: false`), sorted by title: one nothing points to, or one in a subtree cut off from the root. A node with more than one entry in `homes` is linked as a `child:` from several memories. `broken_pointers` lists `child:` links in a node's content whose target is not in this store (deleted, or in the other store); `parent_links` lists deprecated `parent:` links.
+Nodes reachable from the root come first in breadth-first order, then every `project:<name>` memory the walk did not reach (`reachable: false`), sorted by title: one nothing points to, or one in a subtree cut off from the root. A node with more than one entry in `homes` is linked as a `child:` from several memories. `broken_pointers` lists `child:` links in a node's content whose target is not in this store (deleted, or in the other store); `parent_links` lists deprecated `parent:` links. `cross_refs` lists bare `[text](mem_x)` cross-references to memories in this store, which any memory may hold and which never make a home; `broken_cross_refs` lists bare links whose target is not in this store.
 
 ---
 

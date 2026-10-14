@@ -40,7 +40,7 @@ Read the pointer lines of the home index from step 3. One already describes this
 
 ### 5. Pick tags
 
-Call `tag_namespaces_list`. Reuse existing `namespace:value` tags, and an existing namespace before a new bare tag. A namespace with `values_mode: "fixed"` accepts only its listed values. Add 1 to 3 tags beyond the project tag. A leaf memory gets no `role` tag; `part:*` is deprecated and never used.
+Call `tag_namespaces_list`. Reuse existing `namespace:value` tags, and an existing namespace before a new bare tag. A namespace with `values_mode: "fixed"` accepts only its listed values. Add 1 to 3 tags beyond the project tag. A memory whose content holds `child:` pointer lines is an index and gets `role:index`; any other memory gets no `role` tag, however many cross-references it holds. `part:*` is deprecated and never used.
 
 ### 6. Write the pointer
 
@@ -76,7 +76,8 @@ The response has `parent_oversized: true`: tell the user the home index is now o
 
 - Every link carries a real id returned by a tool: `[text](child:mem_x)` makes a home pointer, `[text](mem_x)` a cross-reference.
 - A `[[title]]` wikilink, or a link with a title or slug where the id goes, creates no connection at all.
-- Add a cross-reference inline only where the content genuinely refers to another memory.
+- Any memory may hold cross-references, a leaf as well as an index. A cross-reference never makes a home and needs no `role` tag. It may point to a memory in either store.
+- Add a cross-reference only where the content genuinely refers to another memory. Its text names what that memory covers, so a reader can decide from the text alone whether to open it; never "see here", "this", "link" or a bare id. On a line of its own it follows the pointer rule in step 6.
 
 ## Rules
 

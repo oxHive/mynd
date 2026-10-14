@@ -2949,6 +2949,43 @@ async fn memory_tree_reports_broken_pointers_and_legacy_parent_links() {
 }
 
 #[tokio::test]
+async fn memory_tree_lists_cross_references_held_by_a_leaf() {
+    let (s, _dir) = make_store().await;
+    let (root, a, b, gone) = (hid(1), hid(2), hid(3), hid(9));
+    s.store(&test_row(
+        &root,
+        "root",
+        &format!("- [b: what it holds](child:{b})"),
+        &["role:root".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(&b, "b", "c", &["project:mynd".into()]))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &a,
+        "a",
+        &format!("uses [b's replica settings]({b}), once [an old note]({gone})"),
+        &["project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    let tree = s.memory_tree("mynd").await.unwrap();
+    let node = tree.nodes.iter().find(|n| n.id == a).unwrap();
+    assert_eq!(node.cross_refs.len(), 1);
+    assert_eq!(node.cross_refs[0].target_id, b);
+    assert_eq!(node.cross_refs[0].text, "b's replica settings");
+    assert_eq!(node.broken_cross_refs, vec![gone]);
+    assert!(
+        node.pointers.is_empty(),
+        "a cross-reference is not a pointer"
+    );
+    let b_node = tree.nodes.iter().find(|n| n.id == b).unwrap();
+    assert_eq!(b_node.homes, vec![root], "a cross-reference is not a home");
+}
+
+#[tokio::test]
 async fn memory_tree_without_a_root_lists_project_memories_unreached_by_title() {
     let (s, _dir) = make_store().await;
     let p: Vec<String> = vec!["project:mynd".into()];
