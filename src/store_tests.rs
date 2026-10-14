@@ -2645,6 +2645,11 @@ async fn an_index_oversized_by_pointers_stays_editable_but_its_own_text_is_limit
     );
     let padded = parent.content.replace("short", &"word ".repeat(50));
     assert!(s.update(&hid(1), "root", &padded, &[]).await.is_err());
+    let smuggled = format!("short\n- [{}](child:{})", "word ".repeat(70), hid(2));
+    assert!(
+        s.update(&hid(1), "root", &smuggled, &[]).await.is_err(),
+        "a pointer-shaped line longer than any real pointer still counts"
+    );
 }
 
 #[tokio::test]

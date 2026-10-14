@@ -28,7 +28,7 @@ The home is the index memory this one is filed under.
    - The root is already in context (session start injected it under a `## root: <title> (<id>)` heading, `(<id>, org)` for a root in the org store, or marked it `root: true`, or you recalled it earlier this session): use it as it is.
    - Otherwise: `memory_search` with those tags, then `memory_recall` the match by id.
 3. Read the root's pointer lines, `[pointer text](child:mem_x)`. Pick the one whose text covers this content. If that target is an index (`role:index`), `memory_recall` it and repeat this step on its pointers. Recall only the index on your path.
-4. Stop at the most specific index that fits. That index is the home. It must be in the same layer's store as the new memory: an org memory gets an org home, a workspace memory a workspace home.
+4. Stop at the most specific index that fits. That index is the home. It must be in the same layer's store as the new memory: an org memory gets an org home, a workspace or personal memory a home in the workspace store.
 5. No pointer fits at some level: propose two options and let the user pick: the current index as the home, or a new sub-index under it (title, a one-line intro, its own pointer). A new sub-index is stored first, with `role:index`, using step 6 (Write the pointer) and step 7 (Confirm, then store) for its own pointer and parent.
 6. No root exists:
    - `memory_search` with `tags: ["project:<name>"]` returns nothing: offer to create the root first, titled `<name> root`, tagged `role:root` and `project:<name>`, with content `# <name>` plus one line on what the project is. It is stored without `parent_id`.

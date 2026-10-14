@@ -186,9 +186,13 @@ static RELATIONSHIP_LINK_RE: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     regex::Regex::new(r"\[([^\]]+)\]\((?:(parent|child|sibling):)?(mem_[0-9a-f]{32})\)").unwrap()
 });
 
-/// A whole line as `append_pointer` writes it.
+/// A whole line as `append_pointer` writes it, text capped at
+/// `MAX_POINTER_CHARS` so the size guard can't be bypassed through it.
 static POINTER_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^- \[[^\]]+\]\(child:mem_[0-9a-f]{32}\)\s*$").unwrap()
+    regex::Regex::new(&format!(
+        r"^- \[[^\]]{{1,{MAX_POINTER_CHARS}}}\]\(child:mem_[0-9a-f]{{32}}\)\s*$"
+    ))
+    .unwrap()
 });
 
 /// Extract `[phrase](kind:mem_xxx)` relationship links from memory content
@@ -332,7 +336,8 @@ async fn insert_memory_tx(
 
     // Links to this id made while it did not exist got no edge (a hive pull
     // can apply an index before its child): re-sync the memories holding one.
-    // ponytail: content scan per new row; index links if stores grow large.
+    // An overwrite already had its edges, so only a new row needs the scan.
+    // ponytail: content scan per insert; index links if stores grow large.
     if is_new {
         let mut rows = tx
             .query(
