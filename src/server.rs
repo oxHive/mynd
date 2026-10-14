@@ -302,6 +302,20 @@ impl Mynd {
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))
     }
 
+    /// The store that holds memories of `layer`: the org store for `org`,
+    /// the primary store (workspace and personal) otherwise.
+    fn store_for_layer(&self, layer: &crate::model::Layer) -> Result<&Arc<SqliteStore>, ErrorData> {
+        if *layer != crate::model::Layer::Org {
+            return Ok(&self.store);
+        }
+        self.org_store.as_ref().ok_or_else(|| {
+            ErrorData::invalid_params(
+                "org layer not configured: set [org_sync] in the global config",
+                None,
+            )
+        })
+    }
+
     /// Tries the primary store first, then the org store if configured.
     /// Returns the store that has a memory with this id, or `None` if
     /// neither does. Used by every ID-addressed tool (recall/update/delete)
@@ -344,16 +358,7 @@ impl Mynd {
             .parse::<crate::model::MemoryType>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        let target_store = if parsed_layer == crate::model::Layer::Org {
-            self.org_store.as_ref().ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "org layer not configured — set [org_sync] in the global config",
-                    None,
-                )
-            })?
-        } else {
-            &self.store
-        };
+        let target_store = self.store_for_layer(&parsed_layer)?;
 
         self.check_content_size(target_store, &p.title, &p.content)
             .await?;
@@ -631,6 +636,10 @@ impl Mynd {
 
         self.check_content_size(owning_store, title, content)
             .await?;
+        owning_store
+            .check_root_unique(&p.id, tags)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         let updated = owning_store
             .update(&p.id, title, content, tags)
@@ -1015,17 +1024,8 @@ impl Mynd {
         let parsed = layer
             .parse::<crate::model::Layer>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        let store = if parsed == crate::model::Layer::Org {
-            self.org_store.as_ref().ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "org layer not configured: set [org_sync] in the global config",
-                    None,
-                )
-            })?
-        } else {
-            &self.store
-        };
-        let tree = store
+        let tree = self
+            .store_for_layer(&parsed)?
             .memory_tree(project)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;

@@ -241,10 +241,10 @@ async fn load_roots(
 }
 
 /// Run the configured session-start recalls under the token budget.
-/// Personal/workspace recalls (from `store`) fill the budget first, exactly
-/// as before this function gained org support. Org recalls (from
-/// `org_store`, if present) then spend whatever budget remains — org never
-/// displaces personal/workspace. A missing `org_store`, or any error running
+/// The project's roots (see `load_roots`, org roots included) spend budget
+/// first, then personal/workspace recalls (from `store`). Org recalls (from
+/// `org_store`, if present) then spend whatever budget remains: an org
+/// recall never displaces a personal/workspace one. A missing `org_store`, or any error running
 /// org recalls, is treated as "nothing more to load" rather than a failure.
 pub async fn execute_session_start(
     config: &MyndConfig,

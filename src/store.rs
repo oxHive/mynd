@@ -186,9 +186,13 @@ static RELATIONSHIP_LINK_RE: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     regex::Regex::new(r"\[([^\]]+)\]\((?:(parent|child|sibling):)?(mem_[0-9a-f]{32})\)").unwrap()
 });
 
-/// A whole line as `append_pointer` writes it.
+/// A whole line as `append_pointer` writes it, text capped at
+/// `MAX_POINTER_CHARS` so the size guard can't be bypassed through it.
 static POINTER_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^- \[[^\]]+\]\(child:mem_[0-9a-f]{32}\)\s*$").unwrap()
+    regex::Regex::new(&format!(
+        r"^- \[[^\]]{{1,{MAX_POINTER_CHARS}}}\]\(child:mem_[0-9a-f]{{32}}\)\s*$"
+    ))
+    .unwrap()
 });
 
 /// Extract `[phrase](kind:mem_xxx)` relationship links from memory content
@@ -295,6 +299,12 @@ async fn insert_memory_tx(
     token_count: i64,
     hive_hash: &str,
 ) -> Result<()> {
+    let is_new = tx
+        .query("SELECT 1 FROM memories WHERE id = ?1", params![m.id])
+        .await?
+        .next()
+        .await?
+        .is_none();
     tx.execute(
         "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -326,19 +336,22 @@ async fn insert_memory_tx(
 
     // Links to this id made while it did not exist got no edge (a hive pull
     // can apply an index before its child): re-sync the memories holding one.
-    // ponytail: content scan per write; index links if stores grow large.
-    let mut rows = tx
-        .query(
-            "SELECT id, content FROM memories WHERE id != ?1 AND instr(content, ?1) > 0",
-            params![m.id],
-        )
-        .await?;
-    let mut linkers: Vec<(String, String)> = Vec::new();
-    while let Some(row) = rows.next().await? {
-        linkers.push((row.get(0)?, row.get(1)?));
-    }
-    for (id, content) in &linkers {
-        sync_relationship_edges(tx, id, content, now).await?;
+    // An overwrite already had its edges, so only a new row needs the scan.
+    // ponytail: content scan per insert; index links if stores grow large.
+    if is_new {
+        let mut rows = tx
+            .query(
+                "SELECT id, content FROM memories WHERE id != ?1 AND instr(content, ?1) > 0",
+                params![m.id],
+            )
+            .await?;
+        let mut linkers: Vec<(String, String)> = Vec::new();
+        while let Some(row) = rows.next().await? {
+            linkers.push((row.get(0)?, row.get(1)?));
+        }
+        for (id, content) in &linkers {
+            sync_relationship_edges(tx, id, content, now).await?;
+        }
     }
 
     journal_tx(tx, m.id, m.content, now).await
@@ -719,22 +732,27 @@ impl SqliteStore {
         m: &NewMemoryRow<'_>,
         updated_at: i64,
     ) -> Result<()> {
+        let (token_count, hive_hash) = self.prepare_row(m).await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
+        insert_memory_tx(&tx, m, updated_at, token_count, &hive_hash).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Validates `m`'s layer, type and tags and returns its token count and
+    /// hive content hash, ready for `insert_memory_tx`.
+    async fn prepare_row(&self, m: &NewMemoryRow<'_>) -> Result<(i64, String)> {
         m.layer.parse::<crate::model::Layer>()?;
         m.memory_type.parse::<crate::model::MemoryType>()?;
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
-        let now = updated_at;
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
-
         let hive_hash =
             compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
-        let _w = self.write().await;
-        let tx = self.begin().await?;
-        insert_memory_tx(&tx, m, now, token_count, &hive_hash).await?;
-        tx.commit().await?;
-        Ok(())
+        Ok((token_count, hive_hash))
     }
 
     /// Stores `m` and, in the same transaction, appends
@@ -752,19 +770,11 @@ impl SqliteStore {
         if parent_id == m.id {
             return Err(anyhow!("a memory cannot be its own parent"));
         }
-        m.layer.parse::<crate::model::Layer>()?;
-        m.memory_type.parse::<crate::model::MemoryType>()?;
-        validate_tag_format(m.tags)?;
-        validate_tags_against_registry(self, m.tags).await?;
+        let (token_count, hive_hash) = self.prepare_row(m).await?;
         self.check_content_size(m.title, m.content).await?;
         self.check_root_unique(m.id, m.tags).await?;
         let limit = self.max_content_tokens().await;
         let now = chrono_now();
-        let token_count = m
-            .token_count
-            .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
-        let hive_hash =
-            compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
 
         let _w = self.write().await;
         // Read the parent inside the IMMEDIATE transaction so no other writer,
