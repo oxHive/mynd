@@ -2670,6 +2670,28 @@ async fn rewriting_a_memory_keeps_a_rejected_content_edge_rejected() {
 }
 
 #[tokio::test]
+async fn a_link_to_a_memory_that_arrives_later_gets_its_edge() {
+    // A hive pull can apply an index before the child it points to; the
+    // child's arrival must still create the index's child edge.
+    let (s, _dir) = make_store().await;
+    let content = format!("- [the child](child:{})", hid(2));
+    s.store(&test_row(&hid(1), "index", &content, &[]))
+        .await
+        .unwrap();
+    s.store(&test_row(&hid(2), "child", "c", &[]))
+        .await
+        .unwrap();
+
+    let edges = s.list_edges(Some(&hid(1))).await.unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|e| e.source_id == hid(1) && e.target_id == hid(2) && e.relationship == "child"),
+        "{edges:?}"
+    );
+}
+
+#[tokio::test]
 async fn hive_apply_accepts_a_memory_over_max_content_tokens() {
     // store_with_parent lets a parent grow past the limit; a peer must still
     // apply it, or every pull round would abort on it.
@@ -2787,8 +2809,8 @@ async fn delete_impact_ignores_a_child_mention_that_is_not_a_link() {
 
 #[tokio::test]
 async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
-    // Hive pulls apply memories in id order, so a parent can land before its
-    // children and never get their edges. Content is the source of truth.
+    // Edges can be missing (a store written before the edge backfill, or a
+    // failed sync). Content is the source of truth.
     let (s, _dir) = make_store().await;
     let (idx, other_home, only_child, shared_child) = (hid(1), hid(2), hid(3), hid(4));
     s.store(&test_row(
@@ -2810,10 +2832,7 @@ async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
     for id in [&only_child, &shared_child] {
         s.store(&test_row(id, "child", "c", &[])).await.unwrap();
     }
-    assert!(
-        s.list_edges(Some(&idx)).await.unwrap().is_empty(),
-        "precondition: the parent-to-child edges were never created"
-    );
+    s.conn.execute("DELETE FROM edges", ()).await.unwrap();
 
     let impact = s.delete_impact(&idx).await.unwrap();
     assert_eq!(

@@ -221,9 +221,11 @@ pub(crate) fn render_session_start(
     for l in &result.loaded {
         let title = single_line(&neutralize_context_tags(&l.entry.title));
         // A root carries its id: it is the parent_id for memories filed
-        // directly under it.
+        // directly under it, and only for memories in the same store.
         let heading = if l.is_root {
-            format!("root: {title} ({})", l.entry.id)
+            let id = single_line(&neutralize_context_tags(&l.entry.id));
+            let layer = if l.entry.layer == "org" { ", org" } else { "" };
+            format!("root: {title} ({id}{layer})")
         } else {
             title
         };

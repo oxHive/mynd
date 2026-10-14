@@ -323,6 +323,24 @@ async fn insert_memory_tx(
     .await?;
 
     sync_relationship_edges(tx, m.id, m.content, now).await?;
+
+    // Links to this id made while it did not exist got no edge (a hive pull
+    // can apply an index before its child): re-sync the memories holding one.
+    // ponytail: content scan per write; index links if stores grow large.
+    let mut rows = tx
+        .query(
+            "SELECT id, content FROM memories WHERE id != ?1 AND instr(content, ?1) > 0",
+            params![m.id],
+        )
+        .await?;
+    let mut linkers: Vec<(String, String)> = Vec::new();
+    while let Some(row) = rows.next().await? {
+        linkers.push((row.get(0)?, row.get(1)?));
+    }
+    for (id, content) in &linkers {
+        sync_relationship_edges(tx, id, content, now).await?;
+    }
+
     journal_tx(tx, m.id, m.content, now).await
 }
 
