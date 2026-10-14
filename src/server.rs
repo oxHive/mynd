@@ -262,14 +262,24 @@ impl Mynd {
     }
 
     /// Spawns a best-effort push-on-change attempt after a successful
-    /// store()/update() call, if Hive Mode is enabled on this handle.
-    fn spawn_hive_push(&self, memory_id: &str) {
+    /// store()/update() call, if Hive Mode is enabled on this handle. Ids are
+    /// pushed one after another, in order: a peer only creates a content
+    /// link's edge when the target already exists there, so a child must
+    /// land before the parent that links to it.
+    fn spawn_hive_push(&self, memory_ids: &[&str]) {
         if let Some(identity) = &self.hive_identity {
-            tokio::spawn(crate::hive::sync_loop::push_memory_change_to_online_peers(
-                self.store.clone(),
-                identity.clone(),
-                memory_id.to_string(),
-            ));
+            let (store, identity) = (self.store.clone(), identity.clone());
+            let ids: Vec<String> = memory_ids.iter().map(|id| id.to_string()).collect();
+            tokio::spawn(async move {
+                for id in ids {
+                    crate::hive::sync_loop::push_memory_change_to_online_peers(
+                        store.clone(),
+                        identity.clone(),
+                        id,
+                    )
+                    .await;
+                }
+            });
         }
     }
 
@@ -347,6 +357,10 @@ impl Mynd {
 
         self.check_content_size(target_store, &p.title, &p.content)
             .await?;
+        target_store
+            .check_root_unique(&id, &p.tags)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         let parent = match (p.parent_id.as_deref(), p.pointer.as_deref()) {
             (None, None) => None,
@@ -408,12 +422,13 @@ impl Mynd {
             t.notify_one();
         }
         self.notify_change();
-        self.spawn_hive_push(&id);
         let mut out = json!({ "id": id, "title": title });
         if let Some((pid, _)) = parent {
-            self.spawn_hive_push(pid);
+            self.spawn_hive_push(&[&id, pid]);
             out["parent_id"] = json!(pid);
             out["parent_oversized"] = json!(parent_oversized);
+        } else {
+            self.spawn_hive_push(&[&id]);
         }
         Ok(CallToolResult::structured(out))
     }
@@ -623,7 +638,7 @@ impl Mynd {
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         if updated {
             self.notify_change();
-            self.spawn_hive_push(&p.id);
+            self.spawn_hive_push(&[&p.id]);
         }
         Ok(CallToolResult::structured(json!({
             "updated": updated,

@@ -2419,6 +2419,21 @@ async fn second_root_for_same_project_is_rejected_on_store_update_and_add_tags()
         .unwrap();
     assert!(s.update(&hid(3), "leaf", "c", &root_tags).await.is_err());
     assert!(s.add_tags(&hid(3), &["role:root".into()]).await.is_err());
+    assert!(
+        !s.update(&hid(9), "missing", "c", &root_tags).await.unwrap(),
+        "a missing id is not-found, not a root conflict"
+    );
+
+    // Dropping project:* from a root claims the org-wide scope, so a second
+    // project-less root is refused there too.
+    s.store(&test_row(&hid(5), "org-wide", "c", &["role:root".into()]))
+        .await
+        .unwrap();
+    assert!(
+        s.remove_tags(&hid(1), &["project:mynd".into()])
+            .await
+            .is_err()
+    );
 
     // Re-storing the root itself and a root for another project are fine.
     s.store(&test_row(&hid(1), "root", "c2", &root_tags))
@@ -2603,6 +2618,35 @@ async fn store_with_parent_flags_an_oversized_parent_but_still_writes() {
             .content
             .contains(&hid(2)),
         "the pointer is appended even when the parent ends up over the limit"
+    );
+}
+
+#[tokio::test]
+async fn hive_apply_accepts_a_memory_over_max_content_tokens() {
+    // store_with_parent lets a parent grow past the limit; a peer must still
+    // apply it, or every pull round would abort on it.
+    let (s, _dir) = make_store().await;
+    s.set_meta("max_content_tokens", "12").await.unwrap();
+    let incoming = MemoryEntry {
+        id: hid(1),
+        title: "big index".into(),
+        content: "word ".repeat(100),
+        tags: vec![],
+        created_at: 1,
+        updated_at: chrono_now(),
+        token_count: None,
+        layer: "workspace".into(),
+        memory_type: "project".into(),
+    };
+    assert_eq!(
+        s.apply_incoming_memory(&incoming, None).await.unwrap(),
+        ApplyOutcome::Applied
+    );
+    assert!(
+        s.store(&test_row(&hid(2), "local", &"word ".repeat(100), &[]))
+            .await
+            .is_err(),
+        "local writes keep the limit"
     );
 }
 

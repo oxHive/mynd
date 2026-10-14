@@ -2316,6 +2316,27 @@ async fn memory_store_rejects_bad_parent_args_without_writing() {
 }
 
 #[tokio::test]
+async fn memory_store_reports_a_second_root_as_invalid_params() {
+    let (hm, _dir) = test_mynd().await;
+    store_mem(&hm, "root", "# r", &["role:root", "project:mynd"], None).await;
+    let err = hm
+        .do_memory_store(MemoryStoreInput {
+            title: "root 2".to_string(),
+            content: "c".to_string(),
+            tags: vec!["role:root".to_string(), "project:mynd".to_string()],
+            token_count: None,
+            layer: None,
+            memory_type: None,
+            parent_id: None,
+            pointer: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert!(err.to_string().contains("already has a root"), "{err}");
+}
+
+#[tokio::test]
 async fn memory_store_rejects_a_parent_in_the_other_store() {
     let (hm, _p, _o) = test_mynd_with_org().await;
     let org_root = hm

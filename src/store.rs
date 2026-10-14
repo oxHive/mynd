@@ -689,7 +689,9 @@ impl SqliteStore {
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
         // Local writes only. The hive apply path calls store_with_timestamp
         // directly and must never be refused, or sync would wedge on a
-        // peer's root.
+        // peer's root or on a parent `store_with_parent` let grow past
+        // max_content_tokens.
+        self.check_content_size(m.title, m.content).await?;
         self.check_root_unique(m.id, m.tags).await?;
         self.store_with_timestamp(m, chrono_now()).await
     }
@@ -710,7 +712,6 @@ impl SqliteStore {
         m.memory_type.parse::<crate::model::MemoryType>()?;
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
-        self.check_content_size(m.title, m.content).await?;
         let now = updated_at;
         let token_count = m
             .token_count
@@ -968,10 +969,10 @@ impl SqliteStore {
     ) -> Result<bool> {
         validate_tag_format(tags)?;
         validate_tags_against_registry(self, tags).await?;
-        self.check_root_unique(id, tags).await?;
         let Some(current) = self.recall_by_id(id).await? else {
             return Ok(false);
         };
+        self.check_root_unique(id, tags).await?;
         self.check_content_size(title, content).await?;
         let now = chrono_now();
         let token_count = crate::budget::count_entry_tokens(title, content) as i64;
@@ -1052,6 +1053,8 @@ impl SqliteStore {
             .filter(|t| !removed_lower.contains(t))
             .cloned()
             .collect();
+        // Dropping project:* from a root turns it into an org-wide root claim.
+        self.check_root_unique(id, &remaining).await?;
         let now = chrono_now();
         let hive_hash = compute_hive_content_hash(
             &current.title,

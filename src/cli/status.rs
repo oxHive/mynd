@@ -219,9 +219,16 @@ pub(crate) fn render_session_start(
         result.max_tokens
     );
     for l in &result.loaded {
+        let title = single_line(&neutralize_context_tags(&l.entry.title));
+        // A root carries its id: it is the parent_id for memories filed
+        // directly under it.
+        let heading = if l.is_root {
+            format!("root: {title} ({})", l.entry.id)
+        } else {
+            title
+        };
         out.push_str(&format!(
-            "\n## {}\n{}\n",
-            single_line(&neutralize_context_tags(&l.entry.title)),
+            "\n## {heading}\n{}\n",
             neutralize_context_tags(&l.entry.content)
         ));
     }
