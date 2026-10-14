@@ -817,8 +817,8 @@ async fn get_tag_settings_returns_seeded_defaults_when_unset() {
 #[tokio::test]
 async fn tag_settings_round_trip_passes_the_guard_with_a_stale_stored_part_entry() {
     // A registry saved before the `part` description changed still holds the
-    // old entry; the settings GET must serve current defaults for predefined
-    // namespaces so the dashboard's unchanged re-save is not a 422.
+    // old entry. The guard accepts the stored copy, so the dashboard's
+    // unchanged re-save is not a 422 and nothing stored is silently dropped.
     let (store, dir) = test_store().await;
     let stale = json!({ "part": {
         "color": "#f0883e",
@@ -835,19 +835,31 @@ async fn tag_settings_round_trip_passes_the_guard_with_a_stale_stored_part_entry
 
     let (status, body) = req(app.clone(), "GET", "/api/v1/settings/tags", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body["namespaces"]["part"],
-        crate::store::default_tag_namespaces()["part"]
-    );
+    assert_eq!(body["namespaces"]["part"], stale["part"]);
 
     let (status, _) = req(
-        app,
+        app.clone(),
         "POST",
         "/api/v1/settings/tags",
         Some(body["namespaces"].clone()),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+
+    // Resetting it to the current default passes too; any other edit doesn't.
+    let mut namespaces = body["namespaces"].clone();
+    namespaces["part"] = crate::store::default_tag_namespaces()["part"].clone();
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/settings/tags",
+        Some(namespaces.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    namespaces["part"]["color"] = json!("#000000");
+    let (status, _) = req(app, "POST", "/api/v1/settings/tags", Some(namespaces)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -3378,6 +3390,58 @@ async fn import_rejects_a_root_that_conflicts_without_writing_anything() {
         1,
         "nothing from the import was written"
     );
+}
+
+#[tokio::test]
+async fn import_moves_a_root_claim_within_one_batch() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let root_tags = ["role:root".to_string(), "project:mynd".to_string()];
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_root_a",
+            title: "root a",
+            content: "c",
+            tags: &root_tags,
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_root_b", "title": "root b", "content": "c", "tags": ["role:root", "project:mynd"] },
+            { "id": "mem_root_a", "title": "root a", "content": "c", "tags": ["project:mynd"] },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        store.find_root(Some("mynd")).await.unwrap().unwrap().id,
+        "mem_root_b"
+    );
+}
+
+#[tokio::test]
+async fn import_accepts_an_index_oversized_by_its_pointer_lines() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store.set_meta("max_content_tokens", "12").await.unwrap();
+    let pointers: Vec<String> = (0..5)
+        .map(|n| format!("- [a pointer describing child number {n} in words](child:mem_{n:032x})"))
+        .collect();
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_index", "title": "index", "content": format!("intro\n{}", pointers.join("\n")) },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]

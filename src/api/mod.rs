@@ -452,7 +452,7 @@ mod feedback;
 pub mod guard;
 mod hive;
 mod memories;
-mod settings;
+pub(crate) mod settings;
 mod status;
 mod suggest;
 #[cfg(test)]

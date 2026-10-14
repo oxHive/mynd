@@ -2306,10 +2306,7 @@ fn tags_writes_pass_the_guard_with_a_stale_stored_part_entry() {
             Ok::<_, anyhow::Error>(store.tag_namespace_registry().await)
         })
         .unwrap();
-        assert_eq!(
-            registry["part"],
-            crate::store::default_tag_namespaces()["part"]
-        );
+        assert_eq!(registry["part"], stale["part"], "the stored copy is kept");
     });
 }
 

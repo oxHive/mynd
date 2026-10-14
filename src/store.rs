@@ -186,6 +186,11 @@ static RELATIONSHIP_LINK_RE: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     regex::Regex::new(r"\[([^\]]+)\]\((?:(parent|child|sibling):)?(mem_[0-9a-f]{32})\)").unwrap()
 });
 
+/// A whole line as `append_pointer` writes it.
+static POINTER_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^- \[[^\]]+\]\(child:mem_[0-9a-f]{32}\)\s*$").unwrap()
+});
+
 /// Extract `[phrase](kind:mem_xxx)` relationship links from memory content
 /// (bare `[phrase](mem_xxx)` defaults to "sibling"). Deduped by (kind, target)
 /// pair — the same target under two different kinds both survive, first
@@ -216,8 +221,10 @@ pub(crate) fn parse_relationship_links(
 /// Maintain parent/child/sibling edges for `source_id` from its content's
 /// `[phrase](kind:mem_xxx)` links (bare `[phrase](mem_xxx)` defaults to
 /// "sibling"): upserts an active edge per surviving (kind, target) pair
-/// (refreshing `link_text` and resetting `status` to 'active' on rephrase),
-/// and deletes any (kind, target) pair no longer present in the content.
+/// (refreshing `link_text` and resetting `status` to 'active' on rephrase;
+/// an unchanged link keeps its status, so rewriting the memory, e.g. to
+/// append a pointer, never revives a rejected edge), and deletes any
+/// (kind, target) pair no longer present in the content.
 ///
 /// Deletion is scoped to `link_text IS NOT NULL` — i.e. edges this same
 /// function previously created from content. Edges created out-of-band
@@ -239,7 +246,8 @@ async fn sync_relationship_edges(
              SELECT 'edge_' || lower(hex(randomblob(16))), ?1, ?2, ?3, 'active', ?4, ?5
              WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?2)
              ON CONFLICT(source_id, target_id, relationship)
-             DO UPDATE SET link_text = excluded.link_text, status = 'active'",
+             DO UPDATE SET link_text = excluded.link_text,
+               status = CASE WHEN edges.link_text IS excluded.link_text THEN edges.status ELSE 'active' END",
             params![source_id, target.as_str(), kind.as_str(), now, phrase.as_str()],
         )
         .await?;
@@ -549,15 +557,6 @@ fn merge_tag_namespaces(defaults: Value, stored: Value) -> Value {
     Value::Object(merged)
 }
 
-/// The registry with the code defaults laid over every predefined namespace
-/// (the inverse of `tag_namespace_registry`'s merge: defaults win). Read paths
-/// that feed a save use it while the predefined-namespace guard is on, so a
-/// stale stored copy (e.g. an old `part` description) is replaced by the
-/// current default instead of being echoed back and rejected by the guard.
-pub(crate) fn overlay_predefined_namespaces(registry: Value) -> Value {
-    merge_tag_namespaces(registry, default_tag_namespaces())
-}
-
 /// Validates `tags` against the `tag_namespaces` registry: at most one tag
 /// per namespace marked `single_value` (falls back to `["project"]` alone
 /// when the registry has no singleton namespaces at all), and — for any
@@ -672,8 +671,16 @@ impl SqliteStore {
     /// `max_content_tokens` guardrail. Called by `store`/`update` so no
     /// entry point (MCP, REST, CLI, import) can bypass it; callers that
     /// want a nicer status code can call it first themselves.
+    ///
+    /// `- [pointer](child:mem_x)` lines don't count: `store_with_parent`
+    /// grows an index by them past the limit, and that index must stay
+    /// editable and survive export/import. Its own text is still limited.
     pub async fn check_content_size(&self, title: &str, content: &str) -> Result<()> {
-        let tokens = crate::budget::count_entry_tokens(title, content) as i64;
+        let own_text: Vec<&str> = content
+            .lines()
+            .filter(|l| !POINTER_LINE_RE.is_match(l))
+            .collect();
+        let tokens = crate::budget::count_entry_tokens(title, &own_text.join("\n")) as i64;
         let limit = self.max_content_tokens().await;
         if tokens > limit {
             return Err(anyhow!(
