@@ -303,3 +303,40 @@ pub(super) async fn search(
     let results: Vec<_> = hits.iter().map(entry_json).collect();
     Ok(Json(json!({ "count": results.len(), "results": results })))
 }
+
+#[derive(Deserialize)]
+pub(super) struct TreeParams {
+    layer: Option<String>,
+}
+
+/// A project's index tree (no content), for the dashboard outline. Same data
+/// as the `memory_tree` MCP tool.
+pub(super) async fn project_tree(
+    State(store): State<Store>,
+    Extension(org_store): Extension<OrgStore>,
+    Path(name): Path<String>,
+    Query(p): Query<TreeParams>,
+) -> Result<Json<Value>, ApiError> {
+    let layer = p.layer.as_deref().unwrap_or("workspace");
+    let parsed = layer
+        .parse::<crate::model::Layer>()
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    let target = if parsed == crate::model::Layer::Org {
+        org_store.ok_or_else(|| {
+            ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "org layer not configured: set [org_sync] in the global config".to_string(),
+            )
+        })?
+    } else {
+        store
+    };
+    let project = name.trim().to_lowercase();
+    let tree = target.memory_tree(&project).await?;
+    Ok(Json(json!({
+        "project": project,
+        "layer": layer,
+        "root_id": tree.root_id,
+        "nodes": tree.nodes,
+    })))
+}

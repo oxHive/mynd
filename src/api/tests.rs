@@ -3462,3 +3462,61 @@ async fn import_restores_the_status_of_a_content_link_edge() {
     assert_eq!(edges[0].status, "rejected");
     assert_eq!(edges[0].reason.as_deref(), Some("not related"));
 }
+
+#[tokio::test]
+async fn project_tree_returns_the_workspace_tree_without_content() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let root = "mem_0000000000000000000000000000a001";
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: root,
+            title: "root",
+            content: "# r",
+            tags: &["role:root".to_string(), "project:mynd".to_string()],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    store
+        .store_with_parent(
+            &crate::store::NewMemoryRow {
+                id: "mem_0000000000000000000000000000a002",
+                title: "leaf",
+                content: "secret body",
+                tags: &["project:mynd".to_string()],
+                token_count: None,
+                layer: "workspace",
+                memory_type: "project",
+            },
+            root,
+            "leaf: what it holds",
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = req(app, "GET", "/api/v1/projects/Mynd/tree", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["project"], "mynd");
+    assert_eq!(body["root_id"], root);
+    assert_eq!(body["nodes"][1]["title"], "leaf");
+    assert_eq!(
+        body["nodes"][0]["pointers"][0]["text"],
+        "leaf: what it holds"
+    );
+    assert!(!body.to_string().contains("secret body"));
+}
+
+#[tokio::test]
+async fn project_tree_for_the_org_layer_without_an_org_store_is_422() {
+    let (app, _dir) = test_router().await;
+    let (status, body) = req(app, "GET", "/api/v1/projects/mynd/tree?layer=org", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("org layer not configured")
+    );
+}
