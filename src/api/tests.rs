@@ -3356,43 +3356,6 @@ async fn sse_events_endpoint_responds_with_event_stream_headers() {
 }
 
 #[tokio::test]
-async fn import_rejects_a_root_that_conflicts_without_writing_anything() {
-    let (app, store, _dir) = test_router_with_store().await;
-    store
-        .store(&crate::store::NewMemoryRow {
-            id: "mem_root_a",
-            title: "root a",
-            content: "c",
-            tags: &["role:root".to_string(), "project:mynd".to_string()],
-            token_count: None,
-            layer: "workspace",
-            memory_type: "project",
-        })
-        .await
-        .unwrap();
-    let (status, body) = req(
-        app,
-        "POST",
-        "/api/v1/import",
-        Some(json!({ "memories": [
-            { "id": "mem_plain", "title": "a", "content": "b" },
-            { "id": "mem_root_b", "title": "root b", "content": "c", "tags": ["role:root", "project:mynd"] },
-        ] })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(
-        body["error"].as_str().unwrap().contains("mem_root_b:"),
-        "{body}"
-    );
-    assert_eq!(
-        store.count().await.unwrap(),
-        1,
-        "nothing from the import was written"
-    );
-}
-
-#[tokio::test]
 async fn import_moves_a_root_claim_within_one_batch() {
     let (app, store, _dir) = test_router_with_store().await;
     let root_tags = ["role:root".to_string(), "project:mynd".to_string()];
@@ -3445,22 +3408,57 @@ async fn import_accepts_an_index_oversized_by_its_pointer_lines() {
 }
 
 #[tokio::test]
-async fn import_rejects_two_roots_for_one_project_in_the_same_batch() {
+async fn import_keeps_two_roots_for_one_project_like_sync() {
     let (app, store, _dir) = test_router_with_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_r0",
+            title: "r0",
+            content: "c",
+            tags: &["role:root".to_string(), "project:mynd".to_string()],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
     let (status, body) = req(
         app,
         "POST",
         "/api/v1/import",
         Some(json!({ "memories": [
             { "id": "mem_r1", "title": "r1", "content": "c", "tags": ["role:root", "project:mynd"] },
-            { "id": "mem_r2", "title": "r2", "content": "c", "tags": ["role:root", "project:mynd"] },
+            { "id": "mem_r2", "title": "r2", "content": "c", "tags": ["role:root", "project:other"] },
+            { "id": "mem_r3", "title": "r3", "content": "c", "tags": ["role:root", "project:other"] },
         ] })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(
-        body["error"].as_str().unwrap().contains("mem_r2:"),
-        "{body}"
-    );
-    assert_eq!(store.count().await.unwrap(), 0);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(store.count().await.unwrap(), 4);
+}
+
+#[tokio::test]
+async fn import_restores_the_status_of_a_content_link_edge() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({
+            "memories": [
+                { "id": "mem_0000000000000000000000000000000a", "title": "a", "content": "[see b](mem_0000000000000000000000000000000b)" },
+                { "id": "mem_0000000000000000000000000000000b", "title": "b", "content": "c" },
+            ],
+            "edges": [
+                { "source_id": "mem_0000000000000000000000000000000a", "target_id": "mem_0000000000000000000000000000000b", "relationship": "sibling",
+                  "status": "rejected", "link_text": "see b", "reason": "not related" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let edges = store.list_edges(None).await.unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].status, "rejected");
+    assert_eq!(edges[0].reason.as_deref(), Some("not related"));
 }

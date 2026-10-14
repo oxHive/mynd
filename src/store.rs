@@ -720,6 +720,14 @@ impl SqliteStore {
         self.store_with_timestamp(m, chrono_now()).await
     }
 
+    /// Import's write: like `store`, but never refuses a second root for a
+    /// scope, the way hive apply doesn't. An export of a store that sync gave
+    /// two roots must import again; `/memory-audit` reports the duplicate.
+    pub async fn restore(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        self.check_content_size(m.title, m.content).await?;
+        self.store_with_timestamp(m, chrono_now()).await
+    }
+
     /// Like `store`, but stamps `updated_at` (and `created_at` for a brand-new
     /// row) with `updated_at` instead of the wall clock. Used by the hive
     /// apply path so a memory pulled from a peer keeps the *peer's* timestamp:
@@ -1589,6 +1597,47 @@ impl SqliteStore {
             )
             .await?;
         Ok(EdgeCreate::Created(id))
+    }
+
+    /// Import's edge write: creates the edge with the backup's status, or,
+    /// when importing a memory already made it from a content link (as
+    /// 'active'), puts the backup's status and reason on it. Returns whether
+    /// a new edge was created.
+    pub async fn import_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        relationship: &str,
+        status: &str,
+        link_text: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        use crate::model::EdgeCreate;
+        match self
+            .create_edge_with_status(
+                source_id,
+                target_id,
+                relationship,
+                status,
+                link_text,
+                reason,
+            )
+            .await?
+        {
+            EdgeCreate::Created(_) => Ok(true),
+            EdgeCreate::Duplicate => {
+                let _w = self.write().await;
+                self.conn
+                    .execute(
+                        "UPDATE edges SET status = ?4, reason = ?5
+                         WHERE source_id = ?1 AND target_id = ?2 AND relationship = ?3",
+                        params![source_id, target_id, relationship, status, reason],
+                    )
+                    .await?;
+                Ok(false)
+            }
+            EdgeCreate::MissingEndpoint | EdgeCreate::InvalidRelationship => Ok(false),
+        }
     }
 
     pub async fn set_edge_status(&self, id: &str, status: &str) -> Result<bool> {
