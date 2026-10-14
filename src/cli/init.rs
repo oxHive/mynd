@@ -451,9 +451,10 @@ pub(crate) fn project_toml(name: &str) -> String {
          [hooks.on_session_start]\n\
          max_tokens = 2000\n\
          recalls = [\n\
-         \x20 # Memories to auto-load at session start: exact titles or tag queries, e.g.:\n\
+         \x20 # The project's root index loads automatically. Recalls are for\n\
+         \x20 # always-on extras such as preferences: exact titles or tag queries, e.g.:\n\
+         \x20 # \"tag:preferences\",\n\
          \x20 # \"golang preferences\",\n\
-         \x20 # \"tag:project:{name}\",\n\
          ]\n"
     )
 }

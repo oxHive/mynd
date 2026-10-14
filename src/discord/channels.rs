@@ -40,11 +40,15 @@ pub fn context_system_prompt(target: &MemoryTarget) -> String {
     } else {
         target.tags.join(", ")
     };
-    format!(
+    let mut prompt = format!(
         "If you store or update a memory as part of this conversation, use layer \"{}\" \
          and include these tags: {tags}.",
         target.layer
-    )
+    );
+    if let Some(hint) = crate::chat_bot::filing_hint(&target.tags) {
+        prompt.push_str(&hint);
+    }
+    prompt
 }
 
 #[cfg(test)]
@@ -119,6 +123,10 @@ mod tests {
         assert!(prompt.contains("workspace"));
         assert!(prompt.contains("project:mynd"));
         assert!(prompt.contains("topic:discord"));
+        assert!(
+            prompt.contains("parent_id"),
+            "a project-mapped target gets the filing hint"
+        );
     }
 
     #[test]
@@ -129,5 +137,6 @@ mod tests {
         };
         let prompt = context_system_prompt(&target);
         assert!(prompt.contains("personal"));
+        assert!(!prompt.contains("parent_id"));
     }
 }
