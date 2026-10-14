@@ -3,37 +3,49 @@ name: memory-edit
 description: Fetch a memory by ID or title and edit its content or tags. Pass the ID or title in the argument.
 ---
 
-Edit an existing memory in Mynd.
+Edit an existing memory in Mynd and keep its place in the index tree accurate.
 
-Input from $ARGUMENTS: a memory ID or title to look up.
+Input from $ARGUMENTS: a memory ID or title.
 
 ## Process
 
-### 1. Fetch the memory
+### 1. Fetch the memory and its home
 
-- If $ARGUMENTS looks like a memory ID (starts with "mem_"), call `memory_recall` with `id`.
-- Otherwise call `memory_recall` with `title`.
-- If not found, say so and suggest using `/memory-search` to find the right ID.
+- $ARGUMENTS starts with `mem_`: `memory_recall` with `id`. Otherwise `memory_recall` with `title`.
+- Not found: say so and suggest `/memory-search` to find the right ID.
+- Call `memory_get_edges` with its id. The home is the `parents` entry that has a `link_text`; that text is the current pointer. A memory with a `project:*` tag and no such parent has no home: mention that `/memory-audit` can place it.
 
-### 2. Show current content
+### 2. Show the current state
 
-Display the current title, content, and tags clearly so the user can see what exists.
+Show the title, content, tags, and the home's title with the current pointer.
 
 ### 3. Ask what to change
 
-Ask the user what they want to update: content, tags, or both. Wait for their response.
+Content, title, tags, or a move to another index. Wait for the answer. For a tag change, call `tag_namespaces_list` first and reuse existing namespaces and values.
 
-If tags are changing, call `tag_namespaces_list` first and steer new tags toward existing namespaces/values (see the `/memory-store` skill's tagging rule) rather than inventing new ones.
+### 4. Plan the writes
 
-### 4. Apply the update
+Work out every write before making any:
 
-Call `memory_update` with the ID and the new values the user provided. `tags` replaces the full tag list — pass the complete set (existing tags you're keeping plus any changes), not just the diff.
+- **Content or title change:** compare the new content with the home pointer. The pointer no longer matches (a fact in it changed, or the memory now covers more or less): draft a new pointer, one line of roughly 10 to 30 words with no `]`, stating what the memory covers, its key facts, and when to open it. Plan a replacement of that one line in the home.
+- **Move to index Y:** plan two writes in this order: first append `- [pointer](child:<this id>)` to Y, then remove this memory's line from the old home. Adding first means a failure in between leaves two homes, never none.
+- **The memory is an index (`role:index` or `role:root`) and the change removes a `child:` pointer line:** name the memory that would lose its home and ask where it goes: another index, the root, or deletion of that memory too. Plan the line removal only together with that memory's new home, which is written first.
+- **A tag change removes `role:index` while the content still has `child:` pointers:** keep `role:index` and explain why.
+- **The new content is over the size limit** (`memory_update` rejects it): offer `/memory-audit` to split this memory into an index and children.
 
-### 5. Confirm
+### 5. Confirm, then apply
 
-Report: "Updated: [title]". Show the changed fields.
+Show every planned write: the memory's changed fields, and for each other memory touched, the exact line added, removed or replaced. Wait for confirmation, then apply in the planned order:
+
+1. `memory_update` on the memory itself (skip when only its home changes). `tags` replaces the whole list: pass every tag you keep plus the changes.
+2. For each other memory touched: `memory_recall` it for its current full content, then `memory_update` it with that content changed only at the planned line.
+
+### 6. Report
+
+"Updated: [title]", the changed fields, and each pointer line added, removed or replaced elsewhere.
 
 ## Rules
 
-- Never overwrite a memory without showing the user the current content first.
-- Do not change fields the user did not explicitly mention.
+- Show the current content before changing anything.
+- Change only what the user asked for, plus the pointer lines that keep the tree accurate.
+- An edit to another memory touches exactly one pointer line; the rest of its content stays byte for byte.
