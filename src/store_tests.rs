@@ -2758,6 +2758,34 @@ async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
 }
 
 #[tokio::test]
+async fn delete_impact_ignores_a_child_mention_that_is_not_a_link() {
+    let (s, _dir) = make_store().await;
+    let (idx, child, sample) = (hid(1), hid(2), hid(3));
+    s.store(&test_row(&child, "child", "c", &[])).await.unwrap();
+    s.store(&test_row(
+        &idx,
+        "index",
+        &format!("- [c](child:{child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    // No `[label]`, so the parser (and memory_tree) see no link here.
+    s.store(&test_row(
+        &sample,
+        "code sample",
+        &format!("`(child:{child})`"),
+        &[],
+    ))
+    .await
+    .unwrap();
+
+    let impact = s.delete_impact(&idx).await.unwrap();
+    assert_eq!(impact.orphaned_children.len(), 1);
+    assert_eq!(impact.orphaned_children[0].id, child);
+}
+
+#[tokio::test]
 async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
     // Hive pulls apply memories in id order, so a parent can land before its
     // children and never get their edges. Content is the source of truth.

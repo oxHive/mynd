@@ -310,19 +310,7 @@ async fn insert_memory_tx(
     )
     .await?;
 
-    tx.execute(
-        "DELETE FROM memory_tags WHERE memory_id = ?1",
-        params![m.id],
-    )
-    .await?;
-    for tag in m.tags {
-        let tag_lower = tag.to_lowercase();
-        tx.execute(
-            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-            params![m.id, tag_lower.as_str()],
-        )
-        .await?;
-    }
+    set_tags_tx(tx, m.id, m.tags).await?;
 
     // A (re)written memory is alive again: drop any tombstone for its id
     // so the manifest doesn't advertise both a live row and a deletion,
@@ -335,17 +323,7 @@ async fn insert_memory_tx(
     .await?;
 
     sync_relationship_edges(tx, m.id, m.content, now).await?;
-
-    // Journal the write
-    tx.execute(
-        "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-         VALUES (?1, ?2, ?3, ?3)
-         ON CONFLICT(memory_id) DO UPDATE SET
-           content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-        params![m.id, m.content, now],
-    )
-    .await?;
-    Ok(())
+    journal_tx(tx, m.id, m.content, now).await
 }
 
 /// Rewrites an existing memory's title, content and tags on `tx`, syncs its
@@ -371,20 +349,28 @@ async fn rewrite_memory_tx(
     if changed == 0 {
         return Ok(false);
     }
+    set_tags_tx(tx, id, tags).await?;
+    sync_relationship_edges(tx, id, content, now).await?;
+    journal_tx(tx, id, content, now).await?;
+    Ok(true)
+}
+
+/// Replaces `id`'s tags with `tags`, lowercased, on `tx`.
+async fn set_tags_tx(tx: &libsql::Transaction, id: &str, tags: &[String]) -> Result<()> {
     tx.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])
         .await?;
     for tag in tags {
-        let tag_lower = tag.to_lowercase();
         tx.execute(
             "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-            params![id, tag_lower.as_str()],
+            params![id, tag.to_lowercase()],
         )
         .await?;
     }
+    Ok(())
+}
 
-    sync_relationship_edges(tx, id, content, now).await?;
-
-    // Journal the write
+/// Records a write of `id` in the sync journal on `tx`.
+async fn journal_tx(tx: &libsql::Transaction, id: &str, content: &str, now: i64) -> Result<()> {
     tx.execute(
         "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
          VALUES (?1, ?2, ?3, ?3)
@@ -393,7 +379,7 @@ async fn rewrite_memory_tx(
         params![id, content, now],
     )
     .await?;
-    Ok(true)
+    Ok(())
 }
 
 /// Quote a raw user query for FTS5 MATCH: every whitespace-separated term is
@@ -1035,14 +1021,7 @@ impl SqliteStore {
             params![id, now, hive_hash],
         )
         .await?;
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, current.content, now],
-        )
-        .await?;
+        journal_tx(&tx, id, &current.content, now).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -1084,66 +1063,57 @@ impl SqliteStore {
             params![id, now, hive_hash],
         )
         .await?;
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, current.content, now],
-        )
-        .await?;
+        journal_tx(&tx, id, &current.content, now).await?;
         tx.commit().await?;
         Ok(true)
     }
 
-    /// Computes `DeleteImpact` for `id` without deleting anything.
+    /// Computes `DeleteImpact` for `id` without deleting anything. Links,
+    /// including children, are read from content with the same parser as
+    /// `memory_tree`, not from edges: edges are only created for targets
+    /// that already exist, so a hive pull that applies the parent first
+    /// leaves them missing.
     pub async fn delete_impact(&self, id: &str) -> Result<DeleteImpact> {
         let mut impact = DeleteImpact::default();
+        let Some(me) = self.recall_by_id(id).await? else {
+            return Ok(impact);
+        };
+        // Children some other memory also points to keep a home.
+        let mut homed = std::collections::HashSet::new();
         let mut rows = self
             .conn
             .query(
-                "SELECT id, title FROM memories WHERE id != ?1 AND content LIKE '%' || ?1 || ')%' \
+                "SELECT id, title, content FROM memories WHERE id != ?1 AND instr(content, 'mem_') > 0 \
                  ORDER BY title, id",
                 params![id],
             )
             .await?;
         while let Some(row) = rows.next().await? {
-            impact.dangling_in.push(RelatedMemory {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                link_text: None,
-            });
+            let other: String = row.get(0)?;
+            let content: String = row.get(2)?;
+            let links = parse_relationship_links(&other, &content);
+            if links.iter().any(|(_, _, target)| target == id) {
+                impact.dangling_in.push(RelatedMemory {
+                    id: other,
+                    title: row.get(1)?,
+                    link_text: None,
+                });
+            }
+            homed.extend(
+                links
+                    .into_iter()
+                    .filter(|(_, kind, _)| kind == "child")
+                    .map(|(_, _, target)| target),
+            );
         }
-        // Children come from content, not edges: edges are only created for
-        // targets that already exist, so a hive pull that applies the parent
-        // first leaves them missing. Same source of truth as `memory_tree`.
-        let mut rows = self
-            .conn
-            .query("SELECT content FROM memories WHERE id = ?1", params![id])
-            .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(impact);
-        };
-        let content: String = row.get(0)?;
-        for (link_text, kind, child) in parse_relationship_links(id, &content) {
-            if kind != "child" {
+        for (link_text, kind, child) in parse_relationship_links(id, &me.content) {
+            if kind != "child" || homed.contains(&child) {
                 continue;
             }
-            let mut rows = self
-                .conn
-                .query(
-                    "SELECT m.title, (SELECT COUNT(*) FROM memories o WHERE o.id != ?2 \
-                       AND o.content LIKE '%(child:' || ?1 || ')%') \
-                     FROM memories m WHERE m.id = ?1",
-                    params![child.clone(), id],
-                )
-                .await?;
-            if let Some(row) = rows.next().await?
-                && row.get::<i64>(1)? == 0
-            {
+            if let Some(c) = self.recall_by_id(&child).await? {
                 impact.orphaned_children.push(RelatedMemory {
                     id: child,
-                    title: row.get(0)?,
+                    title: c.title,
                     link_text: Some(link_text),
                 });
             }

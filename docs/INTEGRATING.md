@@ -160,7 +160,7 @@ A project's index tree, with no memory content: cheap enough to call before deci
 }
 ```
 
-Nodes reachable from the root come first in breadth-first order, then every `project:<name>` memory nothing points to (`reachable: false`), sorted by title. A node with more than one entry in `homes` is linked as a `child:` from several memories. `broken_pointers` lists `child:` links in a node's content whose target is not in this store (deleted, or in the other store); `parent_links` lists deprecated `parent:` links.
+Nodes reachable from the root come first in breadth-first order, then every `project:<name>` memory the walk did not reach (`reachable: false`), sorted by title: one nothing points to, or one in a subtree cut off from the root. A node with more than one entry in `homes` is linked as a `child:` from several memories. `broken_pointers` lists `child:` links in a node's content whose target is not in this store (deleted, or in the other store); `parent_links` lists deprecated `parent:` links.
 
 ---
 
