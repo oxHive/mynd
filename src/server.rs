@@ -262,14 +262,24 @@ impl Mynd {
     }
 
     /// Spawns a best-effort push-on-change attempt after a successful
-    /// store()/update() call, if Hive Mode is enabled on this handle.
-    fn spawn_hive_push(&self, memory_id: &str) {
+    /// store()/update() call, if Hive Mode is enabled on this handle. Ids are
+    /// pushed one after another, in order: a peer only creates a content
+    /// link's edge when the target already exists there, so a child must
+    /// land before the parent that links to it.
+    fn spawn_hive_push(&self, memory_ids: &[&str]) {
         if let Some(identity) = &self.hive_identity {
-            tokio::spawn(crate::hive::sync_loop::push_memory_change_to_online_peers(
-                self.store.clone(),
-                identity.clone(),
-                memory_id.to_string(),
-            ));
+            let (store, identity) = (self.store.clone(), identity.clone());
+            let ids: Vec<String> = memory_ids.iter().map(|id| id.to_string()).collect();
+            tokio::spawn(async move {
+                for id in ids {
+                    crate::hive::sync_loop::push_memory_change_to_online_peers(
+                        store.clone(),
+                        identity.clone(),
+                        id,
+                    )
+                    .await;
+                }
+            });
         }
     }
 
@@ -290,6 +300,20 @@ impl Mynd {
             .check_content_size(title, content)
             .await
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))
+    }
+
+    /// The store that holds memories of `layer`: the org store for `org`,
+    /// the primary store (workspace and personal) otherwise.
+    fn store_for_layer(&self, layer: &crate::model::Layer) -> Result<&Arc<SqliteStore>, ErrorData> {
+        if *layer != crate::model::Layer::Org {
+            return Ok(&self.store);
+        }
+        self.org_store.as_ref().ok_or_else(|| {
+            ErrorData::invalid_params(
+                "org layer not configured: set [org_sync] in the global config",
+                None,
+            )
+        })
     }
 
     /// Tries the primary store first, then the org store if configured.
@@ -334,19 +358,14 @@ impl Mynd {
             .parse::<crate::model::MemoryType>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        let target_store = if parsed_layer == crate::model::Layer::Org {
-            self.org_store.as_ref().ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "org layer not configured — set [org_sync] in the global config",
-                    None,
-                )
-            })?
-        } else {
-            &self.store
-        };
+        let target_store = self.store_for_layer(&parsed_layer)?;
 
         self.check_content_size(target_store, &p.title, &p.content)
             .await?;
+        target_store
+            .check_root_unique(&id, &p.tags)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         let parent = match (p.parent_id.as_deref(), p.pointer.as_deref()) {
             (None, None) => None,
@@ -408,12 +427,13 @@ impl Mynd {
             t.notify_one();
         }
         self.notify_change();
-        self.spawn_hive_push(&id);
         let mut out = json!({ "id": id, "title": title });
         if let Some((pid, _)) = parent {
-            self.spawn_hive_push(pid);
+            self.spawn_hive_push(&[&id, pid]);
             out["parent_id"] = json!(pid);
             out["parent_oversized"] = json!(parent_oversized);
+        } else {
+            self.spawn_hive_push(&[&id]);
         }
         Ok(CallToolResult::structured(out))
     }
@@ -616,6 +636,10 @@ impl Mynd {
 
         self.check_content_size(owning_store, title, content)
             .await?;
+        owning_store
+            .check_root_unique(&p.id, tags)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         let updated = owning_store
             .update(&p.id, title, content, tags)
@@ -623,7 +647,7 @@ impl Mynd {
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         if updated {
             self.notify_change();
-            self.spawn_hive_push(&p.id);
+            self.spawn_hive_push(&[&p.id]);
         }
         Ok(CallToolResult::structured(json!({
             "updated": updated,
@@ -1000,17 +1024,8 @@ impl Mynd {
         let parsed = layer
             .parse::<crate::model::Layer>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        let store = if parsed == crate::model::Layer::Org {
-            self.org_store.as_ref().ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "org layer not configured: set [org_sync] in the global config",
-                    None,
-                )
-            })?
-        } else {
-            &self.store
-        };
-        let tree = store
+        let tree = self
+            .store_for_layer(&parsed)?
             .memory_tree(project)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -1256,7 +1271,7 @@ impl Mynd {
     }
 
     #[tool(
-        description = "Get a project's memory index tree without any content: the root, every memory reachable through [pointer](child:mem_x) links, and the project's memories nothing points to (reachable: false). Each node lists its role, token cost, homes and outgoing pointers. Use to audit structure or see a project's layout cheaply before deciding what to recall."
+        description = "Get a project's memory index tree without any content: the root, every memory reachable through [pointer](child:mem_x) links, and the project's memories that walk does not reach (reachable: false): ones nothing points to, and subtrees cut off from the root. Each node lists its role, token cost, homes, outgoing pointers and outgoing [text](mem_x) cross-references. Use to audit structure or see a project's layout cheaply before deciding what to recall."
     )]
     async fn memory_tree(
         &self,

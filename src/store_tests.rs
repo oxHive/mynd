@@ -2419,6 +2419,21 @@ async fn second_root_for_same_project_is_rejected_on_store_update_and_add_tags()
         .unwrap();
     assert!(s.update(&hid(3), "leaf", "c", &root_tags).await.is_err());
     assert!(s.add_tags(&hid(3), &["role:root".into()]).await.is_err());
+    assert!(
+        !s.update(&hid(9), "missing", "c", &root_tags).await.unwrap(),
+        "a missing id is not-found, not a root conflict"
+    );
+
+    // Dropping project:* from a root claims the org-wide scope, so a second
+    // project-less root is refused there too.
+    s.store(&test_row(&hid(5), "org-wide", "c", &["role:root".into()]))
+        .await
+        .unwrap();
+    assert!(
+        s.remove_tags(&hid(1), &["project:mynd".into()])
+            .await
+            .is_err()
+    );
 
     // Re-storing the root itself and a root for another project are fine.
     s.store(&test_row(&hid(1), "root", "c2", &root_tags))
@@ -2607,6 +2622,110 @@ async fn store_with_parent_flags_an_oversized_parent_but_still_writes() {
 }
 
 #[tokio::test]
+async fn an_index_oversized_by_pointers_stays_editable_but_its_own_text_is_limited() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "root", "short", &[]))
+        .await
+        .unwrap();
+    s.set_meta("max_content_tokens", "12").await.unwrap();
+    for n in 2..5 {
+        s.store_with_parent(
+            &test_row(&hid(n), "c", "x", &[]),
+            &hid(1),
+            "a long pointer describing the child memory in many many words",
+        )
+        .await
+        .unwrap();
+    }
+    let parent = s.recall_by_id(&hid(1)).await.unwrap().unwrap();
+    let edited = parent.content.replace("short", "short, edited");
+    assert!(
+        s.update(&hid(1), "root", &edited, &[]).await.unwrap(),
+        "pointer lines don't count toward the limit"
+    );
+    let padded = parent.content.replace("short", &"word ".repeat(50));
+    assert!(s.update(&hid(1), "root", &padded, &[]).await.is_err());
+    let smuggled = format!("short\n- [{}](child:{})", "word ".repeat(70), hid(2));
+    assert!(
+        s.update(&hid(1), "root", &smuggled, &[]).await.is_err(),
+        "a pointer-shaped line longer than any real pointer still counts"
+    );
+}
+
+#[tokio::test]
+async fn rewriting_a_memory_keeps_a_rejected_content_edge_rejected() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "target", "t", &[]))
+        .await
+        .unwrap();
+    let content = format!("see [the target]({})", hid(1));
+    s.store(&test_row(&hid(2), "index", &content, &[]))
+        .await
+        .unwrap();
+    let edge_id = s.list_edges(Some(&hid(2))).await.unwrap()[0].id.clone();
+    s.set_edge_status(&edge_id, "rejected").await.unwrap();
+
+    s.store_with_parent(&test_row(&hid(3), "c", "x", &[]), &hid(2), "child")
+        .await
+        .unwrap();
+
+    let edges = s.list_edges(Some(&hid(2))).await.unwrap();
+    let e = edges.iter().find(|e| e.id == edge_id).unwrap();
+    assert_eq!(e.status, "rejected");
+}
+
+#[tokio::test]
+async fn a_link_to_a_memory_that_arrives_later_gets_its_edge() {
+    // A hive pull can apply an index before the child it points to; the
+    // child's arrival must still create the index's child edge.
+    let (s, _dir) = make_store().await;
+    let content = format!("- [the child](child:{})", hid(2));
+    s.store(&test_row(&hid(1), "index", &content, &[]))
+        .await
+        .unwrap();
+    s.store(&test_row(&hid(2), "child", "c", &[]))
+        .await
+        .unwrap();
+
+    let edges = s.list_edges(Some(&hid(1))).await.unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|e| e.source_id == hid(1) && e.target_id == hid(2) && e.relationship == "child"),
+        "{edges:?}"
+    );
+}
+
+#[tokio::test]
+async fn hive_apply_accepts_a_memory_over_max_content_tokens() {
+    // store_with_parent lets a parent grow past the limit; a peer must still
+    // apply it, or every pull round would abort on it.
+    let (s, _dir) = make_store().await;
+    s.set_meta("max_content_tokens", "12").await.unwrap();
+    let incoming = MemoryEntry {
+        id: hid(1),
+        title: "big index".into(),
+        content: "word ".repeat(100),
+        tags: vec![],
+        created_at: 1,
+        updated_at: chrono_now(),
+        token_count: None,
+        layer: "workspace".into(),
+        memory_type: "project".into(),
+    };
+    assert_eq!(
+        s.apply_incoming_memory(&incoming, None).await.unwrap(),
+        ApplyOutcome::Applied
+    );
+    assert!(
+        s.store(&test_row(&hid(2), "local", &"word ".repeat(100), &[]))
+            .await
+            .is_err(),
+        "local writes keep the limit"
+    );
+}
+
+#[tokio::test]
 async fn store_with_parent_rejects_a_second_root_without_writing() {
     let (s, _dir) = make_store().await;
     let root_tags: Vec<String> = vec!["role:root".into(), "project:mynd".into()];
@@ -2666,9 +2785,37 @@ async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
 }
 
 #[tokio::test]
+async fn delete_impact_ignores_a_child_mention_that_is_not_a_link() {
+    let (s, _dir) = make_store().await;
+    let (idx, child, sample) = (hid(1), hid(2), hid(3));
+    s.store(&test_row(&child, "child", "c", &[])).await.unwrap();
+    s.store(&test_row(
+        &idx,
+        "index",
+        &format!("- [c](child:{child})"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    // No `[label]`, so the parser (and memory_tree) see no link here.
+    s.store(&test_row(
+        &sample,
+        "code sample",
+        &format!("`(child:{child})`"),
+        &[],
+    ))
+    .await
+    .unwrap();
+
+    let impact = s.delete_impact(&idx).await.unwrap();
+    assert_eq!(impact.orphaned_children.len(), 1);
+    assert_eq!(impact.orphaned_children[0].id, child);
+}
+
+#[tokio::test]
 async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
-    // Hive pulls apply memories in id order, so a parent can land before its
-    // children and never get their edges. Content is the source of truth.
+    // Edges can be missing (a store written before the edge backfill, or a
+    // failed sync). Content is the source of truth.
     let (s, _dir) = make_store().await;
     let (idx, other_home, only_child, shared_child) = (hid(1), hid(2), hid(3), hid(4));
     s.store(&test_row(
@@ -2690,10 +2837,7 @@ async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
     for id in [&only_child, &shared_child] {
         s.store(&test_row(id, "child", "c", &[])).await.unwrap();
     }
-    assert!(
-        s.list_edges(Some(&idx)).await.unwrap().is_empty(),
-        "precondition: the parent-to-child edges were never created"
-    );
+    s.conn.execute("DELETE FROM edges", ()).await.unwrap();
 
     let impact = s.delete_impact(&idx).await.unwrap();
     assert_eq!(
@@ -2802,6 +2946,43 @@ async fn memory_tree_reports_broken_pointers_and_legacy_parent_links() {
     assert_eq!(node.parent_links, vec![root.clone()]);
     assert!(node.tags.contains(&"part:fragment".to_string()));
     assert!(!node.reachable, "a parent: link is not a home");
+}
+
+#[tokio::test]
+async fn memory_tree_lists_cross_references_held_by_a_leaf() {
+    let (s, _dir) = make_store().await;
+    let (root, a, b, gone) = (hid(1), hid(2), hid(3), hid(9));
+    s.store(&test_row(
+        &root,
+        "root",
+        &format!("- [b: what it holds](child:{b})"),
+        &["role:root".into(), "project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    s.store(&test_row(&b, "b", "c", &["project:mynd".into()]))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &a,
+        "a",
+        &format!("uses [b's replica settings]({b}), once [an old note]({gone})"),
+        &["project:mynd".into()],
+    ))
+    .await
+    .unwrap();
+    let tree = s.memory_tree("mynd").await.unwrap();
+    let node = tree.nodes.iter().find(|n| n.id == a).unwrap();
+    assert_eq!(node.cross_refs.len(), 1);
+    assert_eq!(node.cross_refs[0].target_id, b);
+    assert_eq!(node.cross_refs[0].text, "b's replica settings");
+    assert_eq!(node.broken_cross_refs, vec![gone]);
+    assert!(
+        node.pointers.is_empty(),
+        "a cross-reference is not a pointer"
+    );
+    let b_node = tree.nodes.iter().find(|n| n.id == b).unwrap();
+    assert_eq!(b_node.homes, vec![root], "a cross-reference is not a home");
 }
 
 #[tokio::test]

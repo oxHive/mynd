@@ -817,8 +817,8 @@ async fn get_tag_settings_returns_seeded_defaults_when_unset() {
 #[tokio::test]
 async fn tag_settings_round_trip_passes_the_guard_with_a_stale_stored_part_entry() {
     // A registry saved before the `part` description changed still holds the
-    // old entry; the settings GET must serve current defaults for predefined
-    // namespaces so the dashboard's unchanged re-save is not a 422.
+    // old entry. The guard accepts the stored copy, so the dashboard's
+    // unchanged re-save is not a 422 and nothing stored is silently dropped.
     let (store, dir) = test_store().await;
     let stale = json!({ "part": {
         "color": "#f0883e",
@@ -835,19 +835,31 @@ async fn tag_settings_round_trip_passes_the_guard_with_a_stale_stored_part_entry
 
     let (status, body) = req(app.clone(), "GET", "/api/v1/settings/tags", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body["namespaces"]["part"],
-        crate::store::default_tag_namespaces()["part"]
-    );
+    assert_eq!(body["namespaces"]["part"], stale["part"]);
 
     let (status, _) = req(
-        app,
+        app.clone(),
         "POST",
         "/api/v1/settings/tags",
         Some(body["namespaces"].clone()),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+
+    // Resetting it to the current default passes too; any other edit doesn't.
+    let mut namespaces = body["namespaces"].clone();
+    namespaces["part"] = crate::store::default_tag_namespaces()["part"].clone();
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/settings/tags",
+        Some(namespaces.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    namespaces["part"]["color"] = json!("#000000");
+    let (status, _) = req(app, "POST", "/api/v1/settings/tags", Some(namespaces)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -3344,12 +3356,64 @@ async fn sse_events_endpoint_responds_with_event_stream_headers() {
 }
 
 #[tokio::test]
-async fn import_rejects_a_root_that_conflicts_without_writing_anything() {
+async fn import_moves_a_root_claim_within_one_batch() {
     let (app, store, _dir) = test_router_with_store().await;
+    let root_tags = ["role:root".to_string(), "project:mynd".to_string()];
     store
         .store(&crate::store::NewMemoryRow {
             id: "mem_root_a",
             title: "root a",
+            content: "c",
+            tags: &root_tags,
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_root_b", "title": "root b", "content": "c", "tags": ["role:root", "project:mynd"] },
+            { "id": "mem_root_a", "title": "root a", "content": "c", "tags": ["project:mynd"] },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        store.find_root(Some("mynd")).await.unwrap().unwrap().id,
+        "mem_root_b"
+    );
+}
+
+#[tokio::test]
+async fn import_accepts_an_index_oversized_by_its_pointer_lines() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store.set_meta("max_content_tokens", "12").await.unwrap();
+    let pointers: Vec<String> = (0..5)
+        .map(|n| format!("- [a pointer describing child number {n} in words](child:mem_{n:032x})"))
+        .collect();
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_index", "title": "index", "content": format!("intro\n{}", pointers.join("\n")) },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn import_keeps_two_roots_for_one_project_like_sync() {
+    let (app, store, _dir) = test_router_with_store().await;
+    store
+        .store(&crate::store::NewMemoryRow {
+            id: "mem_r0",
+            title: "r0",
             content: "c",
             tags: &["role:root".to_string(), "project:mynd".to_string()],
             token_count: None,
@@ -3363,40 +3427,38 @@ async fn import_rejects_a_root_that_conflicts_without_writing_anything() {
         "POST",
         "/api/v1/import",
         Some(json!({ "memories": [
-            { "id": "mem_plain", "title": "a", "content": "b" },
-            { "id": "mem_root_b", "title": "root b", "content": "c", "tags": ["role:root", "project:mynd"] },
+            { "id": "mem_r1", "title": "r1", "content": "c", "tags": ["role:root", "project:mynd"] },
+            { "id": "mem_r2", "title": "r2", "content": "c", "tags": ["role:root", "project:other"] },
+            { "id": "mem_r3", "title": "r3", "content": "c", "tags": ["role:root", "project:other"] },
         ] })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(
-        body["error"].as_str().unwrap().contains("mem_root_b:"),
-        "{body}"
-    );
-    assert_eq!(
-        store.count().await.unwrap(),
-        1,
-        "nothing from the import was written"
-    );
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(store.count().await.unwrap(), 4);
 }
 
 #[tokio::test]
-async fn import_rejects_two_roots_for_one_project_in_the_same_batch() {
+async fn import_restores_the_status_of_a_content_link_edge() {
     let (app, store, _dir) = test_router_with_store().await;
     let (status, body) = req(
         app,
         "POST",
         "/api/v1/import",
-        Some(json!({ "memories": [
-            { "id": "mem_r1", "title": "r1", "content": "c", "tags": ["role:root", "project:mynd"] },
-            { "id": "mem_r2", "title": "r2", "content": "c", "tags": ["role:root", "project:mynd"] },
-        ] })),
+        Some(json!({
+            "memories": [
+                { "id": "mem_0000000000000000000000000000000a", "title": "a", "content": "[see b](mem_0000000000000000000000000000000b)" },
+                { "id": "mem_0000000000000000000000000000000b", "title": "b", "content": "c" },
+            ],
+            "edges": [
+                { "source_id": "mem_0000000000000000000000000000000a", "target_id": "mem_0000000000000000000000000000000b", "relationship": "sibling",
+                  "status": "rejected", "link_text": "see b", "reason": "not related" },
+            ],
+        })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(
-        body["error"].as_str().unwrap().contains("mem_r2:"),
-        "{body}"
-    );
-    assert_eq!(store.count().await.unwrap(), 0);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let edges = store.list_edges(None).await.unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].status, "rejected");
+    assert_eq!(edges[0].reason.as_deref(), Some("not related"));
 }

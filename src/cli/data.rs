@@ -142,7 +142,6 @@ fn cmd_import(input: PathBuf) -> Result<()> {
                     m.content.as_str(),
                     m.layer.as_str(),
                     m.memory_type.as_str(),
-                    m.tags.as_slice(),
                 )
             }),
         )
@@ -151,7 +150,7 @@ fn cmd_import(input: PathBuf) -> Result<()> {
         let mut mem_count = 0usize;
         for m in &body.memories {
             store
-                .store(&crate::store::NewMemoryRow {
+                .restore(&crate::store::NewMemoryRow {
                     id: &m.id,
                     title: &m.title,
                     content: &m.content,
@@ -168,19 +167,17 @@ fn cmd_import(input: PathBuf) -> Result<()> {
             if !["active", "pending", "rejected"].contains(&e.status.as_str()) {
                 continue;
             }
-            if matches!(
-                store
-                    .create_edge_with_status(
-                        &e.source_id,
-                        &e.target_id,
-                        &e.relationship,
-                        &e.status,
-                        e.link_text.as_deref(),
-                        e.reason.as_deref(),
-                    )
-                    .await?,
-                crate::model::EdgeCreate::Created(_)
-            ) {
+            if store
+                .import_edge(
+                    &e.source_id,
+                    &e.target_id,
+                    &e.relationship,
+                    &e.status,
+                    e.link_text.as_deref(),
+                    e.reason.as_deref(),
+                )
+                .await?
+            {
                 edge_count += 1;
             }
         }

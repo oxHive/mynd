@@ -219,9 +219,18 @@ pub(crate) fn render_session_start(
         result.max_tokens
     );
     for l in &result.loaded {
+        let title = single_line(&neutralize_context_tags(&l.entry.title));
+        // A root carries its id: it is the parent_id for memories filed
+        // directly under it, and only for memories in the same store.
+        let heading = if l.is_root {
+            let id = single_line(&neutralize_context_tags(&l.entry.id));
+            let layer = if l.entry.layer == "org" { ", org" } else { "" };
+            format!("root: {title} ({id}{layer})")
+        } else {
+            title
+        };
         out.push_str(&format!(
-            "\n## {}\n{}\n",
-            single_line(&neutralize_context_tags(&l.entry.title)),
+            "\n## {heading}\n{}\n",
             neutralize_context_tags(&l.entry.content)
         ));
     }
