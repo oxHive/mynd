@@ -112,7 +112,7 @@ claude plugin marketplace add oxHive/mynd
 claude plugin install mynd@mynd
 ```
 
-This registers the MCP server and installs `/memory-store`, `/memory-search`, `/memory-list`, `/memory-edit`, and `/memory-status` as slash commands in one step.
+This registers the MCP server and installs `/memory-store`, `/memory-search`, `/memory-list`, `/memory-edit`, `/memory-status`, and `/memory-audit` as slash commands in one step.
 
 If you have a local clone, you can add the marketplace from the path instead:
 
@@ -142,7 +142,7 @@ Add that to `opencode.json` (project) or `~/.config/opencode/opencode.json` (glo
 
 - **Auto-registers the MCP server** if it finds `mynd` in `PATH` (skips silently if you've already configured `mcp.mynd` yourself, e.g. via the manual method below).
 - **Injects the Mynd system-prompt instructions** into every session — the OpenCode equivalent of the CLAUDE.md block `mynd init` writes for Claude Code, telling the agent when to call `mynd_session_start` and to never auto-store.
-- **Installs the memory skills** (`memory-store`, `memory-search`, `memory-list`, `memory-edit`, `memory-status`, `memory-connections`) into `~/.config/opencode/skills/` (or `$XDG_CONFIG_HOME/opencode/skills/`). OpenCode only discovers skills from specific filesystem paths, never from npm package contents, so the plugin copies its bundled skills there itself on every load — this keeps them in sync with the installed plugin version, so don't hand-edit the copies.
+- **Installs the memory skills** (`memory-store`, `memory-search`, `memory-list`, `memory-edit`, `memory-status`, `memory-connections`, `memory-audit`) into `~/.config/opencode/skills/` (or `$XDG_CONFIG_HOME/opencode/skills/`). OpenCode only discovers skills from specific filesystem paths, never from npm package contents, so the plugin copies its bundled skills there itself on every load — this keeps them in sync with the installed plugin version, so don't hand-edit the copies.
 
 The `mynd` binary itself still needs to be installed and on `PATH` (see [Installation](#installation) above) — the plugin only wires it up, it doesn't ship the server.
 
