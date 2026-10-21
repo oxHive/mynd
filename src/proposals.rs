@@ -147,6 +147,8 @@ impl SqliteStore {
     pub async fn validate_proposal_ops(&self, ops: &[ProposalOp]) -> Result<HashMap<String, i64>> {
         let mut base = HashMap::new();
         let mut earlier: HashSet<String> = HashSet::new();
+        // Existing parent id -> the create that appends a pointer line to it.
+        let mut appended_to: HashMap<String, String> = HashMap::new();
         for op in ops {
             match op {
                 ProposalOp::Create {
@@ -183,6 +185,9 @@ impl SqliteStore {
                                     )
                                 })?;
                                 base.insert(p.clone(), m.updated_at);
+                                appended_to
+                                    .entry(p.clone())
+                                    .or_insert_with(|| r#ref.clone());
                             }
                         }
                         (None, None) => {}
@@ -193,6 +198,16 @@ impl SqliteStore {
                 ProposalOp::Update { id, content, tags } => {
                     if content.is_none() && tags.is_none() {
                         bail!("update {id} changes nothing");
+                    }
+                    // Apply appends a create's pointer to its parent; a later
+                    // whole-content update of that parent would drop the line
+                    // and orphan the new memory.
+                    if content.is_some()
+                        && let Some(r) = appended_to.get(id)
+                    {
+                        bail!(
+                            "put the update of {id} before create {r}: the create appends its pointer line to {id}'s content, and a later content update would replace it"
+                        );
                     }
                     let m = self
                         .recall_by_id(id)
@@ -806,5 +821,50 @@ mod tests {
             s.recall_by_id(&hid(1)).await.unwrap().unwrap().content,
             "one"
         );
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_an_update_that_would_drop_a_pointer_an_earlier_create_appended() {
+        let (s, _d) = make_store().await;
+        put(
+            &s,
+            &hid(1),
+            "big index",
+            "# big\n- [a](child:x)",
+            &["role:index", "project:mynd"],
+        )
+        .await;
+        // Splitting an index: the create appends its pointer to hid(1), then
+        // the update replaces hid(1)'s whole content and would drop it.
+        let ops = vec![
+            create("sub", "# sub", Some(&hid(1))),
+            ProposalOp::Update {
+                id: hid(1),
+                content: Some("# big".into()),
+                tags: None,
+            },
+        ];
+        let err = s.validate_proposal_ops(&ops).await.unwrap_err();
+        assert!(err.to_string().contains("before create sub"), "{err}");
+        // Updating first, then appending, keeps the pointer: allowed.
+        let ops = vec![
+            ProposalOp::Update {
+                id: hid(1),
+                content: Some("# big".into()),
+                tags: None,
+            },
+            create("sub", "# sub", Some(&hid(1))),
+        ];
+        s.validate_proposal_ops(&ops).await.unwrap();
+        // A tags-only update leaves the content, and the pointer, alone.
+        let ops = vec![
+            create("sub", "# sub", Some(&hid(1))),
+            ProposalOp::Update {
+                id: hid(1),
+                content: None,
+                tags: Some(vec!["role:index".into(), "project:mynd".into()]),
+            },
+        ];
+        s.validate_proposal_ops(&ops).await.unwrap();
     }
 }

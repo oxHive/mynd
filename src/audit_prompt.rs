@@ -91,7 +91,8 @@ pub(crate) async fn build_audit_prompt(
          new content and tags the whole new list. Copy the current content from memory_recall and change only \
          the lines the fix needs.\n\
          - Inside content, link a memory created earlier in the same proposal as (child:ref:<short-name>).\n\
-         - New memories and new lines come before removing old lines or content.\n\
+         - An update that rewrites a memory's content comes before any create that names that memory as parent: \
+         the create's pointer line is appended to the updated content.\n\
          - Report a duplicate with kind duplicate and no ops.\n\n\
          Use memory_recall to read content and memory_tree to re-read structure. Propose each fix once, \
          then stop: the user reviews them in the dashboard."
@@ -168,5 +169,9 @@ mod tests {
         );
         assert!(p.contains("memory_propose"));
         assert!(p.contains("1. **No root.**"));
+        assert!(
+            p.contains("comes before any create that names that memory as parent"),
+            "the prompt states the op order memory_propose enforces"
+        );
     }
 }

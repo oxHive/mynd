@@ -183,7 +183,7 @@ Propose one fix to a project's index tree for the user to review in the dashboar
 }
 ```
 
-`kind` is one of `no-root`, `orphan`, `several-homes`, `broken-pointer`, `stale-pointer`, `oversized-index`, `bloated`, `legacy`, `cross-reference`, `duplicate` (report-only, no ops). Ops are `create` (`ref`, `title`, `content`, `tags`, optional `parent` and `pointer`) and `update` (`id`, optional whole `content`, optional whole `tags`); there is no delete. Content can link a memory created earlier in the same proposal as `(child:ref:<ref>)`. `layer: "org"` targets the org store. `replaces` revises a pending proposal in place.
+`kind` is one of `no-root`, `orphan`, `several-homes`, `broken-pointer`, `stale-pointer`, `oversized-index`, `bloated`, `legacy`, `cross-reference`, `duplicate` (report-only, no ops). Ops are `create` (`ref`, `title`, `content`, `tags`, optional `parent` and `pointer`) and `update` (`id`, optional whole `content`, optional whole `tags`); there is no delete. Content can link a memory created earlier in the same proposal as `(child:ref:<ref>)`. A create with `parent` appends its pointer line to that parent, so an `update` that rewrites the same memory's content must come before that create (the reverse order is rejected). `layer: "org"` targets the org store. `replaces` revises a pending proposal in place.
 
 On approval all ops apply in one transaction, and only if none of the touched memories changed since the proposal was made; otherwise the dashboard reports it stale and nothing is written.
 
