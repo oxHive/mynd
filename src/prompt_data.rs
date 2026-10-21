@@ -3,7 +3,7 @@
 //! Memory titles and contents are user data: written by people, by agents,
 //! by imports, and (for the Matrix bot) by anyone in `allowed_users`. Three
 //! places splice that data into text an LLM reads as instructions: the
-//! `<mynd-context>` block `mynd session-start` prints, the suggest-connections
+//! `<mynd-context>` block `mynd session-start` prints, the memory-audit
 //! prompt, and the MCP prompt handlers. Nothing here can stop a model from
 //! being talked into something by memory content, but these helpers close
 //! the structural holes: a memory cannot end the context block early and

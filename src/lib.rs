@@ -1,4 +1,5 @@
 pub mod api;
+pub mod audit_prompt;
 pub mod budget;
 pub mod chat_bot;
 pub mod cli;
