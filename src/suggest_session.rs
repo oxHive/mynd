@@ -84,7 +84,7 @@ impl SuggestSessionManager {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), StartError> {
-        let prompt = crate::server::build_suggest_prompt(&self.store)
+        let prompt = crate::audit_prompt::build_audit_prompt(&self.store, "", "workspace")
             .await
             .map_err(|e| StartError::Failed(e.to_string()))?;
         let mut inner = self.inner.lock().await;
