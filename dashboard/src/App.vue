@@ -8,12 +8,12 @@ import { useTagSettingsStore } from './stores/tagSettings.js'
 import { useThemeStore } from './stores/theme.js'
 import { useFontScaleStore } from './stores/fontScale.js'
 import { useAnalyticsStore } from './stores/analytics.js'
-import { useSuggestStore } from './stores/suggest.js'
+import { useAuditStore } from './stores/audit.js'
 import { useUpdateStore } from './stores/update.js'
 import { useHiveStore } from './stores/hive.js'
 import { BASE } from './api/client.js'
 import AppSidebar from './components/sidebar/AppSidebar.vue'
-import SuggestPanel from './components/graph/SuggestPanel.vue'
+import AuditPanel from './components/audit/AuditPanel.vue'
 import UpdateModal from './components/update/UpdateModal.vue'
 import Toast from './components/shared/Toast.vue'
 import AnalyticsView from './views/AnalyticsView.vue'
@@ -28,7 +28,7 @@ const graph = useGraphStore()
 const fb = useFeedbackStore()
 const tagSettings = useTagSettingsStore()
 const analytics = useAnalyticsStore()
-const suggest = useSuggestStore()
+const audit = useAuditStore()
 const update = useUpdateStore()
 const hive = useHiveStore()
 useThemeStore() // applies data-theme to <html> as soon as the store is created
@@ -60,7 +60,7 @@ onMounted(async () => {
       fb.fetchFeedback(),
       tagSettings.fetchNamespaces(),
       analytics.fetchSessionLogs(),
-      suggest.hydrate(),
+      audit.hydrate(),
       update.refresh(),
       hive.fetchStatus(),
     ])
@@ -77,8 +77,9 @@ onMounted(async () => {
     eventSource.onmessage = (e) => {
       let data
       try { data = JSON.parse(e.data) } catch { data = { type: 'changed' } }
-      if (data.type === 'suggest_session') suggest.handleEvent(data)
-      if (data.type === 'changed' || data.type === 'suggest_session') {
+      if (data.type === 'audit_session') audit.handleEvent(data)
+      if (data.type === 'audit_proposals') audit.fetchProposals()
+      if (data.type === 'changed' || data.type === 'audit_session') {
         memories.refreshSilently()
         graph.fetchEdges()
       }
@@ -129,9 +130,8 @@ onBeforeUnmount(() => {
         <FeedbackView v-show="ui.activeView === 'feedback'" />
         <SettingsView v-show="ui.activeView === 'settings'" />
       </main>
-      <!-- Global: available from any page whenever there are pending
-           suggestions to review, not just the Graph view. -->
-      <SuggestPanel v-if="suggest.panelOpen" />
+      <!-- Global: open from any page whenever there are fixes or suggestions to review. -->
+      <AuditPanel v-if="audit.panelOpen" />
       <UpdateModal
         v-if="update.changelogOpen || update.status === 'updating'"
         @close="update.changelogOpen = false"
