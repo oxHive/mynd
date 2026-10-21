@@ -1681,16 +1681,20 @@ fn parses_data_wipe_with_yes_flag() {
 }
 
 #[test]
-fn parses_suggest_revise_subcommand() {
-    let cli = Cli::parse_from(["mynd", "suggest", "revise", "edge_x", "make it a parent"]);
+fn parses_audit_revise_subcommand() {
+    let cli = Cli::parse_from(["mynd", "audit", "revise", "prop_x", "keep the other one"]);
     match cli.command {
-        Some(Command::Suggest {
-            action: SuggestAction::Revise { edge_id, feedback },
+        Some(Command::Audit {
+            action:
+                AuditAction::Revise {
+                    proposal_id,
+                    feedback,
+                },
         }) => {
-            assert_eq!(edge_id, "edge_x");
-            assert_eq!(feedback, "make it a parent");
+            assert_eq!(proposal_id, "prop_x");
+            assert_eq!(feedback, "keep the other one");
         }
-        _ => panic!("expected Suggest Revise command"),
+        _ => panic!("expected Audit Revise command"),
     }
 }
 
@@ -1773,7 +1777,7 @@ fn with_isolated_cli_env<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Like `with_isolated_cli_env`, but also writes a global config with
-/// `[dashboard] api_url = "<api_url>"` — needed for `mynd suggest`,
+/// `[dashboard] api_url = "<api_url>"` — needed for `mynd audit`,
 /// which reads the REST API base URL from the global config rather than
 /// an env var.
 fn with_isolated_cli_env_and_dashboard_api_url<T>(api_url: &str, f: impl FnOnce() -> T) -> T {
@@ -2522,48 +2526,84 @@ fn upgrade_without_yes_is_cancelled_without_running_install_script() {
 }
 
 #[test]
-fn suggest_actions_report_friendly_error_when_server_not_running() {
+fn audit_actions_report_friendly_error_when_server_not_running() {
     with_isolated_cli_env_and_dashboard_api_url("http://127.0.0.1:1", || {
-        let err = cmd_suggest(SuggestAction::Start).unwrap_err();
+        let err = cmd_audit(AuditAction::Start {
+            project: Some("mynd".to_string()),
+            org: false,
+        })
+        .unwrap_err();
         assert!(err.to_string().contains("mynd up"));
-        assert!(cmd_suggest(SuggestAction::Status { json: false }).is_err());
+        assert!(cmd_audit(AuditAction::Status { json: false }).is_err());
         assert!(
-            cmd_suggest(SuggestAction::Revise {
-                edge_id: "edge_x".to_string(),
+            cmd_audit(AuditAction::Revise {
+                proposal_id: "prop_x".to_string(),
                 feedback: "f".to_string(),
             })
             .is_err()
         );
-        assert!(cmd_suggest(SuggestAction::End).is_err());
+        assert!(cmd_audit(AuditAction::End).is_err());
     });
 }
 
 #[test]
-fn suggest_lifecycle_against_mock_server() {
+fn audit_lifecycle_against_mock_server() {
     let (addr_tx, addr_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
             let app = axum::Router::new()
                 .route(
-                    "/api/v1/suggest-sessions",
+                    "/api/v1/audit-sessions",
                     axum::routing::post(|| async { axum::http::StatusCode::ACCEPTED }),
                 )
                 .route(
-                    "/api/v1/suggest-sessions/current",
+                    "/api/v1/audit-sessions/current",
                     axum::routing::get(|| async {
                         axum::Json(serde_json::json!({
                             "active": true,
                             "phase": "reviewing",
-                            "revising_edge_id": null,
-                            "queued_edge_ids": [],
+                            "project": "mynd",
+                            "revising_proposal_id": null,
+                            "queued_proposal_ids": [],
                         }))
                     })
                     .delete(|| async { axum::Json(serde_json::json!({"ended": true})) }),
                 )
                 .route(
-                    "/api/v1/suggest-sessions/current/revise",
+                    "/api/v1/audit-sessions/current/revise",
                     axum::routing::post(|| async { axum::http::StatusCode::ACCEPTED }),
+                )
+                .route(
+                    "/api/v1/audit-proposals",
+                    axum::routing::get(|| async {
+                        axum::Json(serde_json::json!({ "proposals": [
+                            { "id": "prop_1", "kind": "orphan", "summary": "file it", "ops": [{}] }
+                        ] }))
+                    }),
+                )
+                .route(
+                    "/api/v1/audit-proposals/prop_1/apply",
+                    axum::routing::post(|| async {
+                        axum::Json(
+                            serde_json::json!({ "applied": true, "touched": ["mem_a", "mem_b"] }),
+                        )
+                    }),
+                )
+                .route(
+                    "/api/v1/audit-proposals/prop_2/apply",
+                    axum::routing::post(|| async {
+                        (
+                            axum::http::StatusCode::CONFLICT,
+                            axum::Json(serde_json::json!({ "error": "stale, re-run the audit" })),
+                        )
+                    }),
+                )
+                .route(
+                    "/api/v1/audit-proposals/prop_1/reject",
+                    axum::routing::post(|| async {
+                        axum::Json(serde_json::json!({ "rejected": true }))
+                    }),
                 );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
@@ -2574,15 +2614,40 @@ fn suggest_lifecycle_against_mock_server() {
     let addr = addr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
 
     with_isolated_cli_env_and_dashboard_api_url(&format!("http://{addr}"), || {
-        cmd_suggest(SuggestAction::Start).unwrap();
-        cmd_suggest(SuggestAction::Status { json: false }).unwrap();
-        cmd_suggest(SuggestAction::Status { json: true }).unwrap();
-        cmd_suggest(SuggestAction::Revise {
-            edge_id: "edge_x".to_string(),
-            feedback: "make it a parent".to_string(),
+        cmd_audit(AuditAction::Start {
+            project: Some("mynd".to_string()),
+            org: false,
         })
         .unwrap();
-        cmd_suggest(SuggestAction::End).unwrap();
+        cmd_audit(AuditAction::Status { json: false }).unwrap();
+        cmd_audit(AuditAction::Status { json: true }).unwrap();
+        cmd_audit(AuditAction::Proposals {
+            project: Some("mynd".to_string()),
+            json: false,
+        })
+        .unwrap();
+        cmd_audit(AuditAction::Apply {
+            id: "prop_1".to_string(),
+        })
+        .unwrap();
+        let err = cmd_audit(AuditAction::Apply {
+            id: "prop_2".to_string(),
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("stale"),
+            "the API's message reaches the user: {err}"
+        );
+        cmd_audit(AuditAction::Reject {
+            id: "prop_1".to_string(),
+        })
+        .unwrap();
+        cmd_audit(AuditAction::Revise {
+            proposal_id: "prop_1".to_string(),
+            feedback: "keep the other one".to_string(),
+        })
+        .unwrap();
+        cmd_audit(AuditAction::End).unwrap();
     });
 }
 
@@ -2951,4 +3016,20 @@ fn write_atomic_does_not_share_its_temp_path_with_another_writer() {
 
     write_atomic(&path, "mine").unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+}
+
+#[test]
+fn audit_cli_parses_every_subcommand() {
+    use clap::Parser;
+    let parse = |args: &[&str]| crate::cli::Cli::try_parse_from(args).map(|_| ());
+    assert!(parse(&["mynd", "audit", "start", "--project", "mynd"]).is_ok());
+    assert!(parse(&["mynd", "audit", "start", "--org"]).is_ok());
+    assert!(parse(&["mynd", "audit", "proposals", "--json"]).is_ok());
+    assert!(parse(&["mynd", "audit", "apply", "prop_1"]).is_ok());
+    assert!(parse(&["mynd", "audit", "reject", "prop_1"]).is_ok());
+    assert!(parse(&["mynd", "audit", "revise", "prop_1", "keep the other one"]).is_ok());
+    assert!(
+        parse(&["mynd", "suggest", "start"]).is_err(),
+        "suggest is gone"
+    );
 }
