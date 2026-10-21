@@ -4,7 +4,9 @@
 //! if none of the memories it touches changed since it was proposed.
 
 use crate::store::{
-    SqliteStore, chrono_now, validate_pointer, validate_tag_format, validate_tags_against_registry,
+    NewMemoryRow, SqliteStore, append_pointer, chrono_now, compute_hive_content_hash,
+    insert_memory_tx, rewrite_memory_tx, validate_pointer, validate_tag_format,
+    validate_tags_against_registry,
 };
 use anyhow::{Result, anyhow, bail};
 use libsql::params;
@@ -79,6 +81,14 @@ pub struct ProposalEntry {
     pub base: HashMap<String, i64>,
     pub status: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ApplyOutcome {
+    /// Every op committed; the ids of all memories written, sorted.
+    Applied(Vec<String>),
+    /// Nothing written: these memories changed since the proposal was made.
+    Stale(Vec<String>),
 }
 
 static REF_NAME_RE: std::sync::LazyLock<regex::Regex> =
@@ -320,6 +330,139 @@ impl SqliteStore {
             .await?;
         Ok(changed > 0)
     }
+
+    /// Applies `ops` in one transaction, but only if every memory in `base`
+    /// still has its recorded `updated_at`. Ops are re-validated as they run,
+    /// against the transaction's own view, so a conflict that appeared after
+    /// proposing (for example a new root) aborts the whole proposal.
+    pub async fn apply_proposal_ops(
+        &self,
+        ops: &[ProposalOp],
+        base: &HashMap<String, i64>,
+        layer: &str,
+    ) -> Result<ApplyOutcome> {
+        let _w = self.write().await;
+        // BEGIN IMMEDIATE before any read: SQLite's write lock then covers the
+        // base check and every op, so no other process can change a touched
+        // memory in between. Any `?` or early return drops `tx`, rolling back.
+        let tx = self.begin().await?;
+        let mut stale = Vec::new();
+        for (id, at) in base {
+            match self.recall_by_id(id).await? {
+                Some(m) if m.updated_at == *at => {}
+                _ => stale.push(id.clone()),
+            }
+        }
+        if !stale.is_empty() {
+            stale.sort();
+            return Ok(ApplyOutcome::Stale(stale));
+        }
+
+        let ids: HashMap<String, String> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProposalOp::Create { r#ref, .. } => Some((
+                    r#ref.clone(),
+                    format!("mem_{}", uuid::Uuid::new_v4().simple()),
+                )),
+                ProposalOp::Update { .. } => None,
+            })
+            .collect();
+        let now = chrono_now();
+        // Reads below go through the same connection, so they see this
+        // transaction's earlier writes.
+        let mut touched = Vec::new();
+        for op in ops {
+            match op {
+                ProposalOp::Create {
+                    r#ref,
+                    title,
+                    content,
+                    tags,
+                    parent,
+                    pointer,
+                } => {
+                    let id = &ids[r#ref];
+                    let content = substitute_refs(content, &ids);
+                    validate_tags_against_registry(self, tags).await?;
+                    self.check_content_size(title, &content).await?;
+                    self.check_root_unique(id, tags).await?;
+                    let tokens = crate::budget::count_entry_tokens(title, &content) as i64;
+                    let hash = compute_hive_content_hash(title, &content, tags, layer, "project");
+                    let row = NewMemoryRow {
+                        id,
+                        title,
+                        content: &content,
+                        tags,
+                        token_count: None,
+                        layer,
+                        memory_type: "project",
+                    };
+                    insert_memory_tx(&tx, &row, now, tokens, &hash).await?;
+                    touched.push(id.clone());
+                    if let (Some(p), Some(ptr)) = (parent, pointer) {
+                        let pid = ids.get(p).cloned().unwrap_or_else(|| p.clone());
+                        let parent = self
+                            .recall_by_id(&pid)
+                            .await?
+                            .ok_or_else(|| anyhow!("parent {pid} not found"))?;
+                        let new_content =
+                            append_pointer(&parent.content, validate_pointer(ptr)?, id);
+                        let p_tokens =
+                            crate::budget::count_entry_tokens(&parent.title, &new_content) as i64;
+                        let p_hash = compute_hive_content_hash(
+                            &parent.title,
+                            &new_content,
+                            &parent.tags,
+                            &parent.layer,
+                            &parent.memory_type,
+                        );
+                        rewrite_memory_tx(
+                            &tx,
+                            &pid,
+                            &parent.title,
+                            &new_content,
+                            &parent.tags,
+                            now,
+                            p_tokens,
+                            &p_hash,
+                        )
+                        .await?;
+                        touched.push(pid);
+                    }
+                }
+                ProposalOp::Update { id, content, tags } => {
+                    let m = self
+                        .recall_by_id(id)
+                        .await?
+                        .ok_or_else(|| anyhow!("memory {id} not found"))?;
+                    let content = content
+                        .as_deref()
+                        .map(|c| substitute_refs(c, &ids))
+                        .unwrap_or_else(|| m.content.clone());
+                    let tags = tags.clone().unwrap_or_else(|| m.tags.clone());
+                    validate_tags_against_registry(self, &tags).await?;
+                    self.check_content_size(&m.title, &content).await?;
+                    self.check_root_unique(id, &tags).await?;
+                    let tokens = crate::budget::count_entry_tokens(&m.title, &content) as i64;
+                    let hash = compute_hive_content_hash(
+                        &m.title,
+                        &content,
+                        &tags,
+                        &m.layer,
+                        &m.memory_type,
+                    );
+                    rewrite_memory_tx(&tx, id, &m.title, &content, &tags, now, tokens, &hash)
+                        .await?;
+                    touched.push(id.clone());
+                }
+            }
+        }
+        tx.commit().await?;
+        touched.sort();
+        touched.dedup();
+        Ok(ApplyOutcome::Applied(touched))
+    }
 }
 
 #[cfg(test)]
@@ -508,5 +651,160 @@ mod tests {
                 .unwrap()
         );
         assert!(!s.replace_proposal(&id, &revised, &base).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn apply_creates_files_and_substitutes_refs_in_one_go() {
+        let (s, _d) = make_store().await;
+        put(&s, &hid(1), "root", "# r", &["role:root", "project:mynd"]).await;
+        put(&s, &hid(2), "bloated", "two topics", &["project:mynd"]).await;
+        let ops = vec![
+            create("a", "topic a", None),
+            create("b", "topic b", None),
+            ProposalOp::Update {
+                id: hid(2),
+                content: Some(
+                    "intro\n- [A: topic a](child:ref:a)\n- [B: topic b](child:ref:b)".into(),
+                ),
+                tags: Some(vec!["project:mynd".into(), "role:index".into()]),
+            },
+            create("c", "under root", Some(&hid(1))),
+        ];
+        let base = s.validate_proposal_ops(&ops).await.unwrap();
+        let ApplyOutcome::Applied(touched) = s
+            .apply_proposal_ops(&ops, &base, "workspace")
+            .await
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        assert_eq!(
+            touched.len(),
+            5,
+            "three creates, the update and the root parent: {touched:?}"
+        );
+
+        let idx = s.recall_by_id(&hid(2)).await.unwrap().unwrap();
+        assert!(
+            !idx.content.contains("ref:"),
+            "refs substituted: {}",
+            idx.content
+        );
+        assert!(idx.tags.contains(&"role:index".to_string()));
+        let children = s.get_edges_grouped(&hid(2)).await.unwrap().children;
+        assert_eq!(children.len(), 2, "both pointer lines became edges");
+        let root = s.recall_by_id(&hid(1)).await.unwrap().unwrap();
+        assert!(
+            root.content.contains("](child:mem_"),
+            "root got the new pointer: {}",
+            root.content
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_is_stale_and_writes_nothing_when_a_touched_memory_changed() {
+        let (s, _d) = make_store().await;
+        put(&s, &hid(1), "leaf", "l", &["project:mynd"]).await;
+        let ops = vec![
+            create("new", "fresh", None),
+            ProposalOp::Update {
+                id: hid(1),
+                content: Some("from proposal".into()),
+                tags: None,
+            },
+        ];
+        let mut base = s.validate_proposal_ops(&ops).await.unwrap();
+        // The user edited the memory after the proposal was made.
+        base.insert(hid(1), base[&hid(1)] - 10);
+        let out = s
+            .apply_proposal_ops(&ops, &base, "workspace")
+            .await
+            .unwrap();
+        assert_eq!(out, ApplyOutcome::Stale(vec![hid(1)]));
+        assert_eq!(s.recall_by_id(&hid(1)).await.unwrap().unwrap().content, "l");
+        assert_eq!(
+            s.count().await.unwrap(),
+            1,
+            "the create did not happen either"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_rolls_back_every_op_when_a_later_op_fails() {
+        let (s, _d) = make_store().await;
+        put(&s, &hid(1), "leaf", "l", &["project:mynd"]).await;
+        let ops = vec![
+            create("first", "one", None),
+            ProposalOp::Update {
+                id: hid(1),
+                content: Some("changed".into()),
+                tags: None,
+            },
+            ProposalOp::Create {
+                r#ref: "root".into(),
+                title: "root".into(),
+                content: "#".into(),
+                tags: vec!["role:root".into(), "project:mynd".into()],
+                parent: None,
+                pointer: None,
+            },
+        ];
+        let base = s.validate_proposal_ops(&ops).await.unwrap();
+        // A root appears between proposing and applying.
+        put(
+            &s,
+            &hid(5),
+            "other root",
+            "#",
+            &["role:root", "project:mynd"],
+        )
+        .await;
+        assert!(
+            s.apply_proposal_ops(&ops, &base, "workspace")
+                .await
+                .is_err()
+        );
+        assert_eq!(s.recall_by_id(&hid(1)).await.unwrap().unwrap().content, "l");
+        assert_eq!(
+            s.count().await.unwrap(),
+            2,
+            "only the leaf and the other root exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn applying_one_proposal_makes_an_overlapping_one_stale() {
+        let (s, _d) = make_store().await;
+        put(&s, &hid(1), "leaf", "l", &["project:mynd"]).await;
+        let first = vec![ProposalOp::Update {
+            id: hid(1),
+            content: Some("one".into()),
+            tags: None,
+        }];
+        let second = vec![ProposalOp::Update {
+            id: hid(1),
+            content: Some("two".into()),
+            tags: None,
+        }];
+        let b1 = s.validate_proposal_ops(&first).await.unwrap();
+        let b2 = s.validate_proposal_ops(&second).await.unwrap();
+        // Make sure the first apply lands in a later second than the proposals.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(matches!(
+            s.apply_proposal_ops(&first, &b1, "workspace")
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied(_)
+        ));
+        assert_eq!(
+            s.apply_proposal_ops(&second, &b2, "workspace")
+                .await
+                .unwrap(),
+            ApplyOutcome::Stale(vec![hid(1)])
+        );
+        assert_eq!(
+            s.recall_by_id(&hid(1)).await.unwrap().unwrap().content,
+            "one"
+        );
     }
 }
