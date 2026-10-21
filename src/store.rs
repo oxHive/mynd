@@ -299,7 +299,7 @@ async fn sync_relationship_edges(
 /// Inserts or overwrites one memory row with its tags on `tx`, clears its
 /// tombstone, syncs its content links to edges and journals it. Shared by
 /// `store_with_timestamp` and `store_with_parent`.
-async fn insert_memory_tx(
+pub(crate) async fn insert_memory_tx(
     tx: &libsql::Transaction,
     m: &NewMemoryRow<'_>,
     now: i64,
@@ -368,7 +368,7 @@ async fn insert_memory_tx(
 /// content links to edges and journals it. Returns `false` (having written
 /// nothing) when no row has `id`. Shared by `update` and `store_with_parent`.
 #[allow(clippy::too_many_arguments)]
-async fn rewrite_memory_tx(
+pub(crate) async fn rewrite_memory_tx(
     tx: &libsql::Transaction,
     id: &str,
     title: &str,
@@ -434,7 +434,7 @@ pub(crate) fn fts_quote(query: &str) -> String {
 /// Rejects tags that are empty/whitespace-only or unreasonably long.
 const MAX_TAG_LEN: usize = 128;
 
-fn validate_tag_format(tags: &[String]) -> Result<()> {
+pub(crate) fn validate_tag_format(tags: &[String]) -> Result<()> {
     for t in tags {
         if t.trim().is_empty() {
             return Err(anyhow!("tag must not be empty or whitespace-only"));
@@ -588,7 +588,10 @@ fn merge_tag_namespaces(defaults: Value, stored: Value) -> Value {
 /// every tag in that namespace must use one of the registered values.
 /// A namespace with `values_mode: "fixed"` but an empty `values` list is
 /// not yet restrictive (nothing has been registered to check against).
-async fn validate_tags_against_registry(store: &SqliteStore, tags: &[String]) -> Result<()> {
+pub(crate) async fn validate_tags_against_registry(
+    store: &SqliteStore,
+    tags: &[String],
+) -> Result<()> {
     let registry = store.tag_namespace_registry().await;
     let Some(obj) = registry.as_object() else {
         return validate_project_singleton_fallback(tags);
@@ -677,14 +680,14 @@ impl SqliteStore {
 
     /// Takes the write lock; see `write_lock`. Never call another public
     /// write method while holding it (the lock is not re-entrant).
-    async fn write(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    pub(crate) async fn write(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.write_lock.lock().await
     }
 
     /// Opens a transaction that takes SQLite's write lock up front
     /// (`BEGIN IMMEDIATE`), so a transaction that reads first can never be
     /// starved or fail with SQLITE_BUSY when it later tries to write.
-    async fn begin(&self) -> Result<libsql::Transaction> {
+    pub(crate) async fn begin(&self) -> Result<libsql::Transaction> {
         Ok(self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
