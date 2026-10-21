@@ -1,10 +1,10 @@
 use crate::{
     api,
+    audit_session::AuditSessionManager,
     config::{AgentSettings, ServerSettings, SyncSettings},
     hive::identity::DeviceIdentity,
     server::Mynd,
     store::SqliteStore,
-    suggest_session::SuggestSessionManager,
     update::SharedUpdateState,
 };
 use anyhow::Result;
@@ -76,7 +76,13 @@ pub fn app_router(
         Default::default(),
     );
     let agent_for_status = agent.clone();
-    let suggest = SuggestSessionManager::new(store.clone(), events_tx.clone(), agent, mcp_url);
+    let audit = AuditSessionManager::new(
+        store.clone(),
+        org_store.clone(),
+        events_tx.clone(),
+        agent,
+        mcp_url,
+    );
     api::router(
         store,
         org_store,
@@ -84,7 +90,7 @@ pub fn app_router(
         org_sync,
         dashboard_origin,
         events_tx,
-        suggest,
+        audit,
         update_state,
         agent_for_status,
         guard_predefined_namespaces,
@@ -297,9 +303,9 @@ pub async fn run_up(
     plain: bool,
     notify_on_store: Option<Arc<tokio::sync::Notify>>,
 ) -> Result<()> {
-    // Sized well above what a burst (import, a suggest session creating
-    // many edges) can produce between two SSE polls, so a slow dashboard
-    // tab sees every "changed"/"update_*"/"suggest_session" event instead
+    // Sized well above what a burst (import, an audit session proposing
+    // many fixes) can produce between two SSE polls, so a slow dashboard
+    // tab sees every "changed"/"update_*"/"audit_session" event instead
     // of silently missing ones once the ring buffer wraps.
     let (events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(256);
     spawn_change_poller(
@@ -431,7 +437,7 @@ pub async fn run_up(
         tracing::warn!(
             "binding to {}: the REST API and MCP endpoint are UNAUTHENTICATED; \
              anyone who can reach this address can read and modify all memories, \
-             and can call POST /api/v1/suggest-sessions to spawn the configured agent command",
+             and can call POST /api/v1/audit-sessions to spawn the configured agent command",
             settings.host
         );
         if hive_enabled {
@@ -804,7 +810,7 @@ mod tests {
         (Arc::new(SqliteStore::new(conn)), dir)
     }
 
-    /// Writes a stub agent script (mirrors the suggest_session test stub) so
+    /// Writes a stub agent script (mirrors the audit_session test stub) so
     /// app_router tests don't depend on a real `claude` binary being on PATH.
     fn write_stub_agent(dir: &std::path::Path) -> String {
         let script = dir.join("stub-agent.sh");
@@ -1004,7 +1010,7 @@ mod tests {
         let s = send(
             app.clone(),
             "POST",
-            "/api/v1/suggest-sessions",
+            "/api/v1/audit-sessions",
             &[
                 ("host", "127.0.0.1:3456"),
                 ("origin", "https://evil.example"),
@@ -1037,7 +1043,7 @@ mod tests {
         let s = send(
             app.clone(),
             "DELETE",
-            "/api/v1/suggest-sessions/current",
+            "/api/v1/audit-sessions/current",
             &[
                 ("host", "127.0.0.1:3456"),
                 ("origin", "http://localhost:3457"),
@@ -1045,7 +1051,7 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
-        let s = send(app, "DELETE", "/api/v1/suggest-sessions/current", &[]).await;
+        let s = send(app, "DELETE", "/api/v1/audit-sessions/current", &[]).await;
         assert_eq!(s, StatusCode::OK);
     }
 
