@@ -1777,7 +1777,7 @@ fn with_isolated_cli_env<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Like `with_isolated_cli_env`, but also writes a global config with
-/// `[dashboard] api_url = "<api_url>"` — needed for `mynd audit`,
+/// `[dashboard] api_url = "<api_url>"`, needed for `mynd audit`,
 /// which reads the REST API base URL from the global config rather than
 /// an env var.
 fn with_isolated_cli_env_and_dashboard_api_url<T>(api_url: &str, f: impl FnOnce() -> T) -> T {

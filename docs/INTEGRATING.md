@@ -166,6 +166,31 @@ Nodes reachable from the root come first in breadth-first order, then every `pro
 
 ---
 
+#### `memory_propose`
+
+Propose one fix to a project's index tree for the user to review in the dashboard's Audit panel. It never writes memories itself.
+
+**Input:**
+```json
+{
+  "project": "mynd",
+  "kind": "orphan",
+  "summary": "File 'Old matrix notes' under the root",
+  "reason": "Nothing points to it, and its subject fits no existing index.",
+  "ops": [
+    { "op": "update", "id": "mem_…root", "content": "# mynd\n…\n- [Matrix bot notes: homeserver login, room mapping; open when touching the Matrix bot](child:mem_…notes)" }
+  ]
+}
+```
+
+`kind` is one of `no-root`, `orphan`, `several-homes`, `broken-pointer`, `stale-pointer`, `oversized-index`, `bloated`, `legacy`, `cross-reference`, `duplicate` (report-only, no ops). Ops are `create` (`ref`, `title`, `content`, `tags`, optional `parent` and `pointer`) and `update` (`id`, optional whole `content`, optional whole `tags`); there is no delete. Content can link a memory created earlier in the same proposal as `(child:ref:<ref>)`. `layer: "org"` targets the org store. `replaces` revises a pending proposal in place.
+
+On approval all ops apply in one transaction, and only if none of the touched memories changed since the proposal was made; otherwise the dashboard reports it stale and nothing is written.
+
+**Output:** `{ "id": "prop_…", "status": "pending", "replaced": false }`
+
+---
+
 #### `memory_store_edge`
 
 Store a confirmed connection between two memories. Use this after you or the user has explicitly decided two memories are related — do not infer edges automatically.
