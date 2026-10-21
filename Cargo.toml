@@ -20,7 +20,7 @@ path = "src/lib.rs"
 rmcp = { version = "3", features = ["server", "macros", "transport-streamable-http-server", "transport-child-process", "client"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["cors"] }
-libsql = { version = "0.9", features = ["core", "replication"] }
+libsql = { version = "0.10", features = ["core", "replication"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
