@@ -19,7 +19,7 @@ async fn test_store() -> (Arc<SqliteStore>, TempDir) {
     (Arc::new(SqliteStore::new(conn)), dir)
 }
 
-/// Writes a stub agent script that mirrors suggest_session's test stub:
+/// Writes a stub agent script that mirrors audit_session's test stub:
 /// it echoes a fake `claude -p --output-format json` result so a real
 /// process gets spawned but nothing calls out to a real agent.
 fn write_stub_agent(dir: &std::path::Path) -> String {
@@ -34,19 +34,20 @@ fn write_stub_agent(dir: &std::path::Path) -> String {
     script.to_string_lossy().into_owned()
 }
 
-fn test_suggest_manager(
+fn test_audit_manager(
     store: Arc<SqliteStore>,
     dir: &std::path::Path,
     events: Events,
-) -> Arc<crate::suggest_session::SuggestSessionManager> {
+) -> Arc<crate::audit_session::AuditSessionManager> {
     let script = write_stub_agent(dir);
     let agent = crate::config::AgentSettings {
         command: script,
         args: vec![],
         kind: crate::config::AgentKind::Claude,
     };
-    crate::suggest_session::SuggestSessionManager::new(
+    crate::audit_session::AuditSessionManager::new(
         store,
+        None,
         events,
         agent,
         "http://127.0.0.1:3456/mcp".into(),
@@ -78,7 +79,7 @@ async fn test_router_over_store(
     guard_predefined_namespaces: bool,
 ) -> (Router, TempDir) {
     let (events, _) = broadcast::channel(16);
-    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let audit = test_audit_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
         None,
@@ -86,7 +87,7 @@ async fn test_router_over_store(
         None,
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         test_update_state(),
         test_agent_settings(),
         guard_predefined_namespaces,
@@ -102,7 +103,7 @@ async fn test_router_over_store(
 async fn test_router_with_update_state(update_state: SharedUpdateState) -> (Router, TempDir) {
     let (store, dir) = test_store().await;
     let (events, _) = broadcast::channel(16);
-    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let audit = test_audit_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
         None,
@@ -110,7 +111,7 @@ async fn test_router_with_update_state(update_state: SharedUpdateState) -> (Rout
         None,
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         update_state,
         test_agent_settings(),
         true,
@@ -126,7 +127,7 @@ async fn test_router_with_update_state(update_state: SharedUpdateState) -> (Rout
 async fn test_router_with_events() -> (Router, broadcast::Receiver<Value>, TempDir) {
     let (store, dir) = test_store().await;
     let (events, rx) = broadcast::channel(16);
-    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let audit = test_audit_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
         None,
@@ -134,7 +135,7 @@ async fn test_router_with_events() -> (Router, broadcast::Receiver<Value>, TempD
         None,
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         test_update_state(),
         test_agent_settings(),
         true,
@@ -150,7 +151,7 @@ async fn test_router_with_events() -> (Router, broadcast::Receiver<Value>, TempD
 async fn test_router_with_store() -> (Router, Arc<SqliteStore>, TempDir) {
     let (store, dir) = test_store().await;
     let (events, _) = broadcast::channel(16);
-    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let audit = test_audit_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         Arc::clone(&store),
         None,
@@ -158,7 +159,7 @@ async fn test_router_with_store() -> (Router, Arc<SqliteStore>, TempDir) {
         None,
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         test_update_state(),
         test_agent_settings(),
         true,
@@ -180,7 +181,7 @@ async fn test_router_with_hive_identity(
 ) -> (Router, Arc<SqliteStore>, TempDir) {
     let (store, dir) = test_store().await;
     let (events, _) = broadcast::channel(16);
-    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let audit = test_audit_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         Arc::clone(&store),
         None,
@@ -188,7 +189,7 @@ async fn test_router_with_hive_identity(
         None,
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         test_update_state(),
         test_agent_settings(),
         true,
@@ -205,7 +206,7 @@ async fn test_router_with_org() -> (Router, TempDir, TempDir) {
     let (store, dir) = test_store().await;
     let (org_store, org_dir) = test_store().await;
     let (events, _) = broadcast::channel(16);
-    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let audit = test_audit_manager(Arc::clone(&store), dir.path(), events.clone());
     let r = router(
         store,
         Some(org_store),
@@ -220,7 +221,7 @@ async fn test_router_with_org() -> (Router, TempDir, TempDir) {
         }),
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         test_update_state(),
         test_agent_settings(),
         true,
@@ -1906,24 +1907,37 @@ async fn status_includes_sync_details() {
 }
 
 #[tokio::test]
-async fn suggest_session_start_status_end_roundtrip() {
+async fn audit_session_start_status_end_roundtrip() {
     let (app, _dir) = test_router().await;
 
-    let (st, body) = req(app.clone(), "POST", "/api/v1/suggest-sessions", None).await;
+    let (st, body) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/audit-sessions",
+        Some(json!({ "project": "mynd" })),
+    )
+    .await;
     assert_eq!(st, StatusCode::ACCEPTED);
     assert_eq!(body["started"], true);
 
-    let (st, _) = req(app.clone(), "POST", "/api/v1/suggest-sessions", None).await;
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/audit-sessions",
+        Some(json!({ "project": "mynd" })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT);
 
-    let (st, status) = req(app.clone(), "GET", "/api/v1/suggest-sessions/current", None).await;
+    let (st, status) = req(app.clone(), "GET", "/api/v1/audit-sessions/current", None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(status["active"], true);
+    assert_eq!(status["project"], "mynd");
 
     let (st, ended) = req(
         app.clone(),
         "DELETE",
-        "/api/v1/suggest-sessions/current",
+        "/api/v1/audit-sessions/current",
         None,
     )
     .await;
@@ -1932,61 +1946,42 @@ async fn suggest_session_start_status_end_roundtrip() {
 }
 
 #[tokio::test]
-async fn revise_validates_session_and_edge() {
-    // The manager checks the edge exists before checking session state
-    // (see suggest_session::revise), so exercising the "no active
-    // session" 409 needs a real edge_id; a bogus id would 404 either way.
+async fn revise_validates_session_and_proposal() {
+    // The manager checks the proposal is pending before checking session
+    // state (see audit_session::revise), so exercising the "no active
+    // session" 409 needs a real proposal; a bogus id would 404 either way.
     let (app, store, _dir) = test_router_with_store().await;
-    let tags: Vec<String> = vec![];
-    store
-        .store(&crate::store::NewMemoryRow {
-            id: "mem_a",
-            title: "A",
-            content: "a",
-            tags: &tags,
-            token_count: None,
-            layer: "workspace",
-            memory_type: "project",
-        })
-        .await
-        .unwrap();
-    store
-        .store(&crate::store::NewMemoryRow {
-            id: "mem_b",
-            title: "B",
-            content: "b",
-            tags: &tags,
-            token_count: None,
-            layer: "workspace",
-            memory_type: "project",
-        })
-        .await
-        .unwrap();
-    let crate::model::EdgeCreate::Created(edge_id) = store
-        .create_edge_with_status("mem_a", "mem_b", "sibling", "pending", None, None)
-        .await
-        .unwrap()
-    else {
-        panic!("expected EdgeCreate::Created");
-    };
+    put_leaf(&store, "mem_0000000000000000000000000000a001", "old").await;
+    let id = propose(
+        &store,
+        vec![update("mem_0000000000000000000000000000a001", "new")],
+        "workspace",
+    )
+    .await;
 
     let (st, _) = req(
         app.clone(),
         "POST",
-        "/api/v1/suggest-sessions/current/revise",
-        Some(json!({ "edge_id": edge_id, "feedback": "make it parent" })),
+        "/api/v1/audit-sessions/current/revise",
+        Some(json!({ "proposal_id": id, "feedback": "word it better" })),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
 
-    let (st, _) = req(app.clone(), "POST", "/api/v1/suggest-sessions", None).await;
+    let (st, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/audit-sessions",
+        Some(json!({ "project": "mynd" })),
+    )
+    .await;
     assert_eq!(st, StatusCode::ACCEPTED);
 
     let (st, _) = req(
         app.clone(),
         "POST",
-        "/api/v1/suggest-sessions/current/revise",
-        Some(json!({ "edge_id": "edge_bogus", "feedback": "make it parent" })),
+        "/api/v1/audit-sessions/current/revise",
+        Some(json!({ "proposal_id": "prop_bogus", "feedback": "word it better" })),
     )
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
@@ -3041,7 +3036,7 @@ async fn set_hive_enabled_refuses_when_cloud_sync_is_enabled() {
     // be a way around that.
     let (store, dir) = test_store().await;
     let (events, _) = broadcast::channel(16);
-    let suggest = test_suggest_manager(Arc::clone(&store), dir.path(), events.clone());
+    let audit = test_audit_manager(Arc::clone(&store), dir.path(), events.clone());
     let app = router(
         Arc::clone(&store),
         None,
@@ -3052,7 +3047,7 @@ async fn set_hive_enabled_refuses_when_cloud_sync_is_enabled() {
         None,
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         test_update_state(),
         test_agent_settings(),
         true,
@@ -3519,4 +3514,215 @@ async fn project_tree_for_the_org_layer_without_an_org_store_is_422() {
             .unwrap()
             .contains("org layer not configured")
     );
+}
+
+async fn propose(
+    store: &SqliteStore,
+    ops: Vec<crate::proposals::ProposalOp>,
+    layer: &str,
+) -> String {
+    let base = store.validate_proposal_ops(&ops).await.unwrap();
+    store
+        .create_proposal(
+            &crate::proposals::NewProposal {
+                project: "mynd",
+                layer,
+                kind: "stale-pointer",
+                summary: "fix",
+                reason: "because",
+                ops: &ops,
+            },
+            &base,
+        )
+        .await
+        .unwrap()
+}
+
+async fn put_leaf(store: &SqliteStore, id: &str, content: &str) {
+    store
+        .store(&crate::store::NewMemoryRow {
+            id,
+            title: "leaf",
+            content,
+            tags: &["project:mynd".to_string()],
+            token_count: None,
+            layer: "workspace",
+            memory_type: "project",
+        })
+        .await
+        .unwrap();
+}
+
+fn update(id: &str, content: &str) -> crate::proposals::ProposalOp {
+    crate::proposals::ProposalOp::Update {
+        id: id.to_string(),
+        content: Some(content.to_string()),
+        tags: None,
+    }
+}
+
+#[tokio::test]
+async fn audit_proposals_list_apply_and_reject() {
+    let (app, store, _dir) = test_router_with_store().await;
+    put_leaf(&store, "mem_0000000000000000000000000000a001", "old").await;
+    let id = propose(
+        &store,
+        vec![update("mem_0000000000000000000000000000a001", "new")],
+        "workspace",
+    )
+    .await;
+
+    let (status, body) = req(
+        app.clone(),
+        "GET",
+        "/api/v1/audit-proposals?project=mynd",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["proposals"][0]["id"], id.as_str());
+
+    let (status, body) = req(
+        app.clone(),
+        "POST",
+        &format!("/api/v1/audit-proposals/{id}/apply"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["touched"][0], "mem_0000000000000000000000000000a001");
+    assert_eq!(
+        store
+            .recall_by_id("mem_0000000000000000000000000000a001")
+            .await
+            .unwrap()
+            .unwrap()
+            .content,
+        "new"
+    );
+
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        &format!("/api/v1/audit-proposals/{id}/apply"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "an applied proposal cannot apply twice"
+    );
+
+    let other = propose(
+        &store,
+        vec![update("mem_0000000000000000000000000000a001", "newer")],
+        "workspace",
+    )
+    .await;
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        &format!("/api/v1/audit-proposals/{other}/reject"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        store
+            .list_proposals(Some("mynd"), "pending")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn applying_a_stale_proposal_is_409_and_writes_nothing() {
+    let (app, store, _dir) = test_router_with_store().await;
+    put_leaf(&store, "mem_0000000000000000000000000000a001", "old").await;
+    let id = propose(
+        &store,
+        vec![update(
+            "mem_0000000000000000000000000000a001",
+            "from proposal",
+        )],
+        "workspace",
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    store
+        .update(
+            "mem_0000000000000000000000000000a001",
+            "leaf",
+            "hand edit",
+            &["project:mynd".to_string()],
+        )
+        .await
+        .unwrap();
+    let (status, body) = req(
+        app,
+        "POST",
+        &format!("/api/v1/audit-proposals/{id}/apply"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().unwrap().contains("stale"), "{body}");
+    assert_eq!(
+        store
+            .recall_by_id("mem_0000000000000000000000000000a001")
+            .await
+            .unwrap()
+            .unwrap()
+            .content,
+        "hand edit"
+    );
+}
+
+#[tokio::test]
+async fn applying_an_org_proposal_without_an_org_store_is_422() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let base = std::collections::HashMap::new();
+    let id = store
+        .create_proposal(
+            &crate::proposals::NewProposal {
+                project: "mynd",
+                layer: "org",
+                kind: "orphan",
+                summary: "s",
+                reason: "r",
+                ops: &[update("mem_0000000000000000000000000000c001", "x")],
+            },
+            &base,
+        )
+        .await
+        .unwrap();
+    let (status, body) = req(
+        app,
+        "POST",
+        &format!("/api/v1/audit-proposals/{id}/apply"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("org layer not configured")
+    );
+}
+
+#[tokio::test]
+async fn audit_session_requires_a_project() {
+    let (app, _dir) = test_router().await;
+    let (status, _) = req(
+        app,
+        "POST",
+        "/api/v1/audit-sessions",
+        Some(json!({ "project": "  " })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }

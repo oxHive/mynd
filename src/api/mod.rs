@@ -1,7 +1,7 @@
 use crate::{
+    audit_session::{AuditSessionManager, ReviseError, StartError},
     config::{AgentSettings, SyncSettings},
     store::SqliteStore,
-    suggest_session::{ReviseError, StartError, SuggestSessionManager},
     update::{SharedUpdateState, UpdateStatus},
 };
 use axum::{
@@ -157,7 +157,7 @@ pub fn router(
     org_sync: Option<SyncSettings>,
     dashboard_origin: &str,
     events: Events,
-    suggest: Arc<SuggestSessionManager>,
+    audit: Arc<AuditSessionManager>,
     update_state: SharedUpdateState,
     agent: AgentSettings,
     guard_predefined_namespaces: bool,
@@ -218,21 +218,30 @@ pub fn router(
         .route("/api/v1/events", get(sse_events))
         .route("/api/v1/update", get(get_update_state))
         .route("/api/v1/update/apply", post(apply_update))
-        .route("/api/v1/suggest-sessions", post(start_suggest_session))
+        .route("/api/v1/audit-sessions", post(start_audit_session))
         .route(
-            "/api/v1/suggest-sessions/current",
-            get(suggest_session_status).delete(end_suggest_session),
+            "/api/v1/audit-sessions/current",
+            get(audit_session_status).delete(end_audit_session),
         )
         .route(
-            "/api/v1/suggest-sessions/current/revise",
-            post(revise_suggest_session),
+            "/api/v1/audit-sessions/current/revise",
+            post(revise_audit_session),
+        )
+        .route("/api/v1/audit-proposals", get(list_audit_proposals))
+        .route(
+            "/api/v1/audit-proposals/{id}/apply",
+            post(apply_audit_proposal),
+        )
+        .route(
+            "/api/v1/audit-proposals/{id}/reject",
+            post(reject_audit_proposal),
         )
         .with_state(store.clone())
         .layer(Extension(org_store))
         .layer(Extension(sync.clone()))
         .layer(Extension(org_sync))
         .layer(Extension(events))
-        .layer(Extension(suggest))
+        .layer(Extension(audit))
         .layer(Extension(update_state))
         .layer(Extension(agent))
         .layer(Extension(GuardPredefinedNamespaces(
@@ -448,6 +457,7 @@ fn entry_json(e: &crate::store::MemoryEntry) -> Value {
     })
 }
 
+mod audit;
 mod edges;
 mod feedback;
 pub mod guard;
@@ -455,7 +465,6 @@ mod hive;
 mod memories;
 pub(crate) mod settings;
 mod status;
-mod suggest;
 #[cfg(test)]
 mod tests;
 pub(crate) mod transfer;
@@ -469,8 +478,8 @@ use settings::*;
 // Shared with the hive receive paths (`hive_push`, `sync_loop::pull_from_peer`)
 // so a peer-supplied tag-namespace registry is held to the same rules as a
 // dashboard save.
+use audit::*;
 pub(crate) use settings::validate_tag_namespaces;
 use status::*;
-use suggest::*;
 use transfer::*;
 use update::*;

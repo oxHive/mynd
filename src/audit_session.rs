@@ -17,20 +17,27 @@ pub enum StartError {
 #[derive(Debug)]
 pub enum ReviseError {
     NotActive,
-    UnknownEdge,
+    UnknownProposal,
 }
 
 enum Turn {
-    Initial { prompt: String },
-    Revise { edge_id: String, feedback: String },
+    Initial {
+        prompt: String,
+    },
+    Revise {
+        proposal_id: String,
+        feedback: String,
+    },
 }
 
 struct Inner {
     active: bool,
     session_id: Option<String>,
-    phase: &'static str, // "idle" | "suggesting" | "reviewing" | "revising"
-    revising_edge_id: Option<String>,
-    queued_edge_ids: VecDeque<String>,
+    phase: &'static str, // "idle" | "auditing" | "reviewing" | "revising"
+    project: Option<String>,
+    layer: String,
+    revising_proposal_id: Option<String>,
+    queued_proposal_ids: VecDeque<String>,
     tx: Option<mpsc::UnboundedSender<Turn>>,
     worker: Option<tokio::task::JoinHandle<()>>,
 }
@@ -41,31 +48,36 @@ impl Default for Inner {
             active: false,
             session_id: None,
             phase: "idle",
-            revising_edge_id: None,
-            queued_edge_ids: VecDeque::new(),
+            project: None,
+            layer: "workspace".to_string(),
+            revising_proposal_id: None,
+            queued_proposal_ids: VecDeque::new(),
             tx: None,
             worker: None,
         }
     }
 }
 
-pub struct SuggestSessionManager {
+pub struct AuditSessionManager {
     store: Arc<SqliteStore>,
+    org_store: Option<Arc<SqliteStore>>,
     events: broadcast::Sender<Value>,
     agent: AgentSettings,
     mcp_url: String,
     inner: Mutex<Inner>,
 }
 
-impl SuggestSessionManager {
+impl AuditSessionManager {
     pub fn new(
         store: Arc<SqliteStore>,
+        org_store: Option<Arc<SqliteStore>>,
         events: broadcast::Sender<Value>,
         agent: AgentSettings,
         mcp_url: String,
     ) -> Arc<Self> {
         Arc::new(Self {
             store,
+            org_store,
             events,
             agent,
             mcp_url,
@@ -74,7 +86,7 @@ impl SuggestSessionManager {
     }
 
     fn emit(&self, state: &str, extra: Value) {
-        let mut evt = json!({ "type": "suggest_session", "state": state });
+        let mut evt = json!({ "type": "audit_session", "state": state });
         if let (Some(obj), Some(x)) = (evt.as_object_mut(), extra.as_object()) {
             for (k, v) in x {
                 obj.insert(k.clone(), v.clone());
@@ -83,8 +95,17 @@ impl SuggestSessionManager {
         let _ = self.events.send(evt);
     }
 
-    pub async fn start(self: &Arc<Self>) -> Result<(), StartError> {
-        let prompt = crate::audit_prompt::build_audit_prompt(&self.store, "", "workspace")
+    pub async fn start(self: &Arc<Self>, project: String, layer: String) -> Result<(), StartError> {
+        let target = if layer == "org" {
+            self.org_store.as_ref().ok_or_else(|| {
+                StartError::Failed(
+                    "org layer not configured: set [org_sync] in the global config".to_string(),
+                )
+            })?
+        } else {
+            &self.store
+        };
+        let prompt = crate::audit_prompt::build_audit_prompt(target, &project, &layer)
             .await
             .map_err(|e| StartError::Failed(e.to_string()))?;
         let mut inner = self.inner.lock().await;
@@ -94,30 +115,36 @@ impl SuggestSessionManager {
         let (tx, rx) = mpsc::unbounded_channel();
         tx.send(Turn::Initial { prompt }).ok();
         inner.active = true;
-        inner.phase = "suggesting";
+        inner.phase = "auditing";
         inner.session_id = None;
-        inner.queued_edge_ids.clear();
-        inner.revising_edge_id = None;
+        inner.project = Some(project.clone());
+        inner.layer = layer.clone();
+        inner.queued_proposal_ids.clear();
+        inner.revising_proposal_id = None;
         inner.tx = Some(tx);
         let mgr = Arc::clone(self);
         inner.worker = Some(tokio::spawn(async move { mgr.worker_loop(rx).await }));
         drop(inner);
-        self.emit("started", json!({}));
+        self.emit("started", json!({ "project": project, "layer": layer }));
         Ok(())
     }
 
-    pub async fn revise(&self, edge_id: String, feedback: String) -> Result<(), ReviseError> {
-        if self.store.get_edge(&edge_id).await.ok().flatten().is_none() {
-            return Err(ReviseError::UnknownEdge);
+    pub async fn revise(&self, proposal_id: String, feedback: String) -> Result<(), ReviseError> {
+        match self.store.get_proposal(&proposal_id).await.ok().flatten() {
+            Some(p) if p.status == "pending" => {}
+            _ => return Err(ReviseError::UnknownProposal),
         }
         let mut inner = self.inner.lock().await;
         if !inner.active {
             return Err(ReviseError::NotActive);
         }
-        inner.queued_edge_ids.push_back(edge_id.clone());
+        inner.queued_proposal_ids.push_back(proposal_id.clone());
         let tx = inner.tx.as_ref().ok_or(ReviseError::NotActive)?;
-        tx.send(Turn::Revise { edge_id, feedback })
-            .map_err(|_| ReviseError::NotActive)?;
+        tx.send(Turn::Revise {
+            proposal_id,
+            feedback,
+        })
+        .map_err(|_| ReviseError::NotActive)?;
         Ok(())
     }
 
@@ -129,8 +156,9 @@ impl SuggestSessionManager {
         if let Some(w) = inner.worker.take() {
             w.abort(); // kill_on_drop(true) on the child reaps any in-flight process
         }
-        inner.queued_edge_ids.clear();
-        inner.revising_edge_id = None;
+        inner.queued_proposal_ids.clear();
+        inner.revising_proposal_id = None;
+        inner.project = None;
         inner.session_id = None;
         drop(inner);
         self.emit("ended", json!({}));
@@ -141,8 +169,10 @@ impl SuggestSessionManager {
         json!({
             "active": inner.active,
             "phase": inner.phase,
-            "revising_edge_id": inner.revising_edge_id,
-            "queued_edge_ids": inner.queued_edge_ids.iter().collect::<Vec<_>>(),
+            "project": inner.project,
+            "layer": inner.layer,
+            "revising_proposal_id": inner.revising_proposal_id,
+            "queued_proposal_ids": inner.queued_proposal_ids.iter().collect::<Vec<_>>(),
         })
     }
 
@@ -155,28 +185,35 @@ impl SuggestSessionManager {
                         inner.session_id = Some(sid);
                         inner.phase = "reviewing";
                         drop(inner);
-                        self.emit("suggestions_ready", json!({}));
+                        self.emit("proposals_ready", json!({}));
                     }
                     Err(msg) => {
                         self.fail_turn(&msg).await;
                     }
                 },
-                Turn::Revise { edge_id, feedback } => {
+                Turn::Revise {
+                    proposal_id,
+                    feedback,
+                } => {
                     let resume = {
                         let mut inner = self.inner.lock().await;
                         if !inner.active {
                             break;
                         }
-                        inner.queued_edge_ids.retain(|e| e != &edge_id);
-                        inner.revising_edge_id = Some(edge_id.clone());
+                        inner.queued_proposal_ids.retain(|e| e != &proposal_id);
+                        inner.revising_proposal_id = Some(proposal_id.clone());
                         inner.phase = "revising";
-                        let queued: Vec<String> = inner.queued_edge_ids.iter().cloned().collect();
+                        let queued: Vec<String> =
+                            inner.queued_proposal_ids.iter().cloned().collect();
                         let resume = inner.session_id.clone();
                         drop(inner);
-                        self.emit("revising", json!({ "edge_id": edge_id, "queued": queued }));
+                        self.emit(
+                            "revising",
+                            json!({ "proposal_id": proposal_id, "queued": queued }),
+                        );
                         resume
                     };
-                    let prompt = match self.build_revision_prompt(&edge_id, &feedback).await {
+                    let prompt = match self.build_revision_prompt(&proposal_id, &feedback).await {
                         Ok(p) => p,
                         Err(msg) => {
                             self.fail_turn(&msg).await;
@@ -187,10 +224,10 @@ impl SuggestSessionManager {
                         Ok(sid) => {
                             let mut inner = self.inner.lock().await;
                             inner.session_id = Some(sid);
-                            inner.revising_edge_id = None;
+                            inner.revising_proposal_id = None;
                             inner.phase = "reviewing";
                             drop(inner);
-                            self.emit("revision_ready", json!({ "edge_id": edge_id }));
+                            self.emit("revision_ready", json!({ "proposal_id": proposal_id }));
                         }
                         Err(msg) => {
                             self.fail_turn(&msg).await;
@@ -204,28 +241,31 @@ impl SuggestSessionManager {
     async fn fail_turn(&self, msg: &str) {
         let mut inner = self.inner.lock().await;
         inner.phase = "reviewing";
-        inner.revising_edge_id = None;
+        inner.revising_proposal_id = None;
         drop(inner);
         self.emit("error", json!({ "message": msg }));
     }
 
-    async fn build_revision_prompt(&self, edge_id: &str, feedback: &str) -> Result<String, String> {
-        let edge = self
+    async fn build_revision_prompt(
+        &self,
+        proposal_id: &str,
+        feedback: &str,
+    ) -> Result<String, String> {
+        let p = self
             .store
-            .get_edge(edge_id)
+            .get_proposal(proposal_id)
             .await
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("edge {edge_id} no longer exists"))?;
+            .ok_or_else(|| format!("proposal {proposal_id} no longer exists"))?;
         Ok(format!(
-            "The user reviewed your suggested connection {edge_id} \
-             ({} --[{}]--> {}, reason: {}) and asked for a revision:\n\
+            "The user reviewed your proposal {proposal_id} ({}: {}) and asked for a change:\n\
              \"{feedback}\"\n\
-             Call the memory_update_edge tool with id \"{edge_id}\" and the corrected \
-             relationship and/or reason. Do not create a new edge and do not change other edges.",
-            edge.source_id,
-            edge.relationship,
-            edge.target_id,
-            crate::prompt_data::single_line(edge.reason.as_deref().unwrap_or("none given")),
+             Call memory_propose with replaces \"{proposal_id}\", project \"{}\", layer \"{}\" \
+             and the corrected fix. Do not touch other proposals.",
+            p.kind,
+            crate::prompt_data::single_line(&p.summary),
+            p.project,
+            p.layer,
         ))
     }
 
@@ -258,7 +298,7 @@ impl SuggestSessionManager {
             .arg(&mcp_config)
             .arg("--strict-mcp-config")
             .arg("--allowedTools")
-            .arg("mcp__mynd__memory_store_edge,mcp__mynd__memory_update_edge,mcp__mynd__memory_get_edges")
+            .arg("mcp__mynd__memory_tree,mcp__mynd__memory_recall,mcp__mynd__memory_search,mcp__mynd__memory_propose")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -277,9 +317,9 @@ impl SuggestSessionManager {
     // and per-tool permissions are only configurable via `opencode.json` /
     // `OPENCODE_CONFIG`, not CLI args), so — same tradeoff as
     // `matrix::agent::run_opencode_turn` — this requires the user to have
-    // pre-configured an OpenCode agent profile named "mynd-suggest" that
+    // pre-configured an OpenCode agent profile named "mynd-audit" that
     // wires up the mynd MCP server (this `mcp_url`) and allows only
-    // memory_store_edge/memory_update_edge/memory_get_edges.
+    // memory_tree/memory_recall/memory_search/memory_propose.
     async fn run_opencode_turn(
         &self,
         prompt: &str,
@@ -291,7 +331,7 @@ impl SuggestSessionManager {
             cmd.arg("-s").arg(id);
         }
         cmd.arg("--agent")
-            .arg("mynd-suggest")
+            .arg("mynd-audit")
             .arg("--format")
             .arg("json")
             .stdin(std::process::Stdio::null())
@@ -395,7 +435,7 @@ mod tests {
     async fn test_manager(
         dir: &std::path::Path,
     ) -> (
-        Arc<SuggestSessionManager>,
+        Arc<AuditSessionManager>,
         Arc<SqliteStore>,
         broadcast::Receiver<Value>,
         String,
@@ -433,8 +473,9 @@ mod tests {
             args: vec![],
             kind: crate::config::AgentKind::Claude,
         };
-        let mgr = SuggestSessionManager::new(
+        let mgr = AuditSessionManager::new(
             Arc::clone(&store),
+            None,
             events,
             agent,
             "http://127.0.0.1:3456/mcp".into(),
@@ -451,75 +492,92 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_runs_agent_and_emits_lifecycle_events() {
+    async fn start_runs_the_audit_agent_with_only_audit_tools() {
         let dir = tempfile::tempdir().unwrap();
-        let (mgr, _store, mut rx, script, _db_dir) = test_manager(dir.path()).await;
-        mgr.start().await.unwrap();
+        let (mgr, _store, mut rx, _script, _db_dir) = test_manager(dir.path()).await;
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
         assert_eq!(next_state(&mut rx).await, "started");
-        assert_eq!(next_state(&mut rx).await, "suggestions_ready");
+        assert_eq!(next_state(&mut rx).await, "proposals_ready");
         let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
-        assert!(log.contains("-p"));
-        assert!(log.contains("--output-format json"));
-        assert!(log.contains("--mcp-config"));
-        assert!(log.contains("--strict-mcp-config"));
-        assert!(log.contains("--allowedTools"));
-        let _ = script;
+        assert!(log.contains("mcp__mynd__memory_propose"));
+        assert!(log.contains("mcp__mynd__memory_tree"));
+        assert!(!log.contains("memory_store_edge"), "no edge tools any more");
+        assert!(log.contains("Mynd memory audit: project mynd"));
+        assert_eq!(mgr.status().await["project"], "mynd");
+    }
+
+    #[tokio::test]
+    async fn start_with_org_layer_but_no_org_store_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, _store, _rx, _, _db_dir) = test_manager(dir.path()).await;
+        assert!(matches!(
+            mgr.start("mynd".into(), "org".into()).await,
+            Err(StartError::Failed(m)) if m.contains("org layer not configured")
+        ));
+    }
+
+    #[tokio::test]
+    async fn revise_resumes_the_session_for_a_pending_proposal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, store, mut rx, _, _db_dir) = test_manager(dir.path()).await;
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
+        while next_state(&mut rx).await != "proposals_ready" {}
+        let entry = crate::proposals::NewProposal {
+            project: "mynd",
+            layer: "workspace",
+            kind: "duplicate",
+            summary: "a and b say the same",
+            reason: "same facts",
+            ops: &[],
+        };
+        let id = store
+            .create_proposal(&entry, &Default::default())
+            .await
+            .unwrap();
+        mgr.revise(id.clone(), "keep b, not a".into())
+            .await
+            .unwrap();
+        assert_eq!(next_state(&mut rx).await, "revising");
+        assert_eq!(next_state(&mut rx).await, "revision_ready");
+        let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
+        assert!(log.contains("--resume stub-1"));
+        assert!(
+            log.contains(&format!("replaces \\\"{id}\\\""))
+                || log.contains(&format!("replaces \"{id}\""))
+        );
+    }
+
+    #[tokio::test]
+    async fn revise_of_an_unknown_proposal_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, _store, _rx, _, _db_dir) = test_manager(dir.path()).await;
+        assert!(matches!(
+            mgr.revise("prop_nope".into(), "hi".into()).await,
+            Err(ReviseError::UnknownProposal)
+        ));
     }
 
     #[tokio::test]
     async fn second_start_while_active_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _store, mut rx, _, _db_dir) = test_manager(dir.path()).await;
-        mgr.start().await.unwrap();
-        assert!(matches!(mgr.start().await, Err(StartError::AlreadyActive)));
-        let _ = rx.recv().await;
-    }
-
-    #[tokio::test]
-    async fn revise_resumes_with_latest_session_id_and_emits_revision_ready() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mgr, store, mut rx, _, _db_dir) = test_manager(dir.path()).await;
-        mgr.start().await.unwrap();
-        while next_state(&mut rx).await != "suggestions_ready" {}
-        // seed a pending edge directly through the manager's store handle
-        let crate::model::EdgeCreate::Created(edge_id) = store
-            .create_edge_with_status("mem_a", "mem_b", "sibling", "pending", None, None)
-            .await
-            .unwrap()
-        else {
-            panic!("expected EdgeCreate::Created");
-        };
-        mgr.revise(edge_id.clone(), "make it parent".into())
-            .await
-            .unwrap();
-        assert_eq!(next_state(&mut rx).await, "revising");
-        assert_eq!(next_state(&mut rx).await, "revision_ready");
-        let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
-        assert!(
-            log.contains("--resume stub-1"),
-            "second turn must resume the captured session id"
-        );
-    }
-
-    #[tokio::test]
-    async fn revise_without_active_session_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mgr, _store, _rx, _, _db_dir) = test_manager(dir.path()).await;
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
         assert!(matches!(
-            mgr.revise("edge_x".into(), "hi".into()).await,
-            Err(ReviseError::UnknownEdge) | Err(ReviseError::NotActive)
+            mgr.start("mynd".into(), "workspace".into()).await,
+            Err(StartError::AlreadyActive)
         ));
+        let _ = rx.recv().await;
     }
 
     #[tokio::test]
     async fn end_emits_ended_and_allows_new_start() {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _store, mut rx, _, _db_dir) = test_manager(dir.path()).await;
-        mgr.start().await.unwrap();
-        while next_state(&mut rx).await != "suggestions_ready" {}
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
+        while next_state(&mut rx).await != "proposals_ready" {}
         mgr.end().await;
         assert_eq!(next_state(&mut rx).await, "ended");
-        mgr.start().await.unwrap();
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
         assert_eq!(next_state(&mut rx).await, "started");
     }
 
@@ -550,9 +608,14 @@ mod tests {
             args: vec![],
             kind: crate::config::AgentKind::Claude,
         };
-        let mgr =
-            SuggestSessionManager::new(store, events, agent, "http://127.0.0.1:3456/mcp".into());
-        mgr.start().await.unwrap();
+        let mgr = AuditSessionManager::new(
+            store,
+            None,
+            events,
+            agent,
+            "http://127.0.0.1:3456/mcp".into(),
+        );
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
         assert_eq!(next_state(&mut rx).await, "started");
         let evt = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -592,14 +655,19 @@ mod tests {
             args: vec![],
             kind: crate::config::AgentKind::OpenCode,
         };
-        let mgr =
-            SuggestSessionManager::new(store, events, agent, "http://127.0.0.1:3456/mcp".into());
-        mgr.start().await.unwrap();
+        let mgr = AuditSessionManager::new(
+            store,
+            None,
+            events,
+            agent,
+            "http://127.0.0.1:3456/mcp".into(),
+        );
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
         assert_eq!(next_state(&mut rx).await, "started");
-        assert_eq!(next_state(&mut rx).await, "suggestions_ready");
+        assert_eq!(next_state(&mut rx).await, "proposals_ready");
         let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
         assert!(log.contains("run"));
-        assert!(log.contains("--agent mynd-suggest"));
+        assert!(log.contains("--agent mynd-audit"));
         assert!(log.contains("--format json"));
         assert!(
             !log.contains("--mcp-config"),

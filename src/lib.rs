@@ -1,5 +1,6 @@
 pub mod api;
 pub mod audit_prompt;
+pub mod audit_session;
 pub mod budget;
 pub mod chat_bot;
 pub mod cli;
@@ -17,7 +18,6 @@ pub mod secure_store;
 pub mod server;
 pub mod session;
 pub mod store;
-pub mod suggest_session;
 pub mod sync;
 pub mod tag_query;
 #[cfg(test)]
