@@ -3,13 +3,13 @@ import { computed } from 'vue'
 import { PhMagnifyingGlass, PhMinus, PhPlus, PhCornersOut, PhSparkle, PhArrowsClockwise } from '@phosphor-icons/vue'
 import { useGraphStore } from '../../stores/graph.js'
 import { useMemoriesStore } from '../../stores/memories.js'
-import { useSuggestStore } from '../../stores/suggest.js'
+import { useAuditStore } from '../../stores/audit.js'
 import { useUiStore } from '../../stores/ui.js'
 import TagFilter from '../shared/TagFilter.vue'
 
 const graph = useGraphStore()
 const memories = useMemoriesStore()
-const suggest = useSuggestStore()
+const audit = useAuditStore()
 const ui = useUiStore()
 
 const ALL_LAYER_FILTERS = [
@@ -73,10 +73,9 @@ function resetZoom() {
       <button class="hm-btn hm-btn-ghost hm-btn-sm" title="Re-layout graph" @click="graph.requestRelayout()">
         <PhArrowsClockwise :size="13" weight="bold" />
       </button>
-      <button class="hm-btn hm-btn-sm suggest-btn"
-        @click="suggest.active ? suggest.openPanel() : suggest.start()">
+      <button class="hm-btn hm-btn-sm audit-btn" @click="audit.openPanel()">
         <PhSparkle :size="13" weight="fill" />
-        {{ suggest.phase === 'suggesting' ? 'suggesting…' : 'suggest' }}
+        {{ audit.phase === 'auditing' ? 'auditing…' : 'audit' }}
       </button>
     </div>
   </div>
@@ -184,7 +183,7 @@ function resetZoom() {
   text-align: center;
 }
 
-.suggest-btn {
+.audit-btn {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -194,7 +193,7 @@ function resetZoom() {
   font-weight: 600;
 }
 
-.suggest-btn:hover {
+.audit-btn:hover {
   background: color-mix(in srgb, var(--hm-accent) 88%, white);
 }
 </style>

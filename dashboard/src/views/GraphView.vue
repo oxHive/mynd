@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useMemoriesStore } from '../stores/memories.js'
-import { useSuggestStore } from '../stores/suggest.js'
+import { useAuditStore } from '../stores/audit.js'
 import { useGraphStore } from '../stores/graph.js'
 import GraphCanvas from '../components/graph/GraphCanvas.vue'
 import GraphToolbar from '../components/graph/GraphToolbar.vue'
@@ -13,7 +13,7 @@ import EmptyState from '../components/shared/EmptyState.vue'
 import Tooltip from '../components/shared/Tooltip.vue'
 
 const memories = useMemoriesStore()
-const suggest = useSuggestStore()
+const audit = useAuditStore()
 const graph = useGraphStore()
 
 const canvasWrap = ref(null)
@@ -78,8 +78,8 @@ const tooltipText = computed(() => {
         <Legend />
       </div>
 
-      <!-- Right: node detail, unless the global suggest panel (App.vue) is open -->
-      <DetailPanel v-if="!suggest.panelOpen" />
+      <!-- Right: node detail, unless the global audit panel (App.vue) is open -->
+      <DetailPanel v-if="!audit.panelOpen" />
     </div>
 
     <Tooltip :visible="!hoveredNode && !!hoveredEdge" :text="tooltipText" :x="mouseX" :y="mouseY" />
