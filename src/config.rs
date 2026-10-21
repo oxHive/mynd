@@ -253,7 +253,7 @@ impl Default for HiveSettings {
     }
 }
 
-/// Which headless-agent CLI `mynd suggest` / the Matrix bot shell out to.
+/// Which headless-agent CLI `mynd audit` / the Matrix bot shell out to.
 /// Explicit rather than sniffed from `command`'s file name, so a wrapper
 /// script or a renamed binary doesn't silently change which flags get used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
