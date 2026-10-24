@@ -37,21 +37,22 @@ This is the only tool that reads `.mynd.toml`. All other tools operate on the me
 
 #### `memory_store`
 
-Store a new memory or overwrite an existing one by ID.
+Store a new memory, optionally filed under an index memory (its home).
 
 **Input:**
 ```json
 {
-  "title": "golang preferences",
-  "content": "Always use table-driven tests. Prefer errors.As over type assertions.",
-  "tags": ["golang", "testing"],
-  "id": "mem_abc123"
+  "title": "sync notes",
+  "content": "libsql embedded replica setup and sync triggers.",
+  "tags": ["project:mynd", "topic:sync"],
+  "parent_id": "mem_0123456789abcdef0123456789abcdef",
+  "pointer": "Sync: libsql replica setup and triggers; open when touching sync.rs"
 }
 ```
 
-`id` is optional — omit it and Mynd generates one. Tags trigger automatic edge creation between memories that share a tag.
+`parent_id` and `pointer` are optional but must be passed together. The parent must live in the same store (layer) as the new memory. `pointer` is one line, at most 300 characters, with no `]`. The server appends `- [pointer](child:<new id>)` to the parent in the same write, which creates the parent/child edge.
 
-**Output:** `{ "id": "mem_abc123", "stored": true }`
+**Output:** `{ "id": "mem_…", "title": "sync notes", "parent_id": "mem_…", "parent_oversized": false }`. `parent_id` and `parent_oversized` appear only when a parent was given; `parent_oversized: true` means the parent is now over `max_content_tokens` and should be split.
 
 ---
 
@@ -112,11 +113,81 @@ Permanently delete a memory. Cascades to remove its tags and connected edges.
 **Input:**
 ```json
 {
-  "id": "mem_abc123"
+  "id": "mem_abc123",
+  "confirm": true
 }
 ```
 
-**Output:** `{ "deleted": true, "id": "mem_abc123" }`
+**Output:** `{ "deleted": true, "id": "mem_abc123", "dangling_in": [ { "id", "title", "link_text" } ], "orphaned_children": [ { "id", "title", "link_text" } ] }`. `dangling_in` lists memories whose content still links to the deleted one (`link_text` is always `null` in this list); `orphaned_children` lists memories that had it as their only home (their `link_text` is the old pointer). Nothing else is rewritten.
+
+---
+
+#### `memory_tree`
+
+A project's index tree, with no memory content: cheap enough to call before deciding what to recall.
+
+**Input:**
+```json
+{
+  "project": "mynd",
+  "layer": "workspace"
+}
+```
+
+`layer` is optional: `workspace` (default, also holds personal memories) or `org`.
+
+**Output:**
+```json
+{
+  "project": "mynd",
+  "layer": "workspace",
+  "root_id": "mem_…",
+  "nodes": [
+    {
+      "id": "mem_…",
+      "title": "mynd root",
+      "role": "root",
+      "tokens": 180,
+      "homes": [],
+      "pointers": [ { "target_id": "mem_…", "text": "Sync: libsql replica setup; open when touching sync.rs" } ],
+      "reachable": true,
+      "updated_at": 1760000000,
+      "tags": ["role:root", "project:mynd"],
+      "broken_pointers": [],
+      "parent_links": [],
+      "cross_refs": [],
+      "broken_cross_refs": []
+    }
+  ]
+}
+```
+
+Nodes reachable from the root come first in breadth-first order, then every `project:<name>` memory the walk did not reach (`reachable: false`), sorted by title: one nothing points to, or one in a subtree cut off from the root. A node with more than one entry in `homes` is linked as a `child:` from several memories. `broken_pointers` lists `child:` links in a node's content whose target is not in this store (deleted, or in the other store); `parent_links` lists deprecated `parent:` links. `cross_refs` lists bare `[text](mem_x)` cross-references to memories in this store, which any memory may hold and which never make a home; `broken_cross_refs` lists bare links whose target is not in this store.
+
+---
+
+#### `memory_propose`
+
+Propose one fix to a project's index tree for the user to review in the dashboard's Audit panel. It never writes memories itself.
+
+**Input:**
+```json
+{
+  "project": "mynd",
+  "kind": "orphan",
+  "summary": "File 'Old matrix notes' under the root",
+  "reason": "Nothing points to it, and its subject fits no existing index.",
+  "ops": [
+    { "op": "update", "id": "mem_…root", "content": "# mynd\n…\n- [Matrix bot notes: homeserver login, room mapping; open when touching the Matrix bot](child:mem_…notes)" }
+  ]
+}
+```
+
+`kind` is one of `no-root`, `orphan`, `several-homes`, `broken-pointer`, `stale-pointer`, `oversized-index`, `bloated`, `legacy`, `cross-reference`, `duplicate` (report-only, no ops). Ops are `create` (`ref`, `title`, `content`, `tags`, optional `parent` and `pointer`) and `update` (`id`, optional whole `content`, optional whole `tags`); there is no delete. Content can link a memory created earlier in the same proposal as `(child:ref:<ref>)`. A create with `parent` appends its pointer line to that parent, so an `update` that rewrites the same memory's content must come before that create (the reverse order is rejected). `layer: "org"` targets the org store. `replaces` revises a pending proposal in place.
+
+On approval all ops apply in one transaction, and only if none of the touched memories changed since the proposal was made; otherwise the dashboard reports it stale and nothing is written.
+
+**Output:** `{ "id": "prop_…", "status": "pending", "replaced": false }`
 
 ---
 

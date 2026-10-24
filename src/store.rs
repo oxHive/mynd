@@ -54,6 +54,62 @@ pub struct GroupedEdges {
     pub siblings: Vec<RelatedMemory>,
 }
 
+/// What deleting a memory would break, reported by `memory_delete` so the
+/// agent can offer fixes. Nothing is rewritten automatically.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct DeleteImpact {
+    /// Memories whose content still links to the deleted id.
+    pub dangling_in: Vec<RelatedMemory>,
+    /// Memories whose only home (inbound content `child:` link) is the
+    /// deleted memory. `link_text` is the pointer text they had.
+    pub orphaned_children: Vec<RelatedMemory>,
+}
+
+/// One outgoing `[text](child:target_id)` pointer or `[text](target_id)`
+/// cross-reference, in content order.
+#[derive(Debug, Clone, Serialize)]
+pub struct TreePointer {
+    pub target_id: String,
+    pub text: String,
+}
+
+/// One memory in a project's index tree. Carries no content.
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeNode {
+    pub id: String,
+    pub title: String,
+    /// `root` or `index` from the `role:*` tag; `None` for a leaf.
+    pub role: Option<String>,
+    pub tokens: i64,
+    /// Memories whose content holds a `child:` link to this one, sorted.
+    /// More than one means the memory has several homes.
+    pub homes: Vec<String>,
+    pub pointers: Vec<TreePointer>,
+    /// Reached by walking `child:` links from the root.
+    pub reachable: bool,
+    pub updated_at: i64,
+    pub tags: Vec<String>,
+    /// Ids this memory's content links as `child:` that are not in this
+    /// store (deleted, or living in the other store).
+    pub broken_pointers: Vec<String>,
+    /// Ids this memory's content links as `parent:` (deprecated form).
+    pub parent_links: Vec<String>,
+    /// Bare `[text](mem_x)` links to memories in this store. Any memory may
+    /// hold them; they are never a home.
+    pub cross_refs: Vec<TreePointer>,
+    /// Ids this memory's content links bare that are not in this store
+    /// (deleted, or living in the other store).
+    pub broken_cross_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryTree {
+    pub root_id: Option<String>,
+    /// Reachable nodes in breadth-first order from the root, then every
+    /// unreached `project:<name>` memory sorted by title.
+    pub nodes: Vec<TreeNode>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackEntry {
     pub id: String,
@@ -137,6 +193,15 @@ static RELATIONSHIP_LINK_RE: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     regex::Regex::new(r"\[([^\]]+)\]\((?:(parent|child|sibling):)?(mem_[0-9a-f]{32})\)").unwrap()
 });
 
+/// A whole line as `append_pointer` writes it, text capped at
+/// `MAX_POINTER_CHARS` so the size guard can't be bypassed through it.
+static POINTER_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(&format!(
+        r"^- \[[^\]]{{1,{MAX_POINTER_CHARS}}}\]\(child:mem_[0-9a-f]{{32}}\)\s*$"
+    ))
+    .unwrap()
+});
+
 /// Extract `[phrase](kind:mem_xxx)` relationship links from memory content
 /// (bare `[phrase](mem_xxx)` defaults to "sibling"). Deduped by (kind, target)
 /// pair — the same target under two different kinds both survive, first
@@ -167,8 +232,10 @@ pub(crate) fn parse_relationship_links(
 /// Maintain parent/child/sibling edges for `source_id` from its content's
 /// `[phrase](kind:mem_xxx)` links (bare `[phrase](mem_xxx)` defaults to
 /// "sibling"): upserts an active edge per surviving (kind, target) pair
-/// (refreshing `link_text` and resetting `status` to 'active' on rephrase),
-/// and deletes any (kind, target) pair no longer present in the content.
+/// (refreshing `link_text` and resetting `status` to 'active' on rephrase;
+/// an unchanged link keeps its status, so rewriting the memory, e.g. to
+/// append a pointer, never revives a rejected edge), and deletes any
+/// (kind, target) pair no longer present in the content.
 ///
 /// Deletion is scoped to `link_text IS NOT NULL` — i.e. edges this same
 /// function previously created from content. Edges created out-of-band
@@ -190,7 +257,8 @@ async fn sync_relationship_edges(
              SELECT 'edge_' || lower(hex(randomblob(16))), ?1, ?2, ?3, 'active', ?4, ?5
              WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?2)
              ON CONFLICT(source_id, target_id, relationship)
-             DO UPDATE SET link_text = excluded.link_text, status = 'active'",
+             DO UPDATE SET link_text = excluded.link_text,
+               status = CASE WHEN edges.link_text IS excluded.link_text THEN edges.status ELSE 'active' END",
             params![source_id, target.as_str(), kind.as_str(), now, phrase.as_str()],
         )
         .await?;
@@ -228,6 +296,130 @@ async fn sync_relationship_edges(
     Ok(())
 }
 
+/// Inserts or overwrites one memory row with its tags on `tx`, clears its
+/// tombstone, syncs its content links to edges and journals it. Shared by
+/// `store_with_timestamp` and `store_with_parent`.
+pub(crate) async fn insert_memory_tx(
+    tx: &libsql::Transaction,
+    m: &NewMemoryRow<'_>,
+    now: i64,
+    token_count: i64,
+    hive_hash: &str,
+) -> Result<()> {
+    let is_new = tx
+        .query("SELECT 1 FROM memories WHERE id = ?1", params![m.id])
+        .await?
+        .next()
+        .await?
+        .is_none();
+    tx.execute(
+        "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           content = excluded.content,
+           updated_at = excluded.updated_at,
+           token_count = excluded.token_count,
+           layer = excluded.layer,
+           memory_type = excluded.memory_type,
+           hive_content_hash = excluded.hive_content_hash",
+        params![m.id, m.title, m.content, now, now, token_count, m.layer, m.memory_type, hive_hash],
+    )
+    .await?;
+
+    set_tags_tx(tx, m.id, m.tags).await?;
+
+    // A (re)written memory is alive again: drop any tombstone for its id
+    // so the manifest doesn't advertise both a live row and a deletion,
+    // and so `apply_incoming_memory`'s no-resurrect check doesn't keep
+    // blocking newer versions of it from peers.
+    tx.execute(
+        "DELETE FROM hive_tombstones WHERE memory_id = ?1",
+        params![m.id],
+    )
+    .await?;
+
+    sync_relationship_edges(tx, m.id, m.content, now).await?;
+
+    // Links to this id made while it did not exist got no edge (a hive pull
+    // can apply an index before its child): re-sync the memories holding one.
+    // An overwrite already had its edges, so only a new row needs the scan.
+    // ponytail: content scan per insert; index links if stores grow large.
+    if is_new {
+        let mut rows = tx
+            .query(
+                "SELECT id, content FROM memories WHERE id != ?1 AND instr(content, ?1) > 0",
+                params![m.id],
+            )
+            .await?;
+        let mut linkers: Vec<(String, String)> = Vec::new();
+        while let Some(row) = rows.next().await? {
+            linkers.push((row.get(0)?, row.get(1)?));
+        }
+        for (id, content) in &linkers {
+            sync_relationship_edges(tx, id, content, now).await?;
+        }
+    }
+
+    journal_tx(tx, m.id, m.content, now).await
+}
+
+/// Rewrites an existing memory's title, content and tags on `tx`, syncs its
+/// content links to edges and journals it. Returns `false` (having written
+/// nothing) when no row has `id`. Shared by `update` and `store_with_parent`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn rewrite_memory_tx(
+    tx: &libsql::Transaction,
+    id: &str,
+    title: &str,
+    content: &str,
+    tags: &[String],
+    now: i64,
+    token_count: i64,
+    hive_hash: &str,
+) -> Result<bool> {
+    let changed = tx
+        .execute(
+            "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4, hive_content_hash = ?5 WHERE id = ?6",
+            params![title, content, now, token_count, hive_hash, id],
+        )
+        .await?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    set_tags_tx(tx, id, tags).await?;
+    sync_relationship_edges(tx, id, content, now).await?;
+    journal_tx(tx, id, content, now).await?;
+    Ok(true)
+}
+
+/// Replaces `id`'s tags with `tags`, lowercased, on `tx`.
+async fn set_tags_tx(tx: &libsql::Transaction, id: &str, tags: &[String]) -> Result<()> {
+    tx.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])
+        .await?;
+    for tag in tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
+            params![id, tag.to_lowercase()],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Records a write of `id` in the sync journal on `tx`.
+async fn journal_tx(tx: &libsql::Transaction, id: &str, content: &str, now: i64) -> Result<()> {
+    tx.execute(
+        "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(memory_id) DO UPDATE SET
+           content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
+        params![id, content, now],
+    )
+    .await?;
+    Ok(())
+}
+
 /// Quote a raw user query for FTS5 MATCH: every whitespace-separated term is
 /// wrapped in double quotes (FTS5 string syntax) with embedded quotes doubled,
 /// so characters like / + ' - can never be parsed as FTS5 operators.
@@ -242,7 +434,7 @@ pub(crate) fn fts_quote(query: &str) -> String {
 /// Rejects tags that are empty/whitespace-only or unreasonably long.
 const MAX_TAG_LEN: usize = 128;
 
-fn validate_tag_format(tags: &[String]) -> Result<()> {
+pub(crate) fn validate_tag_format(tags: &[String]) -> Result<()> {
     for t in tags {
         if t.trim().is_empty() {
             return Err(anyhow!("tag must not be empty or whitespace-only"));
@@ -254,6 +446,53 @@ fn validate_tag_format(tags: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Longest pointer text `store_with_parent` accepts.
+pub(crate) const MAX_POINTER_CHARS: usize = 300;
+
+/// Validates pointer text for a `[pointer](child:mem_x)` line and returns it
+/// trimmed. `]` would end the link label early and a newline would break the
+/// one-pointer-per-line layout of an index.
+pub(crate) fn validate_pointer(pointer: &str) -> Result<&str> {
+    let p = pointer.trim();
+    if p.is_empty() {
+        return Err(anyhow!("pointer must not be empty"));
+    }
+    let len = p.chars().count();
+    if len > MAX_POINTER_CHARS {
+        return Err(anyhow!(
+            "pointer is {len} characters, max {MAX_POINTER_CHARS}"
+        ));
+    }
+    if p.contains(']') {
+        return Err(anyhow!("pointer must not contain \"]\""));
+    }
+    if p.contains('\n') || p.contains('\r') {
+        return Err(anyhow!("pointer must be one line, without a newline"));
+    }
+    Ok(p)
+}
+
+/// `content` with `- [pointer](child:child_id)` appended as its last line,
+/// trailing whitespace trimmed first so repeated appends never leave blank
+/// lines between pointers.
+pub(crate) fn append_pointer(content: &str, pointer: &str, child_id: &str) -> String {
+    let line = format!("- [{pointer}](child:{child_id})");
+    let base = content.trim_end();
+    if base.is_empty() {
+        line
+    } else {
+        format!("{base}\n{line}")
+    }
+}
+
+/// Outcome of `SqliteStore::store_with_parent`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParentAppend {
+    /// The parent's content is now over `max_content_tokens`. The write
+    /// still happened; the caller should suggest splitting the parent.
+    pub parent_oversized: bool,
 }
 
 pub(crate) fn compute_hive_content_hash(
@@ -312,7 +551,11 @@ pub(crate) fn default_tag_namespaces() -> Value {
         },
         "part": {
             "color": "#f0883e", "values": ["index", "fragment"], "values_mode": "fixed", "single_value": true,
-            "description": "Marks a memory's role when content was too large for one memory and got split: index (the short entry point whose content links to each fragment via [phrase](child:mem_xxx)) or fragment (one piece of the split content). Absent on ordinary, unsplit memories."
+            "description": "Deprecated, use role instead. Marked a memory's role when oversized content was split: index (the entry point linking to each fragment) or fragment (one piece). The memory audit migrates part:index to role:index and drops part:fragment."
+        },
+        "role": {
+            "color": "#d4a72c", "values": ["root", "index"], "values_mode": "fixed", "single_value": true,
+            "description": "A memory's place in the project's index tree: root (the project's top-level index, loaded at session start, at most one per project per store) or index (a memory whose content is mainly [pointer text](child:mem_xxx) links to the memories under it). Absent on leaf memories."
         },
     })
 }
@@ -345,7 +588,10 @@ fn merge_tag_namespaces(defaults: Value, stored: Value) -> Value {
 /// every tag in that namespace must use one of the registered values.
 /// A namespace with `values_mode: "fixed"` but an empty `values` list is
 /// not yet restrictive (nothing has been registered to check against).
-async fn validate_tags_against_registry(store: &SqliteStore, tags: &[String]) -> Result<()> {
+pub(crate) async fn validate_tags_against_registry(
+    store: &SqliteStore,
+    tags: &[String],
+) -> Result<()> {
     let registry = store.tag_namespace_registry().await;
     let Some(obj) = registry.as_object() else {
         return validate_project_singleton_fallback(tags);
@@ -410,6 +656,20 @@ fn validate_project_singleton_fallback(tags: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The scope a `role:root` tag claims: `Some(Some(project))` for a project
+/// root (lowercased), `Some(None)` for an org-wide root (no `project:*`
+/// tag), `None` when `tags` has no `role:root` at all.
+pub(crate) fn root_scope(tags: &[String]) -> Option<Option<String>> {
+    if !tags.iter().any(|t| t.eq_ignore_ascii_case("role:root")) {
+        return None;
+    }
+    Some(tags.iter().find_map(|t| {
+        t.to_lowercase()
+            .strip_prefix("project:")
+            .map(str::to_string)
+    }))
+}
+
 impl SqliteStore {
     pub fn new(conn: Connection) -> Self {
         Self {
@@ -420,14 +680,14 @@ impl SqliteStore {
 
     /// Takes the write lock; see `write_lock`. Never call another public
     /// write method while holding it (the lock is not re-entrant).
-    async fn write(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    pub(crate) async fn write(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.write_lock.lock().await
     }
 
     /// Opens a transaction that takes SQLite's write lock up front
     /// (`BEGIN IMMEDIATE`), so a transaction that reads first can never be
     /// starved or fail with SQLITE_BUSY when it later tries to write.
-    async fn begin(&self) -> Result<libsql::Transaction> {
+    pub(crate) async fn begin(&self) -> Result<libsql::Transaction> {
         Ok(self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -438,21 +698,43 @@ impl SqliteStore {
     /// `max_content_tokens` guardrail. Called by `store`/`update` so no
     /// entry point (MCP, REST, CLI, import) can bypass it; callers that
     /// want a nicer status code can call it first themselves.
+    ///
+    /// `- [pointer](child:mem_x)` lines don't count: `store_with_parent`
+    /// grows an index by them past the limit, and that index must stay
+    /// editable and survive export/import. Its own text is still limited.
     pub async fn check_content_size(&self, title: &str, content: &str) -> Result<()> {
-        let tokens = crate::budget::count_entry_tokens(title, content) as i64;
+        let own_text: Vec<&str> = content
+            .lines()
+            .filter(|l| !POINTER_LINE_RE.is_match(l))
+            .collect();
+        let tokens = crate::budget::count_entry_tokens(title, &own_text.join("\n")) as i64;
         let limit = self.max_content_tokens().await;
         if tokens > limit {
             return Err(anyhow!(
                 "content is {tokens} tokens, exceeds max_content_tokens ({limit}). \
-                 Split into an index memory plus child memories, linked via \
-                 [phrase](child:mem_xxx) — store each child first, then reference \
-                 their real returned ids from the index's content."
+                 Split it: store a short index memory (tag role:index) first, then store \
+                 each piece with parent_id set to the index's id and a pointer describing \
+                 that piece; the server links each one as [pointer](child:mem_xxx)."
             ));
         }
         Ok(())
     }
 
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        // Local writes only. The hive apply path calls store_with_timestamp
+        // directly and must never be refused, or sync would wedge on a
+        // peer's root or on a parent `store_with_parent` let grow past
+        // max_content_tokens.
+        self.check_content_size(m.title, m.content).await?;
+        self.check_root_unique(m.id, m.tags).await?;
+        self.store_with_timestamp(m, chrono_now()).await
+    }
+
+    /// Import's write: like `store`, but never refuses a second root for a
+    /// scope, the way hive apply doesn't. An export of a store that sync gave
+    /// two roots must import again; `/memory-audit` reports the duplicate.
+    pub async fn restore(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        self.check_content_size(m.title, m.content).await?;
         self.store_with_timestamp(m, chrono_now()).await
     }
 
@@ -468,73 +750,89 @@ impl SqliteStore {
         m: &NewMemoryRow<'_>,
         updated_at: i64,
     ) -> Result<()> {
+        let (token_count, hive_hash) = self.prepare_row(m).await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
+        insert_memory_tx(&tx, m, updated_at, token_count, &hive_hash).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Validates `m`'s layer, type and tags and returns its token count and
+    /// hive content hash, ready for `insert_memory_tx`.
+    async fn prepare_row(&self, m: &NewMemoryRow<'_>) -> Result<(i64, String)> {
         m.layer.parse::<crate::model::Layer>()?;
         m.memory_type.parse::<crate::model::MemoryType>()?;
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
-        self.check_content_size(m.title, m.content).await?;
-        let now = updated_at;
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
-
         let hive_hash =
             compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
-        let _w = self.write().await;
-        let tx = self.begin().await?;
-        tx.execute(
-            "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO UPDATE SET
-               title = excluded.title,
-               content = excluded.content,
-               updated_at = excluded.updated_at,
-               token_count = excluded.token_count,
-               layer = excluded.layer,
-               memory_type = excluded.memory_type,
-               hive_content_hash = excluded.hive_content_hash",
-            params![m.id, m.title, m.content, now, now, token_count, m.layer, m.memory_type, hive_hash],
-        )
-        .await?;
+        Ok((token_count, hive_hash))
+    }
 
-        tx.execute(
-            "DELETE FROM memory_tags WHERE memory_id = ?1",
-            params![m.id],
-        )
-        .await?;
-        for tag in m.tags {
-            let tag_lower = tag.to_lowercase();
-            tx.execute(
-                "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-                params![m.id, tag_lower.as_str()],
-            )
-            .await?;
+    /// Stores `m` and, in the same transaction, appends
+    /// `- [pointer](child:<m.id>)` to `parent_id`'s content, making the parent
+    /// the new memory's home. The parent must live in this store. The write
+    /// succeeds even when the parent ends up over `max_content_tokens`;
+    /// `ParentAppend::parent_oversized` reports that.
+    pub async fn store_with_parent(
+        &self,
+        m: &NewMemoryRow<'_>,
+        parent_id: &str,
+        pointer: &str,
+    ) -> Result<ParentAppend> {
+        let pointer = validate_pointer(pointer)?;
+        if parent_id == m.id {
+            return Err(anyhow!("a memory cannot be its own parent"));
         }
+        let (token_count, hive_hash) = self.prepare_row(m).await?;
+        self.check_content_size(m.title, m.content).await?;
+        self.check_root_unique(m.id, m.tags).await?;
+        let limit = self.max_content_tokens().await;
+        let now = chrono_now();
 
-        // A (re)written memory is alive again: drop any tombstone for its id
-        // so the manifest doesn't advertise both a live row and a deletion,
-        // and so `apply_incoming_memory`'s no-resurrect check doesn't keep
-        // blocking newer versions of it from peers.
-        tx.execute(
-            "DELETE FROM hive_tombstones WHERE memory_id = ?1",
-            params![m.id],
+        let _w = self.write().await;
+        // Read the parent inside the IMMEDIATE transaction so no other writer,
+        // in this process or another, can change it before the append commits.
+        let tx = self.begin().await?;
+        let Some(parent) = self.recall_by_id(parent_id).await? else {
+            return Err(anyhow!(
+                "parent {parent_id} not found in this store: a memory's home must live in the same store as the memory"
+            ));
+        };
+        let parent_content = append_pointer(&parent.content, pointer, m.id);
+        let parent_tokens =
+            crate::budget::count_entry_tokens(&parent.title, &parent_content) as i64;
+        let parent_hash = compute_hive_content_hash(
+            &parent.title,
+            &parent_content,
+            &parent.tags,
+            &parent.layer,
+            &parent.memory_type,
+        );
+        insert_memory_tx(&tx, m, now, token_count, &hive_hash).await?;
+        if !rewrite_memory_tx(
+            &tx,
+            parent_id,
+            &parent.title,
+            &parent_content,
+            &parent.tags,
+            now,
+            parent_tokens,
+            &parent_hash,
         )
-        .await?;
-
-        sync_relationship_edges(&tx, m.id, m.content, now).await?;
-
-        // Journal the write
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![m.id, m.content, now],
-        )
-        .await?;
-
+        .await?
+        {
+            // Dropping `tx` rolls the child insert back too.
+            return Err(anyhow!("parent {parent_id} was deleted during the write"));
+        }
         tx.commit().await?;
-        Ok(())
+        Ok(ParentAppend {
+            parent_oversized: parent_tokens > limit,
+        })
     }
 
     pub async fn recall_by_id(&self, id: &str) -> Result<Option<MemoryEntry>> {
@@ -569,6 +867,73 @@ impl SqliteStore {
         } else {
             Ok(None)
         }
+    }
+
+    /// The root index for `project` (`role:root` + `project:<name>`), or the
+    /// org-wide root (`role:root` with no `project:*` tag) when `project` is
+    /// `None`. If sync ever delivers two, the oldest wins so callers stay
+    /// deterministic.
+    pub async fn find_root(&self, project: Option<&str>) -> Result<Option<MemoryEntry>> {
+        const COLS: &str = "SELECT m.id, m.title, m.content, m.created_at, m.updated_at, \
+             m.token_count, m.layer, m.memory_type FROM memories m \
+             WHERE EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = 'role:root')";
+        let mut rows = match project {
+            Some(p) => {
+                let sql = format!(
+                    "{COLS} AND EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = ?1) \
+                     ORDER BY m.created_at, m.id LIMIT 1"
+                );
+                self.conn
+                    .query(&sql, params![format!("project:{}", p.to_lowercase())])
+                    .await?
+            }
+            None => {
+                let sql = format!(
+                    "{COLS} AND NOT EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id \
+                     AND t.tag LIKE 'project:%') ORDER BY m.created_at, m.id LIMIT 1"
+                );
+                self.conn.query(&sql, ()).await?
+            }
+        };
+        match rows.next().await? {
+            Some(row) => {
+                let entry = self.row_to_entry(&row)?;
+                let tags = self.fetch_tags(&entry.id).await?;
+                Ok(Some(MemoryEntry { tags, ..entry }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Rejects `tags` when they would newly claim `role:root` for a scope
+    /// that already has a different root in this store. Keeping a claim the
+    /// memory already holds always passes, so either copy of a
+    /// sync-duplicated root stays editable. Called from local writes only:
+    /// the hive apply path must never be refused.
+    // ponytail: check runs outside the write lock, so two concurrent root
+    // creations can both pass; the audit reports duplicates if that happens.
+    pub async fn check_root_unique(&self, id: &str, tags: &[String]) -> Result<()> {
+        let Some(scope) = root_scope(tags) else {
+            return Ok(());
+        };
+        if root_scope(&self.fetch_tags(id).await?) == Some(scope.clone()) {
+            return Ok(());
+        }
+        if let Some(existing) = self.find_root(scope.as_deref()).await?
+            && existing.id != id
+        {
+            let what = match &scope {
+                Some(p) => format!("project {p}"),
+                None => "the org-wide scope".to_string(),
+            };
+            return Err(anyhow!(
+                "{what} already has a root ({}: {}); a store holds at most one root per project. \
+                 Remove role:root from one of them first.",
+                existing.id,
+                existing.title
+            ));
+        }
+        Ok(())
     }
 
     /// Loads tags for many entries in one query per `TAG_BATCH` ids rather
@@ -646,6 +1011,7 @@ impl SqliteStore {
         let Some(current) = self.recall_by_id(id).await? else {
             return Ok(false);
         };
+        self.check_root_unique(id, tags).await?;
         self.check_content_size(title, content).await?;
         let now = chrono_now();
         let token_count = crate::budget::count_entry_tokens(title, content) as i64;
@@ -653,38 +1019,9 @@ impl SqliteStore {
             compute_hive_content_hash(title, content, tags, &current.layer, &current.memory_type);
         let _w = self.write().await;
         let tx = self.begin().await?;
-        let changed = tx
-            .execute(
-                "UPDATE memories SET title = ?1, content = ?2, updated_at = ?3, token_count = ?4, hive_content_hash = ?5 WHERE id = ?6",
-                params![title, content, now, token_count, hive_hash, id],
-            )
-            .await?;
-        if changed == 0 {
+        if !rewrite_memory_tx(&tx, id, title, content, tags, now, token_count, &hive_hash).await? {
             return Ok(false);
         }
-        tx.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])
-            .await?;
-        for tag in tags {
-            let tag_lower = tag.to_lowercase();
-            tx.execute(
-                "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-                params![id, tag_lower.as_str()],
-            )
-            .await?;
-        }
-
-        sync_relationship_edges(&tx, id, content, now).await?;
-
-        // Journal the write
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, content, now],
-        )
-        .await?;
-
         tx.commit().await?;
         Ok(true)
     }
@@ -706,6 +1043,7 @@ impl SqliteStore {
         }
         validate_tag_format(&merged)?;
         validate_tags_against_registry(self, &merged).await?;
+        self.check_root_unique(id, &merged).await?;
 
         let now = chrono_now();
         let hive_hash = compute_hive_content_hash(
@@ -729,14 +1067,7 @@ impl SqliteStore {
             params![id, now, hive_hash],
         )
         .await?;
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, current.content, now],
-        )
-        .await?;
+        journal_tx(&tx, id, &current.content, now).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -754,6 +1085,8 @@ impl SqliteStore {
             .filter(|t| !removed_lower.contains(t))
             .cloned()
             .collect();
+        // Dropping project:* from a root turns it into an org-wide root claim.
+        self.check_root_unique(id, &remaining).await?;
         let now = chrono_now();
         let hive_hash = compute_hive_content_hash(
             &current.title,
@@ -776,16 +1109,168 @@ impl SqliteStore {
             params![id, now, hive_hash],
         )
         .await?;
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, current.content, now],
-        )
-        .await?;
+        journal_tx(&tx, id, &current.content, now).await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// Computes `DeleteImpact` for `id` without deleting anything. Links,
+    /// including children, are read from content with the same parser as
+    /// `memory_tree`, not from edges: edges are only created for targets
+    /// that already exist, so a hive pull that applies the parent first
+    /// leaves them missing.
+    pub async fn delete_impact(&self, id: &str) -> Result<DeleteImpact> {
+        let mut impact = DeleteImpact::default();
+        let Some(me) = self.recall_by_id(id).await? else {
+            return Ok(impact);
+        };
+        // Children some other memory also points to keep a home.
+        let mut homed = std::collections::HashSet::new();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, title, content FROM memories WHERE id != ?1 AND instr(content, 'mem_') > 0 \
+                 ORDER BY title, id",
+                params![id],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let other: String = row.get(0)?;
+            let content: String = row.get(2)?;
+            let links = parse_relationship_links(&other, &content);
+            if links.iter().any(|(_, _, target)| target == id) {
+                impact.dangling_in.push(RelatedMemory {
+                    id: other,
+                    title: row.get(1)?,
+                    link_text: None,
+                });
+            }
+            homed.extend(
+                links
+                    .into_iter()
+                    .filter(|(_, kind, _)| kind == "child")
+                    .map(|(_, _, target)| target),
+            );
+        }
+        for (link_text, kind, child) in parse_relationship_links(id, &me.content) {
+            if kind != "child" || homed.contains(&child) {
+                continue;
+            }
+            if let Some(c) = self.recall_by_id(&child).await? {
+                impact.orphaned_children.push(RelatedMemory {
+                    id: child,
+                    title: c.title,
+                    link_text: Some(link_text),
+                });
+            }
+        }
+        impact
+            .orphaned_children
+            .sort_by(|a, b| (&a.title, &a.id).cmp(&(&b.title, &b.id)));
+        Ok(impact)
+    }
+
+    /// The index tree for `project` in this store: a cycle-safe walk of
+    /// content `child:` links from the project root, plus every
+    /// `project:<name>` memory the walk did not reach. Homes and pointers
+    /// are parsed from content (the source of truth for links), counting
+    /// only targets that exist in this store.
+    // ponytail: loads every memory once; fine for a personal store, move the
+    // walk into a recursive CTE if stores grow past a few thousand memories.
+    pub async fn memory_tree(&self, project: &str) -> Result<MemoryTree> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        let project_tag = format!("project:{}", project.to_lowercase());
+        let root_id = self.find_root(Some(project)).await?.map(|r| r.id);
+        let all = self.list_memories(100_000, 0).await?;
+        let by_id: HashMap<&str, &MemoryEntry> = all.iter().map(|m| (m.id.as_str(), m)).collect();
+
+        let mut pointers: HashMap<&str, Vec<TreePointer>> = HashMap::new();
+        let mut homes: HashMap<String, Vec<String>> = HashMap::new();
+        let mut broken: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut parent_links: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut cross_refs: HashMap<&str, Vec<TreePointer>> = HashMap::new();
+        let mut broken_cross: HashMap<&str, Vec<String>> = HashMap::new();
+        for m in &all {
+            for (text, kind, target) in parse_relationship_links(&m.id, &m.content) {
+                match kind.as_str() {
+                    "child" if by_id.contains_key(target.as_str()) => {
+                        homes.entry(target.clone()).or_default().push(m.id.clone());
+                        pointers
+                            .entry(m.id.as_str())
+                            .or_default()
+                            .push(TreePointer {
+                                target_id: target,
+                                text,
+                            });
+                    }
+                    "child" => broken.entry(m.id.as_str()).or_default().push(target),
+                    "parent" => parent_links.entry(m.id.as_str()).or_default().push(target),
+                    _ if by_id.contains_key(target.as_str()) => cross_refs
+                        .entry(m.id.as_str())
+                        .or_default()
+                        .push(TreePointer {
+                            target_id: target,
+                            text,
+                        }),
+                    _ => broken_cross.entry(m.id.as_str()).or_default().push(target),
+                }
+            }
+        }
+        for h in homes.values_mut() {
+            h.sort();
+        }
+
+        let mut order: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        if let Some(root) = &root_id {
+            let mut queue = VecDeque::from([root.clone()]);
+            seen.insert(root.clone());
+            while let Some(id) = queue.pop_front() {
+                for p in pointers.get(id.as_str()).into_iter().flatten() {
+                    if seen.insert(p.target_id.clone()) {
+                        queue.push_back(p.target_id.clone());
+                    }
+                }
+                order.push(id);
+            }
+        }
+        let reachable_count = order.len();
+        let mut unreached: Vec<&MemoryEntry> = all
+            .iter()
+            .filter(|m| !seen.contains(&m.id) && m.tags.contains(&project_tag))
+            .collect();
+        unreached.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
+        order.extend(unreached.into_iter().map(|m| m.id.clone()));
+
+        let nodes = order
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let m = by_id.get(id.as_str())?;
+                Some(TreeNode {
+                    id: m.id.clone(),
+                    title: m.title.clone(),
+                    role: m
+                        .tags
+                        .iter()
+                        .find_map(|t| t.strip_prefix("role:").map(str::to_string)),
+                    tokens: m.token_count.unwrap_or_else(|| {
+                        crate::budget::count_entry_tokens(&m.title, &m.content) as i64
+                    }),
+                    homes: homes.get(id).cloned().unwrap_or_default(),
+                    pointers: pointers.get(id.as_str()).cloned().unwrap_or_default(),
+                    reachable: i < reachable_count,
+                    updated_at: m.updated_at,
+                    tags: m.tags.clone(),
+                    broken_pointers: broken.get(id.as_str()).cloned().unwrap_or_default(),
+                    parent_links: parent_links.get(id.as_str()).cloned().unwrap_or_default(),
+                    cross_refs: cross_refs.get(id.as_str()).cloned().unwrap_or_default(),
+                    broken_cross_refs: broken_cross.get(id.as_str()).cloned().unwrap_or_default(),
+                })
+            })
+            .collect();
+        Ok(MemoryTree { root_id, nodes })
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool> {
@@ -1133,6 +1618,47 @@ impl SqliteStore {
             )
             .await?;
         Ok(EdgeCreate::Created(id))
+    }
+
+    /// Import's edge write: creates the edge with the backup's status, or,
+    /// when importing a memory already made it from a content link (as
+    /// 'active'), puts the backup's status and reason on it. Returns whether
+    /// a new edge was created.
+    pub async fn import_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        relationship: &str,
+        status: &str,
+        link_text: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        use crate::model::EdgeCreate;
+        match self
+            .create_edge_with_status(
+                source_id,
+                target_id,
+                relationship,
+                status,
+                link_text,
+                reason,
+            )
+            .await?
+        {
+            EdgeCreate::Created(_) => Ok(true),
+            EdgeCreate::Duplicate => {
+                let _w = self.write().await;
+                self.conn
+                    .execute(
+                        "UPDATE edges SET status = ?4, reason = ?5
+                         WHERE source_id = ?1 AND target_id = ?2 AND relationship = ?3",
+                        params![source_id, target_id, relationship, status, reason],
+                    )
+                    .await?;
+                Ok(false)
+            }
+            EdgeCreate::MissingEndpoint | EdgeCreate::InvalidRelationship => Ok(false),
+        }
     }
 
     pub async fn set_edge_status(&self, id: &str, status: &str) -> Result<bool> {

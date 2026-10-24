@@ -206,7 +206,7 @@ pub(crate) fn render_session_start(
     if json {
         return serde_json::to_string_pretty(&result.to_json()).unwrap_or_default();
     }
-    if result.loaded.is_empty() && result.skipped.is_empty() {
+    if result.loaded.is_empty() && result.skipped.is_empty() && !result.roots_missing {
         return String::new();
     }
     use crate::prompt_data::{DATA_NOTICE, neutralize_context_tags, single_line};
@@ -219,13 +219,25 @@ pub(crate) fn render_session_start(
         result.max_tokens
     );
     for l in &result.loaded {
+        let title = single_line(&neutralize_context_tags(&l.entry.title));
+        // A root carries its id: it is the parent_id for memories filed
+        // directly under it, and only for memories in the same store.
+        let heading = if l.is_root {
+            let id = single_line(&neutralize_context_tags(&l.entry.id));
+            let layer = if l.entry.layer == "org" { ", org" } else { "" };
+            format!("root: {title} ({id}{layer})")
+        } else {
+            title
+        };
         out.push_str(&format!(
-            "\n## {}\n{}\n",
-            single_line(&neutralize_context_tags(&l.entry.title)),
+            "\n## {heading}\n{}\n",
             neutralize_context_tags(&l.entry.content)
         ));
     }
     out.push_str("</mynd-context>\n");
+    if result.roots_missing {
+        out.push_str("mynd: this project has no root index yet; run /memory-audit to build one\n");
+    }
     for s in &result.skipped {
         out.push_str(&format!(
             "mynd: skipped recall \"{}\" ({})\n",

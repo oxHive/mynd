@@ -64,9 +64,10 @@ fn default_edge_status() -> String {
     "active".into()
 }
 
-/// Checks every memory in an import the way `store()` will, before any
+/// Checks every memory in an import the way `restore()` will, before any
 /// row is written, so a bad export is rejected whole (422 naming the
-/// offending ids) instead of leaving a half-applied import behind.
+/// offending ids) instead of leaving a half-applied import behind. Root
+/// uniqueness is not checked: import, like hive apply, keeps what it is given.
 pub(crate) async fn validate_import_memories<'a>(
     store: &crate::store::SqliteStore,
     memories: impl Iterator<Item = (&'a str, &'a str, &'a str, &'a str, &'a str)>,
@@ -118,7 +119,7 @@ pub(super) async fn import(
     let mut mem_count = 0usize;
     for m in &b.memories {
         store
-            .store(&crate::store::NewMemoryRow {
+            .restore(&crate::store::NewMemoryRow {
                 id: &m.id,
                 title: &m.title,
                 content: &m.content,
@@ -135,19 +136,17 @@ pub(super) async fn import(
         if !["active", "pending", "rejected"].contains(&e.status.as_str()) {
             continue;
         }
-        if matches!(
-            store
-                .create_edge_with_status(
-                    &e.source_id,
-                    &e.target_id,
-                    &e.relationship,
-                    &e.status,
-                    e.link_text.as_deref(),
-                    e.reason.as_deref(),
-                )
-                .await?,
-            crate::model::EdgeCreate::Created(_)
-        ) {
+        if store
+            .import_edge(
+                &e.source_id,
+                &e.target_id,
+                &e.relationship,
+                &e.status,
+                e.link_text.as_deref(),
+                e.reason.as_deref(),
+            )
+            .await?
+        {
             edge_count += 1;
         }
     }

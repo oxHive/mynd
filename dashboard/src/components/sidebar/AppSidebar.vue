@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useUiStore } from '../../stores/ui.js'
 import { useFeedbackStore } from '../../stores/feedback.js'
 import { useGraphStore } from '../../stores/graph.js'
+import { useAuditStore } from '../../stores/audit.js'
 import { useUpdateStore } from '../../stores/update.js'
 import logoUrl from '../../assets/oxhive-logo-white.png'
 import { BASE } from '../../api/client.js'
@@ -10,6 +11,7 @@ import { BASE } from '../../api/client.js'
 const ui = useUiStore()
 const feedback = useFeedbackStore()
 const graph = useGraphStore()
+const audit = useAuditStore()
 const update = useUpdateStore()
 
 const NAV_ITEMS = [
@@ -20,11 +22,11 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: 'settings' },
 ]
 
-// Pending connection suggestions: badged on the two pages that surface them
+// Pending audit fixes and connection suggestions: badged on the two pages that surface them
 // (both show the review bar), same treatment as the feedback count.
 function navBadgeCount(id) {
   if (id === 'feedback') return feedback.conflicts.length + feedback.feedbackItems.length
-  if (id === 'memories' || id === 'graph') return graph.pendingEdges.length
+  if (id === 'memories' || id === 'graph') return graph.pendingEdges.length + audit.proposals.length
   return 0
 }
 

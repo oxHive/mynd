@@ -14,7 +14,12 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Scaffold .mynd.toml + CLAUDE.md integration for this project
-    Init,
+    Init {
+        /// Print the current ~/.claude/CLAUDE.md memory block and exit, for
+        /// merging into a customized one by hand
+        #[arg(long)]
+        print_block: bool,
+    },
     /// Show config and preview what session start will inject
     Status {
         /// Force plain-text output even on a real terminal
@@ -104,10 +109,10 @@ pub enum Command {
         #[command(subcommand)]
         action: DataAction,
     },
-    /// AI-assisted graph suggestions (requires `mynd up` to be running)
-    Suggest {
+    /// Background memory audit and its proposals (requires `mynd up` to be running)
+    Audit {
         #[command(subcommand)]
-        action: SuggestAction,
+        action: AuditAction,
     },
     /// Check GitHub releases for a newer Mynd version
     Update {
@@ -231,6 +236,7 @@ pub enum McpAction {
 }
 
 mod analytics;
+mod audit;
 pub(crate) mod common;
 mod data;
 mod discord_cmds;
@@ -245,12 +251,12 @@ mod memory;
 mod self_update;
 mod service;
 mod status;
-mod suggest;
 mod tags;
 #[cfg(test)]
 mod tests;
 
 pub use analytics::*;
+pub use audit::*;
 pub use data::*;
 pub use discord_cmds::*;
 pub use edge::*;
@@ -264,5 +270,4 @@ pub use memory::*;
 pub use self_update::*;
 pub use service::*;
 pub use status::*;
-pub use suggest::*;
 pub use tags::*;

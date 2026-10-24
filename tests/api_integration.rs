@@ -5,10 +5,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxmynd::{
+    audit_session::AuditSessionManager,
     config::{AgentSettings, SyncSettings},
     db,
     store::SqliteStore,
-    suggest_session::SuggestSessionManager,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -41,8 +41,9 @@ async fn test_app() -> (axum::Router, TempDir) {
         args: vec![],
         kind: oxmynd::config::AgentKind::Claude,
     };
-    let suggest = SuggestSessionManager::new(
+    let audit = AuditSessionManager::new(
         Arc::clone(&store),
+        None,
         events.clone(),
         agent,
         "http://127.0.0.1:3456/mcp".into(),
@@ -57,7 +58,7 @@ async fn test_app() -> (axum::Router, TempDir) {
         None,
         "http://127.0.0.1:3457",
         events,
-        suggest,
+        audit,
         update_state,
         oxmynd::config::AgentSettings::default(),
         true,

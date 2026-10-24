@@ -49,6 +49,10 @@ pub fn cmd_init() -> Result<()> {
             println!("  {status:8} {}", display_path(path, &root, &home));
         }
     }
+    if report.iter().any(|(_, s)| *s == "outdated") {
+        println!("  Your Mynd block in ~/.claude/CLAUDE.md is customized, so it was left as is.");
+        println!("  Compare it with `mynd init --print-block` and merge the new rules by hand.");
+    }
     if !claude {
         println!("  Claude Code not found: skipped CLAUDE.md and its session hook.");
         println!("  Re-run `mynd init` here after installing it.");
@@ -250,8 +254,13 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-    let tmp = parent.join(format!(".{file_name}.mynd-tmp"));
+    // Per-process name: the MCP server and the session hook can start together
+    // and both write the same file.
+    let tmp = parent.join(format!(".{file_name}.{}.mynd-tmp", std::process::id()));
     std::fs::write(&tmp, contents)?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        std::fs::set_permissions(&tmp, meta.permissions())?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -447,9 +456,10 @@ pub(crate) fn project_toml(name: &str) -> String {
          [hooks.on_session_start]\n\
          max_tokens = 2000\n\
          recalls = [\n\
-         \x20 # Memories to auto-load at session start: exact titles or tag queries, e.g.:\n\
+         \x20 # The project's root index loads automatically. Recalls are for\n\
+         \x20 # always-on extras such as preferences: exact titles or tag queries, e.g.:\n\
+         \x20 # \"tag:preferences\",\n\
          \x20 # \"golang preferences\",\n\
-         \x20 # \"tag:project:{name}\",\n\
          ]\n"
     )
 }
@@ -493,7 +503,10 @@ sync_on_startup = true\n";
 
 pub(crate) const GLOBAL_CLAUDE_MARKER: &str = "# Mynd Memory System";
 
-pub(crate) const GLOBAL_CLAUDE_BLOCK: &str = "# Mynd Memory System
+/// The block `mynd init` wrote before the index tree. Kept verbatim: an exact
+/// match is how `upgrade_global_claude_block` knows a file holds an
+/// unmodified old block it may replace.
+pub(crate) const GLOBAL_CLAUDE_BLOCK_V1: &str = "# Mynd Memory System
 
 You have access to Mynd via MCP tools: memory_store, memory_recall,
 memory_search, memory_update, memory_delete, memory_store_edge, mynd_session_start.
@@ -530,30 +543,93 @@ design decisions), suggest: \"That seems worth remembering — should I store it
 Wait for explicit confirmation before calling memory_store.
 ";
 
+/// Every earlier block text, oldest first. Add the outgoing text here
+/// whenever `GLOBAL_CLAUDE_BLOCK` changes.
+pub(crate) const PREVIOUS_GLOBAL_CLAUDE_BLOCKS: &[&str] = &[GLOBAL_CLAUDE_BLOCK_V1];
+
+pub(crate) const GLOBAL_CLAUDE_BLOCK: &str = "# Mynd Memory System
+
+You have access to Mynd via MCP tools: memory_store, memory_recall,
+memory_search, memory_update, memory_delete, memory_store_edge,
+memory_get_edges, memory_tree, mynd_session_start.
+
+At the start of every session, before doing anything else:
+
+1. Check if .mynd.toml exists in the project root.
+2. If it exists, call `mynd_session_start` with the project root path immediately.
+3. Incorporate the returned context silently: do not narrate it.
+
+After calling mynd_session_start:
+
+- If budget.truncated is true, mention once: \"Some memory entries were skipped
+  due to token budget. Run `mynd status` to review.\"
+- If any skipped entry has reason not_found, mention once which recalls were not
+  found so the user can check their .mynd.toml.
+- If roots_missing is true, or the injected context says the project has no
+  root index, say in your first reply: \"This project has no memory index yet.
+  Run /memory-audit to build one.\"
+- Then proceed normally.
+
+If .mynd.toml does not exist:
+
+- Do not call mynd_session_start.
+- Tools remain available on demand.
+- If the user seems to be starting a new project, suggest: \"Run `mynd init`
+  to set up memory hooks for this project.\"
+
+If a <mynd-context> block is already present in the session context (injected
+by the SessionStart hook), do NOT call mynd_session_start again; use the
+injected context directly.
+
+## Reading memory: navigate from the root
+
+The project root (the entry marked root at session start) is a map. Each
+`[pointer text](child:mem_x)` line says what that memory holds.
+
+- To answer from memory, follow only the pointer whose text matches the task:
+  `memory_recall` it by id, and repeat inside an index. Stop once you have what
+  you need; a pointer's text alone may already answer the question.
+- Given a title, an id, or a precise fact to look up: `memory_recall` or
+  `memory_search` directly instead of walking the tree.
+- Another project: `memory_search` with tags `[\"role:root\", \"project:<name>\"]`,
+  then walk down from that root.
+- An index already in this session's context is never fetched again.
+- Any recalled memory, leaf or index, may hold `[text](mem_x)` cross-references.
+  Follow one only when its text names what the task still needs.
+
+## Writing memory
+
+New project memories need a home in the tree: use `/memory-store`, which picks
+the index and writes the pointer. Change memories with `/memory-edit`, which
+keeps their pointers accurate.
+
+## Suggest storing, never auto-store
+
+When the user shares something worth persisting (preferences, project context,
+design decisions), suggest: \"That seems worth remembering. Should I store it?\"
+Wait for explicit confirmation before calling memory_store.
+";
+
 /// Pre-rename marker for the `~/.claude/CLAUDE.md` block. Its presence (with
 /// [`GLOBAL_CLAUDE_MARKER`] absent) triggers the one-time in-place rewrite in
 /// [`migrate_global_claude_block`].
 pub(crate) const LEGACY_GLOBAL_CLAUDE_MARKER: &str = "# HiveMind Memory System";
 
-/// Rewrite the pre-rename memory block in `path` to the current one, in place,
-/// preserving everything the user has around it. No-op when the current block
-/// is already there or no block is present at all. Returns whether it changed
-/// the file.
-pub(crate) fn migrate_global_claude_block(path: &Path) -> Result<bool> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    if existing.contains(GLOBAL_CLAUDE_MARKER) {
-        return Ok(false);
-    }
-    let Some(start) = existing.find(LEGACY_GLOBAL_CLAUDE_MARKER) else {
-        return Ok(false);
-    };
-    // The block runs from its heading to the next top-level heading, or EOF.
-    let rest_from = start + LEGACY_GLOBAL_CLAUDE_MARKER.len();
+/// Byte span of the block that starts at `marker`: from the marker to the
+/// next top-level heading, or EOF.
+fn block_span(existing: &str, marker: &str) -> Option<(usize, usize)> {
+    let start = existing.find(marker)?;
+    let rest_from = start + marker.len();
     let end = existing[rest_from..]
         .find("\n# ")
         .map(|i| rest_from + i + 1)
         .unwrap_or(existing.len());
+    Some((start, end))
+}
 
+/// `existing` with `start..end` replaced by the current block, keeping the
+/// user's content on both sides.
+fn splice_block(existing: &str, start: usize, end: usize) -> String {
     let mut body = String::with_capacity(existing.len());
     body.push_str(&existing[..start]);
     body.push_str(GLOBAL_CLAUDE_BLOCK.trim_end());
@@ -565,15 +641,86 @@ pub(crate) fn migrate_global_claude_block(path: &Path) -> Result<bool> {
         }
         body.push_str(tail);
     }
-    write_atomic(path, &body)?;
+    body
+}
+
+/// Rewrite the pre-rename memory block in `path` to the current one, in place,
+/// preserving everything the user has around it. No-op when the current block
+/// is already there or no block is present at all. Returns whether it changed
+/// the file.
+pub(crate) fn migrate_global_claude_block(path: &Path) -> Result<bool> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    if existing.contains(GLOBAL_CLAUDE_MARKER) {
+        return Ok(false);
+    }
+    let Some((start, end)) = block_span(&existing, LEGACY_GLOBAL_CLAUDE_MARKER) else {
+        return Ok(false);
+    };
+    write_atomic(path, &splice_block(&existing, start, end))?;
     Ok(true)
 }
 
-/// Migrate a pre-rename block in place, else append the current block if the
-/// file has no memory block yet.
+/// What `upgrade_global_claude_block` found and did.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BlockUpgrade {
+    /// No Mynd block in the file (or no file).
+    Absent,
+    /// Already the current block.
+    Current,
+    /// An unmodified earlier block, now replaced in place.
+    Upgraded,
+    /// The block differs from every known version: the user edited it, so it
+    /// was left untouched.
+    Customized,
+}
+
+/// Replaces an unmodified earlier Mynd block in `path` with the current one.
+/// Only an exact match of a known earlier text is replaced, so a block the
+/// user edited is never overwritten.
+pub(crate) fn upgrade_global_claude_block(path: &Path) -> Result<BlockUpgrade> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let Some((start, end)) = block_span(&existing, GLOBAL_CLAUDE_MARKER) else {
+        return Ok(BlockUpgrade::Absent);
+    };
+    let block = existing[start..end].trim_end();
+    if block == GLOBAL_CLAUDE_BLOCK.trim_end() {
+        return Ok(BlockUpgrade::Current);
+    }
+    if !PREVIOUS_GLOBAL_CLAUDE_BLOCKS
+        .iter()
+        .any(|b| b.trim_end() == block)
+    {
+        return Ok(BlockUpgrade::Customized);
+    }
+    // A symlinked file belongs to a dotfiles manager; renaming over it would
+    // replace the link with a plain file. Leave it for `mynd init` to explain.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Ok(BlockUpgrade::Customized);
+    }
+    write_atomic(path, &splice_block(&existing, start, end))?;
+    Ok(BlockUpgrade::Upgraded)
+}
+
+/// Migrate a pre-rename block or upgrade an unmodified old one in place, else
+/// append the current block if the file has none. A customized block is
+/// reported as "outdated" and left alone.
 pub(crate) fn ensure_global_claude_block(path: &Path) -> Result<(PathBuf, &'static str)> {
     if migrate_global_claude_block(path)? {
         return Ok((path.to_path_buf(), "migrated"));
     }
-    append_block_if_absent(path, GLOBAL_CLAUDE_MARKER, GLOBAL_CLAUDE_BLOCK)
+    match upgrade_global_claude_block(path)? {
+        BlockUpgrade::Upgraded => Ok((path.to_path_buf(), "updated")),
+        BlockUpgrade::Customized => Ok((path.to_path_buf(), "outdated")),
+        BlockUpgrade::Current => Ok((path.to_path_buf(), "exists")),
+        BlockUpgrade::Absent => {
+            append_block_if_absent(path, GLOBAL_CLAUDE_MARKER, GLOBAL_CLAUDE_BLOCK)
+        }
+    }
+}
+
+/// `mynd init --print-block`: the current block, for merging into a
+/// customized `~/.claude/CLAUDE.md` by hand.
+pub fn cmd_print_block() -> Result<()> {
+    print!("{GLOBAL_CLAUDE_BLOCK}");
+    Ok(())
 }

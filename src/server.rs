@@ -27,6 +27,15 @@ pub struct MemoryStoreInput {
     /// Memory type: "preference" | "project" | "history". Default: project.
     #[serde(default)]
     pub memory_type: Option<String>,
+    /// Id of the index memory to file this under (its home). Pass together
+    /// with `pointer`. Must live in the same store as this memory.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// One line (max 300 chars, no "]" or newline) saying what this memory
+    /// contains and when to open it. Appended to the parent as
+    /// `- [pointer](child:<new id>)`.
+    #[serde(default)]
+    pub pointer: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -160,6 +169,45 @@ pub struct MemoryGetEdgesInput {
     pub memory_id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MemoryTreeInput {
+    /// Project name, i.e. the value of its project:* tag (e.g. "mynd")
+    pub project: String,
+    /// Which store to walk: "workspace" (default; also holds personal
+    /// memories) or "org"
+    #[serde(default)]
+    pub layer: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct MemoryProposeInput {
+    /// Project the fix belongs to (its project:* value)
+    pub project: String,
+    /// "workspace" (default) or "org": the store the ops apply to
+    #[serde(default)]
+    pub layer: Option<String>,
+    /// The audit check that found this: no-root, orphan, several-homes,
+    /// broken-pointer, stale-pointer, oversized-index, bloated, legacy,
+    /// cross-reference or duplicate
+    pub kind: String,
+    /// One line the user reads first, e.g. "File 'Old matrix notes' under Sync"
+    pub summary: String,
+    /// Why this fix is right, in one or two sentences
+    pub reason: String,
+    /// The writes, in the order they must happen. Empty only for kind "duplicate".
+    #[serde(default)]
+    pub ops: Vec<crate::proposals::ProposalOp>,
+    /// Revise this pending proposal in place instead of adding a new one
+    #[serde(default)]
+    pub replaces: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MemoryAuditPromptInput {
+    /// Project to audit (its project:* value)
+    pub project: String,
+}
+
 #[derive(Clone)]
 pub struct Mynd {
     store: Arc<SqliteStore>,
@@ -243,14 +291,24 @@ impl Mynd {
     }
 
     /// Spawns a best-effort push-on-change attempt after a successful
-    /// store()/update() call, if Hive Mode is enabled on this handle.
-    fn spawn_hive_push(&self, memory_id: &str) {
+    /// store()/update() call, if Hive Mode is enabled on this handle. Ids are
+    /// pushed one after another, in order: a peer only creates a content
+    /// link's edge when the target already exists there, so a child must
+    /// land before the parent that links to it.
+    fn spawn_hive_push(&self, memory_ids: &[&str]) {
         if let Some(identity) = &self.hive_identity {
-            tokio::spawn(crate::hive::sync_loop::push_memory_change_to_online_peers(
-                self.store.clone(),
-                identity.clone(),
-                memory_id.to_string(),
-            ));
+            let (store, identity) = (self.store.clone(), identity.clone());
+            let ids: Vec<String> = memory_ids.iter().map(|id| id.to_string()).collect();
+            tokio::spawn(async move {
+                for id in ids {
+                    crate::hive::sync_loop::push_memory_change_to_online_peers(
+                        store.clone(),
+                        identity.clone(),
+                        id,
+                    )
+                    .await;
+                }
+            });
         }
     }
 
@@ -271,6 +329,20 @@ impl Mynd {
             .check_content_size(title, content)
             .await
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))
+    }
+
+    /// The store that holds memories of `layer`: the org store for `org`,
+    /// the primary store (workspace and personal) otherwise.
+    fn store_for_layer(&self, layer: &crate::model::Layer) -> Result<&Arc<SqliteStore>, ErrorData> {
+        if *layer != crate::model::Layer::Org {
+            return Ok(&self.store);
+        }
+        self.org_store.as_ref().ok_or_else(|| {
+            ErrorData::invalid_params(
+                "org layer not configured: set [org_sync] in the global config",
+                None,
+            )
+        })
     }
 
     /// Tries the primary store first, then the org store if configured.
@@ -315,32 +387,66 @@ impl Mynd {
             .parse::<crate::model::MemoryType>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        let target_store = if parsed_layer == crate::model::Layer::Org {
-            self.org_store.as_ref().ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "org layer not configured — set [org_sync] in the global config",
-                    None,
-                )
-            })?
-        } else {
-            &self.store
-        };
+        let target_store = self.store_for_layer(&parsed_layer)?;
 
         self.check_content_size(target_store, &p.title, &p.content)
             .await?;
-
         target_store
-            .store(&crate::store::NewMemoryRow {
-                id: &id,
-                title: &p.title,
-                content: &p.content,
-                tags: &p.tags,
-                token_count: p.token_count,
-                layer,
-                memory_type,
-            })
+            .check_root_unique(&id, &p.tags)
             .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+        let parent = match (p.parent_id.as_deref(), p.pointer.as_deref()) {
+            (None, None) => None,
+            (Some(pid), Some(ptr)) => {
+                let ptr = crate::store::validate_pointer(ptr)
+                    .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+                let exists = target_store
+                    .recall_by_id(pid)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .is_some();
+                if !exists {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "parent {pid} not found in the {layer} store: a memory's home must live in the same store as the memory"
+                        ),
+                        None,
+                    ));
+                }
+                Some((pid, ptr))
+            }
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    "parent_id and pointer must be passed together",
+                    None,
+                ));
+            }
+        };
+
+        let row = crate::store::NewMemoryRow {
+            id: &id,
+            title: &p.title,
+            content: &p.content,
+            tags: &p.tags,
+            token_count: p.token_count,
+            layer,
+            memory_type,
+        };
+        let mut parent_oversized = false;
+        match parent {
+            Some((pid, ptr)) => {
+                parent_oversized = target_store
+                    .store_with_parent(&row, pid, ptr)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .parent_oversized;
+            }
+            None => target_store
+                .store(&row)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }
         let trigger = if parsed_layer == crate::model::Layer::Org {
             &self.org_sync_trigger
         } else {
@@ -350,11 +456,15 @@ impl Mynd {
             t.notify_one();
         }
         self.notify_change();
-        self.spawn_hive_push(&id);
-        Ok(CallToolResult::structured(json!({
-            "id": id,
-            "title": title,
-        })))
+        let mut out = json!({ "id": id, "title": title });
+        if let Some((pid, _)) = parent {
+            self.spawn_hive_push(&[&id, pid]);
+            out["parent_id"] = json!(pid);
+            out["parent_oversized"] = json!(parent_oversized);
+        } else {
+            self.spawn_hive_push(&[&id]);
+        }
+        Ok(CallToolResult::structured(out))
     }
 
     pub async fn do_memory_recall(
@@ -555,6 +665,10 @@ impl Mynd {
 
         self.check_content_size(owning_store, title, content)
             .await?;
+        owning_store
+            .check_root_unique(&p.id, tags)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         let updated = owning_store
             .update(&p.id, title, content, tags)
@@ -562,7 +676,7 @@ impl Mynd {
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         if updated {
             self.notify_change();
-            self.spawn_hive_push(&p.id);
+            self.spawn_hive_push(&[&p.id]);
         }
         Ok(CallToolResult::structured(json!({
             "updated": updated,
@@ -580,12 +694,19 @@ impl Mynd {
                 None,
             ));
         }
-        let deleted = match self.find_owning_store(&p.id).await? {
-            Some(store) => store
-                .delete(&p.id)
-                .await
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
-            None => false,
+        let (deleted, impact) = match self.find_owning_store(&p.id).await? {
+            Some(store) => {
+                let impact = store
+                    .delete_impact(&p.id)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let deleted = store
+                    .delete(&p.id)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                (deleted, if deleted { impact } else { Default::default() })
+            }
+            None => (false, crate::store::DeleteImpact::default()),
         };
         if deleted {
             self.notify_change();
@@ -593,6 +714,8 @@ impl Mynd {
         Ok(CallToolResult::structured(json!({
             "deleted": deleted,
             "id": p.id,
+            "dangling_in": impact.dangling_in,
+            "orphaned_children": impact.orphaned_children,
         })))
     }
 
@@ -830,10 +953,86 @@ impl Mynd {
         Ok(vec![PromptMessage::new_text(Role::User, body)])
     }
 
-    async fn do_suggest_connections_prompt(&self) -> Result<Vec<PromptMessage>, ErrorData> {
-        let body = build_suggest_prompt(&self.store)
+    pub async fn do_memory_propose(
+        &self,
+        p: MemoryProposeInput,
+    ) -> Result<CallToolResult, ErrorData> {
+        let invalid = |m: String| ErrorData::invalid_params(m, None);
+        if !crate::proposals::PROPOSAL_KINDS.contains(&p.kind.as_str()) {
+            return Err(invalid(format!(
+                "unknown kind {:?}; use one of {}",
+                p.kind,
+                crate::proposals::PROPOSAL_KINDS.join(", ")
+            )));
+        }
+        if (p.kind == "duplicate") != p.ops.is_empty() {
+            return Err(invalid(
+                "ops must be empty for kind duplicate and non-empty for every other kind".into(),
+            ));
+        }
+        let layer = p.layer.as_deref().unwrap_or("workspace");
+        let parsed = layer
+            .parse::<crate::model::Layer>()
+            .map_err(|e| invalid(e.to_string()))?;
+        let target = if parsed == crate::model::Layer::Org {
+            self.org_store.as_ref().ok_or_else(|| {
+                invalid("org layer not configured: set [org_sync] in the global config".into())
+            })?
+        } else {
+            &self.store
+        };
+        let base = target
+            .validate_proposal_ops(&p.ops)
             .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(|e| invalid(e.to_string()))?;
+        let project = p.project.trim().to_lowercase();
+        let entry = crate::proposals::NewProposal {
+            project: &project,
+            layer,
+            kind: &p.kind,
+            summary: &p.summary,
+            reason: &p.reason,
+            ops: &p.ops,
+        };
+        let internal = |e: anyhow::Error| ErrorData::internal_error(e.to_string(), None);
+        let (id, replaced) = match &p.replaces {
+            Some(old) => {
+                if !self
+                    .store
+                    .replace_proposal(old, &entry, &base)
+                    .await
+                    .map_err(internal)?
+                {
+                    return Err(invalid(format!("no pending proposal {old} to replace")));
+                }
+                (old.clone(), true)
+            }
+            None => (
+                self.store
+                    .create_proposal(&entry, &base)
+                    .await
+                    .map_err(internal)?,
+                false,
+            ),
+        };
+        if let Some(tx) = &self.events {
+            let _ = tx.send(json!({ "type": "audit_proposals" }));
+        }
+        Ok(CallToolResult::structured(json!({
+            "id": id,
+            "status": "pending",
+            "replaced": replaced,
+        })))
+    }
+
+    pub async fn do_memory_audit_prompt(
+        &self,
+        p: MemoryAuditPromptInput,
+    ) -> Result<Vec<PromptMessage>, ErrorData> {
+        let body =
+            crate::audit_prompt::build_audit_prompt(&self.store, p.project.trim(), "workspace")
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(vec![PromptMessage::new_text(Role::User, body)])
     }
 
@@ -920,12 +1119,34 @@ impl Mynd {
 
         Ok(CallToolResult::structured(result.to_json()))
     }
+
+    pub async fn do_memory_tree(&self, p: MemoryTreeInput) -> Result<CallToolResult, ErrorData> {
+        let project = p.project.trim();
+        if project.is_empty() {
+            return Err(ErrorData::invalid_params("project must not be empty", None));
+        }
+        let layer = p.layer.as_deref().unwrap_or("workspace");
+        let parsed = layer
+            .parse::<crate::model::Layer>()
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let tree = self
+            .store_for_layer(&parsed)?
+            .memory_tree(project)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::structured(json!({
+            "project": project.to_lowercase(),
+            "layer": layer,
+            "root_id": tree.root_id,
+            "nodes": tree.nodes,
+        })))
+    }
 }
 
 #[tool_router]
 impl Mynd {
     #[tool(
-        description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones."
+        description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones. To file the memory under an index, pass parent_id (the index's id) and pointer (one line saying what this memory contains and when to open it); the server appends `- [pointer](child:<new id>)` to the parent in the same write. A response with parent_oversized: true means the parent index should be split."
     )]
     async fn memory_store(
         &self,
@@ -975,7 +1196,7 @@ impl Mynd {
     }
 
     #[tool(
-        description = "Permanently delete a memory by id. Requires confirm=true; always confirm with the user before calling."
+        description = "Permanently delete a memory by id. Requires confirm=true; always confirm with the user before calling. The response lists dangling_in (memories whose content still links here) and orphaned_children (memories this was the only home of), so you can offer to remove the stale links and re-home the children."
     )]
     async fn memory_delete(
         &self,
@@ -1153,6 +1374,26 @@ impl Mynd {
             Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
         }
     }
+
+    #[tool(
+        description = "Get a project's memory index tree without any content: the root, every memory reachable through [pointer](child:mem_x) links, and the project's memories that walk does not reach (reachable: false): ones nothing points to, and subtrees cut off from the root. Each node lists its role, token cost, homes, outgoing pointers and outgoing [text](mem_x) cross-references. Use to audit structure or see a project's layout cheaply before deciding what to recall."
+    )]
+    async fn memory_tree(
+        &self,
+        Parameters(p): Parameters<MemoryTreeInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.do_memory_tree(p).await
+    }
+
+    #[tool(
+        description = "Propose one fix to a project's memory index tree for the user to review in the dashboard. Never writes memories itself. ops are create/update writes applied together on approval, and only if none of the touched memories changed meanwhile. Pass replaces to revise a pending proposal after user feedback."
+    )]
+    async fn memory_propose(
+        &self,
+        Parameters(p): Parameters<MemoryProposeInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.do_memory_propose(p).await
+    }
 }
 
 #[prompt_router]
@@ -1211,13 +1452,16 @@ impl Mynd {
         self.do_memory_flag_prompt(p).await
     }
 
-    /// Analyze the memory graph and suggest new connections between related memories
+    /// Audit a project's index tree and propose fixes for dashboard review
     #[prompt(
-        name = "suggest-connections",
-        description = "Fetch all memories and existing connections, then analyze them to suggest new edges."
+        name = "memory-audit",
+        description = "Audit a project's memory index tree and propose fixes, which the user reviews in the dashboard's Audit panel."
     )]
-    async fn suggest_connections_prompt(&self) -> Result<Vec<PromptMessage>, ErrorData> {
-        self.do_suggest_connections_prompt().await
+    async fn memory_audit_prompt(
+        &self,
+        Parameters(p): Parameters<MemoryAuditPromptInput>,
+    ) -> Result<Vec<PromptMessage>, ErrorData> {
+        self.do_memory_audit_prompt(p).await
     }
 
     /// Surface all open feedback items for interactive review and resolution
@@ -1228,112 +1472,6 @@ impl Mynd {
     async fn review_feedback_prompt(&self) -> Result<Vec<PromptMessage>, ErrorData> {
         self.do_review_feedback_prompt().await
     }
-}
-
-pub(crate) async fn build_suggest_prompt(store: &SqliteStore) -> anyhow::Result<String> {
-    let memories = store.list_memories(100, 0).await?;
-    let edges = store.list_edges(None).await?;
-
-    if memories.is_empty() {
-        return Ok(
-            "No memories stored yet. Add some memories first with memory_store.".to_string(),
-        );
-    }
-
-    let mem_lines: Vec<String> = memories
-        .iter()
-        .map(|m| {
-            let tags = if m.tags.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", single_line(&m.tags.join(", ")))
-            };
-            let snippet: String = m.content.chars().take(80).collect();
-            let ellipsis = if m.content.chars().count() > 80 {
-                "…"
-            } else {
-                ""
-            };
-            // One line per memory, whatever the title or content contain.
-            format!(
-                "{} | {} | {}{}{}",
-                m.id,
-                single_line(&m.title),
-                single_line(&snippet),
-                ellipsis,
-                tags
-            )
-        })
-        .collect();
-
-    let edge_lines: Vec<String> = edges
-        .iter()
-        .map(|e| {
-            format!(
-                "{} --[{}]--> {} ({})",
-                e.source_id, e.relationship, e.target_id, e.status
-            )
-        })
-        .collect();
-
-    let edge_section = if edge_lines.is_empty() {
-        "  (none yet)".to_string()
-    } else {
-        edge_lines.join("\n")
-    };
-
-    Ok(format!(
-        "Mynd — Suggest Connections\n\
-         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
-         You have {} memories and {} existing connections.\n\n\
-         {DATA_NOTICE}\n\n\
-         MEMORIES:\n\
-         {}\n\n\
-         EXISTING CONNECTIONS:\n\
-         {}\n\n\
-         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
-         STEP 1 — Audit existing connections.\n\
-         Check each entry in EXISTING CONNECTIONS against the current memory content above.\n\
-         Flag one as stale/irrelevant if its memories no longer support the stated relationship\n\
-         (content was edited away from it, the link was a coincidence, or it duplicates/contradicts\n\
-         another edge). You cannot reject an edge yourself — only the user can, in the dashboard.\n\
-         For each stale one, call memory_update_edge with the edge id and a reason starting with\n\
-         \"STALE:\" explaining why, so it's flagged for the user to review and reject.\n\
-         Some parent/child edges are structural, not organic: they exist because a large\n\
-         piece of content was chunked into an index memory plus child memories, linked via\n\
-         a literal [phrase](child:mem_xxx) already present in the index's content. Identify\n\
-         these by the part tag shown in MEMORIES above (part:index on the parent, part:fragment\n\
-         on the children) rather than guessing from content alone. Do not flag these as stale\n\
-         just because a fragment's narrow content doesn't on its own seem to \"support\" the\n\
-         relationship — the relationship is structural (this fragment IS part of that document),\n\
-         not a semantic claim that needs its own supporting evidence.\n\n\
-         STEP 2 — Suggest new connections.\n\
-         Identify meaningful connections not yet captured. For each one, call memory_store_edge\n\
-         with: source_id, target_id, relationship, status: \"pending\", link_text (a short phrase\n\
-         naming the relationship, e.g. \"n-layer architecture\"), and a one-sentence reason.\n\
-         Choose link_text carefully: if the user approves this suggestion, the dashboard embeds it\n\
-         verbatim as an inline markdown link in the source memory's content, e.g.:\n\
-         \x20\x20See also: [n-layer architecture](parent:mem_xxx)\n\
-         so it reads naturally as the label of that link. Do not edit memory content yourself to\n\
-         add this link — approval in the dashboard does that, not you.\n\
-         Relationship types:\n\
-         \x20\x20parent  - target is a broader principle/context source falls under\n\
-         \x20\x20child   - target is a specific instance of source\n\
-         \x20\x20sibling - a peer, no hierarchy\n\
-         Don't re-suggest a connection already implied by chunking structure — e.g. two\n\
-         part:fragment memories of the same part:index are already related by sharing that\n\
-         parent; proposing a new sibling link between them just because they're topically adjacent\n\
-         is redundant. Focus on connections across genuinely different memories/documents.\n\
-         Suggest 3-7 connections. Focus on cross-domain insights.\n\n\
-         Keep each memory's own content short and focused on what it uniquely knows; these links\n\
-         are how related context gets pointed at instead of duplicated inline. A future reader\n\
-         should only follow a link when the current task actually needs that related memory, not\n\
-         eagerly pull in every connected memory.",
-        memories.len(),
-        edges.len(),
-        mem_lines.join("\n"),
-        edge_section,
-    ))
 }
 
 #[tool_handler]

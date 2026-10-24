@@ -103,6 +103,16 @@ pub fn run_startup_migration() {
         Ok(false) => {}
         Err(e) => eprintln!("mynd: ~/.claude/CLAUDE.md update skipped ({e:#})"),
     }
+    // Replace an unmodified older block with the current one; a customized
+    // block is left alone (`mynd init` explains how to merge it).
+    match crate::cli::upgrade_global_claude_block(&global_claude_md) {
+        Ok(crate::cli::BlockUpgrade::Upgraded) => eprintln!(
+            "mynd: updated the memory block in {}",
+            global_claude_md.display()
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("mynd: ~/.claude/CLAUDE.md update skipped ({e:#})"),
+    }
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {

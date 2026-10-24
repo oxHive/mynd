@@ -67,71 +67,15 @@ pub enum TagsAction {
     },
 }
 
-/// Mirrors `api::settings::validate_tag_namespaces` — each entry needs a
-/// string `color` and a string-array `values`, with optional `single_value`
-/// (bool), `description` (string), and `values_mode` ("suggestion"|"fixed").
-fn validate_tag_namespaces(body: &Value) -> Result<()> {
-    let obj = body
-        .as_object()
-        .ok_or_else(|| anyhow!("tag settings must be a JSON object"))?;
-    for (ns, entry) in obj {
-        let entry_obj = entry
-            .as_object()
-            .ok_or_else(|| anyhow!("namespace {ns:?} must be an object"))?;
-        match entry_obj.get("color") {
-            Some(Value::String(_)) => {}
-            _ => return Err(anyhow!("namespace {ns:?} missing string \"color\"")),
-        }
-        match entry_obj.get("values") {
-            Some(Value::Array(vals)) if vals.iter().all(|v| v.is_string()) => {}
-            _ => return Err(anyhow!("namespace {ns:?} missing string array \"values\"")),
-        }
-        if let Some(sv) = entry_obj.get("single_value")
-            && !sv.is_boolean()
-        {
-            return Err(anyhow!("namespace {ns:?} \"single_value\" must be a bool"));
-        }
-        if let Some(d) = entry_obj.get("description")
-            && !d.is_string()
-        {
-            return Err(anyhow!("namespace {ns:?} \"description\" must be a string"));
-        }
-        if let Some(vm) = entry_obj.get("values_mode")
-            && vm.as_str() != Some("suggestion")
-            && vm.as_str() != Some("fixed")
-        {
-            return Err(anyhow!(
-                "namespace {ns:?} \"values_mode\" must be \"suggestion\" or \"fixed\""
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Mirrors `api::settings::validate_predefined_namespaces_unchanged`.
-fn validate_predefined_namespaces_unchanged(body: &Value) -> Result<()> {
-    let defaults = crate::store::default_tag_namespaces();
-    let names = defaults
-        .as_object()
-        .expect("default_tag_namespaces returns an object")
-        .keys();
-    for name in names {
-        if body.get(name) != defaults.get(name) {
-            return Err(anyhow!(
-                "namespace {name:?} is predefined and cannot be deleted or modified. \
-                 Disable this guard with [tags] guard_predefined_namespaces = false \
-                 in the global mynd config to allow it."
-            ));
-        }
-    }
-    Ok(())
-}
-
 async fn save_registry(store: &crate::store::SqliteStore, body: Value) -> Result<()> {
     let settings = crate::config::load_server_settings(&crate::config::global_config_path())?;
-    validate_tag_namespaces(&body)?;
+    crate::api::settings::validate_tag_namespaces(&body).map_err(|e| anyhow!(e))?;
     if settings.guard_predefined_namespaces {
-        validate_predefined_namespaces_unchanged(&body)?;
+        crate::api::settings::validate_predefined_namespaces_unchanged(
+            &body,
+            &store.tag_namespace_registry().await,
+        )
+        .map_err(|e| anyhow!(e))?;
     }
     store.set_meta("tag_namespaces", &body.to_string()).await?;
     Ok(())
