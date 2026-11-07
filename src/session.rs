@@ -23,6 +23,7 @@ pub struct LoadedEntry {
     pub entry: MemoryEntry,
     pub tokens: usize,
     pub source: RecallSource,
+    pub is_root: bool,
 }
 
 #[derive(Debug)]
@@ -39,6 +40,7 @@ pub struct SessionStartResult {
     pub used_tokens: usize,
     pub max_tokens: usize,
     pub memories_recalled: usize,
+    pub roots_missing: bool,
 }
 
 impl SessionStartResult {
@@ -58,6 +60,7 @@ impl SessionStartResult {
                 "content": l.entry.content,
                 "tags": l.entry.tags,
                 "layer": l.entry.layer,
+                "root": l.is_root,
             })).collect::<Vec<_>>(),
             "budget": {
                 "used_tokens": self.used_tokens,
@@ -69,8 +72,24 @@ impl SessionStartResult {
                 "query": s.query,
                 "reason": s.reason.as_str(),
             })).collect::<Vec<_>>(),
-            "hint": "Session context loaded. Incorporate it silently and proceed with the user's request.",
+            "roots_missing": self.roots_missing,
+            "hint": self.hint(),
         })
+    }
+
+    fn hint(&self) -> String {
+        let mut hint = String::from(
+            "Session context loaded. Incorporate it silently and proceed with the user's request. \
+             Entries marked root are index memories: follow only the [pointer](child:mem_x) links \
+             the task needs (memory_recall by id), and recall directly when told exactly what to \
+             look for.",
+        );
+        if self.roots_missing {
+            hint.push_str(
+                " This project has no root index yet; suggest running /memory-audit to build one.",
+            );
+        }
+        hint
     }
 }
 
@@ -139,6 +158,12 @@ async fn recall_pass(
 
         let mut any_loaded = false;
         for entry in candidates {
+            // Already loaded (a root, or an earlier recall): the recall is
+            // satisfied and must not spend budget twice.
+            if loaded.iter().any(|l| l.entry.id == entry.id) {
+                any_loaded = true;
+                continue;
+            }
             let tokens = count_entry_tokens(&entry.title, &entry.content);
             if *used_tokens + tokens > max_tokens {
                 continue;
@@ -148,6 +173,7 @@ async fn recall_pass(
                 entry,
                 tokens,
                 source: recall.source,
+                is_root: false,
             });
             any_loaded = true;
         }
@@ -160,6 +186,58 @@ async fn recall_pass(
             });
         }
     }
+}
+
+/// Loads the project's root indexes ahead of every recall: the workspace
+/// project root, then the org store's project root, then the org-wide root.
+/// Roots spend budget first because they are the map the agent navigates
+/// from. Returns whether a project root exists in either store (whether or
+/// not it fit); the org-wide root does not count.
+async fn load_roots(
+    project: &str,
+    store: &SqliteStore,
+    org_store: Option<&SqliteStore>,
+    max_tokens: usize,
+    used_tokens: &mut usize,
+    loaded: &mut Vec<LoadedEntry>,
+    skipped: &mut Vec<SkippedEntry>,
+) -> bool {
+    let mut lookups: Vec<(&SqliteStore, Option<&str>, String)> =
+        vec![(store, Some(project), format!("root:{project}"))];
+    if let Some(org) = org_store {
+        lookups.push((org, Some(project), format!("root:{project} (org)")));
+        lookups.push((org, None, "root:org".to_string()));
+    }
+    let mut found_project_root = false;
+    for (s, scope, query) in lookups {
+        let entry = match s.find_root(scope).await {
+            Ok(Some(e)) => e,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!("root lookup \"{query}\" failed: {e:#}; skipping");
+                continue;
+            }
+        };
+        if scope.is_some() {
+            found_project_root = true;
+        }
+        let tokens = count_entry_tokens(&entry.title, &entry.content);
+        if *used_tokens + tokens > max_tokens {
+            skipped.push(SkippedEntry {
+                query,
+                reason: SkipReason::BudgetExceeded,
+            });
+            continue;
+        }
+        *used_tokens += tokens;
+        loaded.push(LoadedEntry {
+            entry,
+            tokens,
+            source: RecallSource::Project,
+            is_root: true,
+        });
+    }
+    found_project_root
 }
 
 /// Run the configured session-start recalls under the token budget.
@@ -178,6 +256,19 @@ pub async fn execute_session_start(
     let mut loaded = Vec::new();
     let mut skipped = Vec::new();
     let mut loaded_queries = std::collections::HashSet::new();
+
+    let project = config.project_name.trim();
+    let roots_missing = !project.is_empty()
+        && !load_roots(
+            project,
+            store,
+            org_store,
+            max_tokens,
+            &mut used_tokens,
+            &mut loaded,
+            &mut skipped,
+        )
+        .await;
 
     recall_pass(
         store,
@@ -247,6 +338,7 @@ pub async fn execute_session_start(
         used_tokens,
         max_tokens,
         memories_recalled,
+        roots_missing,
     })
 }
 
@@ -315,6 +407,7 @@ mod tests {
             used_tokens: 300,
             max_tokens: 2000,
             memories_recalled: 0,
+            roots_missing: false,
         };
         assert_eq!(result.remaining(), 1700);
         assert!(!result.truncated());
@@ -329,6 +422,7 @@ mod tests {
             used_tokens: 2001,
             max_tokens: 2000,
             memories_recalled: 0,
+            roots_missing: false,
         };
         assert_eq!(
             result_with_skip.remaining(),
@@ -537,5 +631,126 @@ mod tests {
         );
         assert_eq!(r.skipped[0].query, "dup");
         assert_eq!(r.skipped[1].query, "dup");
+    }
+
+    fn root_tags(project: Option<&str>) -> Vec<String> {
+        let mut t = vec!["role:root".to_string()];
+        if let Some(p) = project {
+            t.push(format!("project:{p}"));
+        }
+        t
+    }
+
+    async fn org_with(memories: &[(&str, &str, Vec<String>)]) -> (SqliteStore, TempDir) {
+        let (org, dir) = store_with(&[]).await;
+        for (id, title, tags) in memories {
+            org.store(&crate::store::NewMemoryRow {
+                id,
+                title,
+                content: "o",
+                tags,
+                token_count: None,
+                layer: "org",
+                memory_type: "project",
+            })
+            .await
+            .unwrap();
+        }
+        (org, dir)
+    }
+
+    #[tokio::test]
+    async fn project_root_loads_before_recalls_and_is_marked() {
+        let (s, _dir) = store_with(&[
+            ("id_a", "pref a", "short", vec![]),
+            ("id_root", "root", "r", root_tags(Some("test-proj"))),
+        ])
+        .await;
+        let r = execute_session_start(&config(2000, vec!["pref a"]), &s, None)
+            .await
+            .unwrap();
+        let titles: Vec<_> = r.loaded.iter().map(|l| l.entry.title.as_str()).collect();
+        assert_eq!(titles, vec!["root", "pref a"]);
+        assert!(r.loaded[0].is_root);
+        assert!(!r.loaded[1].is_root);
+        assert!(!r.roots_missing);
+    }
+
+    #[tokio::test]
+    async fn root_that_does_not_fit_is_skipped_but_recalls_still_load() {
+        let big = "word ".repeat(400);
+        let (s, _dir) = store_with(&[
+            ("id_root", "root", &big, root_tags(Some("test-proj"))),
+            ("id_a", "pref a", "tiny", vec![]),
+        ])
+        .await;
+        let budget = count_entry_tokens("pref a", "tiny") + 5;
+        let r = execute_session_start(&config(budget, vec!["pref a"]), &s, None)
+            .await
+            .unwrap();
+        assert_eq!(r.loaded.len(), 1);
+        assert_eq!(r.loaded[0].entry.title, "pref a");
+        assert!(!r.roots_missing, "the root exists, it just did not fit");
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!(r.skipped[0].query, "root:test-proj");
+        assert_eq!(r.skipped[0].reason, SkipReason::BudgetExceeded);
+    }
+
+    #[tokio::test]
+    async fn recall_matching_an_already_loaded_root_is_not_loaded_twice_or_skipped() {
+        let (s, _dir) = store_with(&[("id_root", "root", "r", root_tags(Some("test-proj")))]).await;
+        let r = execute_session_start(&config(2000, vec!["root", "tag:role:root"]), &s, None)
+            .await
+            .unwrap();
+        assert_eq!(r.loaded.len(), 1);
+        assert!(r.skipped.is_empty());
+        assert_eq!(r.used_tokens, count_entry_tokens("root", "r"));
+    }
+
+    #[tokio::test]
+    async fn org_project_root_and_org_wide_root_load_after_the_workspace_root() {
+        let (s, _dir) =
+            store_with(&[("id_ws", "ws root", "w", root_tags(Some("test-proj")))]).await;
+        let (org, _od) = org_with(&[
+            ("id_org_proj", "org proj root", root_tags(Some("test-proj"))),
+            ("id_org_wide", "org wide root", root_tags(None)),
+        ])
+        .await;
+        let r = execute_session_start(&config(2000, vec![]), &s, Some(&org))
+            .await
+            .unwrap();
+        let titles: Vec<_> = r.loaded.iter().map(|l| l.entry.title.as_str()).collect();
+        assert_eq!(titles, vec!["ws root", "org proj root", "org wide root"]);
+        assert!(r.loaded.iter().all(|l| l.is_root));
+        assert!(!r.roots_missing);
+    }
+
+    #[tokio::test]
+    async fn roots_missing_ignores_the_org_wide_root_but_not_an_org_project_root() {
+        let (s, _dir) = store_with(&[]).await;
+        let (org_wide_only, _a) = org_with(&[("id_w", "org wide", root_tags(None))]).await;
+        let r = execute_session_start(&config(2000, vec![]), &s, Some(&org_wide_only))
+            .await
+            .unwrap();
+        assert!(r.roots_missing);
+        assert_eq!(r.loaded.len(), 1, "the org-wide root still loads");
+
+        let (org_proj, _b) = org_with(&[("id_p", "org proj", root_tags(Some("test-proj")))]).await;
+        let r = execute_session_start(&config(2000, vec![]), &s, Some(&org_proj))
+            .await
+            .unwrap();
+        assert!(!r.roots_missing);
+    }
+
+    #[tokio::test]
+    async fn to_json_marks_roots_and_hints_at_the_audit_when_missing() {
+        let (s, _dir) = store_with(&[("id_a", "pref a", "short", vec![])]).await;
+        let v = execute_session_start(&config(2000, vec!["pref a"]), &s, None)
+            .await
+            .unwrap()
+            .to_json();
+        assert_eq!(v["roots_missing"], true);
+        assert_eq!(v["context_loaded"][0]["root"], false);
+        assert!(v["hint"].as_str().unwrap().contains("/memory-audit"));
     }
 }
