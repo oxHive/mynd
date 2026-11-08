@@ -153,6 +153,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "V11__conflict_source_device",
         include_str!("../migrations/V11__conflict_source_device.sql"),
     ),
+    (
+        "V12__audit_proposals",
+        include_str!("../migrations/V12__audit_proposals.sql"),
+    ),
 ];
 
 pub async fn run_migrations(conn: &libsql::Connection) -> Result<()> {

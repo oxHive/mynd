@@ -164,8 +164,8 @@ function insertMention(m, kind) {
   nextTick(() => { ta.focus(); ta.setSelectionRange(pos, pos) })
 }
 
-// When a pending suggestion for the currently open memory is selected in
-// SuggestPanel, preview what Approve would change right in the content
+// When a pending suggestion for the currently open memory is selected on the
+// graph canvas, preview what Approve would change right in the content
 // field instead of a separate inline box.
 const pendingDiff = computed(() => {
   const edge = graph.selectedEdge

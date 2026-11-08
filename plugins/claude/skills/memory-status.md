@@ -7,25 +7,27 @@ Show the current Mynd status for this session and project.
 
 ## Process
 
-### 1. Check server
+### 1. Session start preview
 
-Call `mynd_session_start` with the current working directory path to get the session start result. This returns what would be injected on a fresh session start.
+Call `mynd_session_start` with the current working directory path. It returns what a fresh session start would inject.
 
-### 2. Report
+### 2. Index tree
 
-Show:
-- Total memories in store (from the result or call `memory_search` with empty query for count)
-- Project name (from .mynd.toml if present)
-- Memories that would be auto-injected at session start, with their token cost
-- Token budget used vs total
-- Whether the budget is exhausted (any entries were skipped)
+Call `memory_tree` with `project` set to `[project] name` from `.mynd.toml` (skip this step without a `.mynd.toml`).
 
-### 3. Suggest next steps
+### 3. Report
 
-If the budget is exhausted: "Some memories were skipped. Increase max_tokens in .mynd.toml or remove low-value entries from recalls."
+- Project name.
+- Memories auto-injected at session start, with their token cost; mark the root.
+- Token budget used versus total, and whether any entries were skipped.
+- Index tree: the root's title and token cost (or "no root index"), the number of memories in the tree, the number of unhomed memories (`reachable: false`), and the number filed under more than one index (`homes` longer than 1).
 
-If no recalls are configured: "No recalls set up. Edit .mynd.toml to add memory titles to auto-inject at session start."
+### 4. Suggest next steps
+
+- Entries were skipped: "Some memories were skipped. Increase max_tokens in .mynd.toml or remove low-value entries from recalls."
+- No root index, unhomed memories, or memories with several homes: "Run `/memory-audit` to fix the index tree."
+- No recalls configured and a root exists: say nothing about recalls; the root loads on its own.
 
 ## Rules
 
-- Do not invent counts. Only report what the tool returns.
+- Report only what the tools returned.

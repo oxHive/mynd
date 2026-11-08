@@ -13,7 +13,8 @@ fn main() -> Result<()> {
     oxmynd::dir_migrate::run_startup_migration();
     match cli.command {
         None => run_server(),
-        Some(Command::Init) => cli::cmd_init(),
+        Some(Command::Init { print_block: true }) => cli::cmd_print_block(),
+        Some(Command::Init { .. }) => cli::cmd_init(),
         Some(Command::Status { plain }) => cli::cmd_status(plain),
         Some(Command::Up { headless, plain }) => run_up(headless, plain),
         Some(Command::Dashboard { open }) => run_dashboard(open),
@@ -60,7 +61,7 @@ fn main() -> Result<()> {
         Some(Command::Tags { action }) => cli::cmd_tags(action),
         Some(Command::Limits { action }) => cli::cmd_limits(action),
         Some(Command::Data { action }) => cli::cmd_data(action),
-        Some(Command::Suggest { action }) => cli::cmd_suggest(action),
+        Some(Command::Audit { action }) => cli::cmd_audit(action),
         Some(Command::Update { json }) => cli::cmd_update(json),
         Some(Command::Upgrade { yes }) => cli::cmd_upgrade(yes),
         Some(Command::Analytics { json, days, limit }) => cli::cmd_analytics(json, days, limit),

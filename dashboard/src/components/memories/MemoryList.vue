@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { PhMagnifyingGlass, PhPlus } from '@phosphor-icons/vue'
 import { useMemoriesStore } from '../../stores/memories.js'
 import { useUiStore } from '../../stores/ui.js'
@@ -7,6 +7,7 @@ import MemoryCard from './MemoryCard.vue'
 import FilterChip from '../shared/FilterChip.vue'
 import SkeletonCard from '../shared/SkeletonCard.vue'
 import TagFilter from '../shared/TagFilter.vue'
+import MemoryTree from './MemoryTree.vue'
 
 const memories = useMemoriesStore()
 const ui = useUiStore()
@@ -35,6 +36,16 @@ const ALL_FILTERS = [
 const filters = computed(() =>
   ui.orgInfo?.configured ? ALL_FILTERS : ALL_FILTERS.filter(f => f.value !== 'org')
 )
+
+const view = ref('list')
+const projects = computed(() => [...new Set(
+  memories.all.flatMap(m => (m.tags || []).filter(t => t.startsWith('project:')).map(t => t.slice('project:'.length))),
+)].sort())
+const treeProject = ref('')
+watch(projects, ps => {
+  if (!ps.includes(treeProject.value)) treeProject.value = ps[0] || ''
+}, { immediate: true })
+const treeLayer = computed(() => (memories.layerFilter === 'org' ? 'org' : 'workspace'))
 </script>
 
 <template>
@@ -75,10 +86,24 @@ const filters = computed(() =>
         </div>
         <TagFilter v-model="memories.tagFilter" />
       </div>
+      <div class="flex items-center gap-1.5 mt-2">
+        <FilterChip label="list" value="list" :active="view === 'list'" @select="view = $event" />
+        <FilterChip label="tree" value="tree" :active="view === 'tree'" @select="view = $event" />
+        <select v-if="view === 'tree' && projects.length" v-model="treeProject" class="hm-input"
+          style="height:24px; font-size:11px; width:auto">
+          <option v-for="p in projects" :key="p" :value="p">{{ p }}</option>
+        </select>
+      </div>
     </div>
 
     <!-- List -->
-    <div class="flex-1 overflow-y-auto flex flex-col gap-2 p-2">
+    <div v-if="view === 'tree'" class="flex-1 overflow-y-auto">
+      <MemoryTree v-if="treeProject" :project="treeProject" :layer="treeLayer" />
+      <div v-else class="p-6 text-center" style="font-size:12px; color:var(--hm-text-secondary)">
+        No memory has a project tag yet.
+      </div>
+    </div>
+    <div v-else class="flex-1 overflow-y-auto flex flex-col gap-2 p-2">
       <template v-if="memories.loading">
         <SkeletonCard v-for="i in 5" :key="i" />
       </template>
