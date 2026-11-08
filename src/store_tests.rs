@@ -2667,8 +2667,7 @@ async fn delete_impact_lists_dangling_links_and_children_left_without_a_home() {
 
 #[tokio::test]
 async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
-    // Hive pulls apply memories in id order, so a parent can land before its
-    // children and never get their edges. Content is the source of truth.
+    // Content is the source of truth, whatever state the edges are in.
     let (s, _dir) = make_store().await;
     let (idx, other_home, only_child, shared_child) = (hid(1), hid(2), hid(3), hid(4));
     s.store(&test_row(
@@ -2690,10 +2689,7 @@ async fn delete_impact_reads_children_from_content_when_edges_are_missing() {
     for id in [&only_child, &shared_child] {
         s.store(&test_row(id, "child", "c", &[])).await.unwrap();
     }
-    assert!(
-        s.list_edges(Some(&idx)).await.unwrap().is_empty(),
-        "precondition: the parent-to-child edges were never created"
-    );
+    s.conn.execute("DELETE FROM edges", ()).await.unwrap();
 
     let impact = s.delete_impact(&idx).await.unwrap();
     assert_eq!(
@@ -2815,4 +2811,124 @@ async fn memory_tree_without_a_root_lists_project_memories_unreached_by_title() 
     let titles: Vec<&str> = tree.nodes.iter().map(|n| n.title.as_str()).collect();
     assert_eq!(titles, vec!["alpha", "zeta"]);
     assert!(tree.nodes.iter().all(|n| !n.reachable));
+}
+
+fn incoming_entry(id: &str, title: &str, content: &str, updated_at: i64) -> MemoryEntry {
+    MemoryEntry {
+        id: id.to_string(),
+        title: title.to_string(),
+        content: content.to_string(),
+        tags: vec![],
+        created_at: updated_at,
+        updated_at,
+        token_count: None,
+        layer: "workspace".to_string(),
+        memory_type: "project".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn hive_apply_accepts_a_parent_grown_past_the_size_limit() {
+    let (s, _dir) = make_store().await;
+    s.set_meta("max_content_tokens", "12").await.unwrap();
+    let parent = incoming_entry(&hid(1), "index", &"word ".repeat(200), 1_000);
+    let outcome = s.apply_incoming_memory(&parent, None).await.unwrap();
+    assert!(matches!(outcome, ApplyOutcome::Applied));
+}
+
+#[tokio::test]
+async fn an_index_applied_before_its_child_still_gets_the_child_edge() {
+    let (s, _dir) = make_store().await;
+    let (parent, child) = (hid(1), hid(2));
+    let index = incoming_entry(&parent, "index", &format!("- [c](child:{child})"), 1_000);
+    s.apply_incoming_memory(&index, None).await.unwrap();
+    s.apply_incoming_memory(&incoming_entry(&child, "c", "c", 1_000), None)
+        .await
+        .unwrap();
+    let home = s.get_edges_grouped(&child).await.unwrap().parents;
+    assert_eq!(home.len(), 1);
+    assert_eq!(home[0].id, parent);
+}
+
+#[tokio::test]
+async fn appends_in_one_second_give_the_parent_strictly_newer_versions() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "root", "r", &[])).await.unwrap();
+    s.store_with_parent(&test_row(&hid(2), "a", "a", &[]), &hid(1), "a")
+        .await
+        .unwrap();
+    let first = s.recall_by_id(&hid(1)).await.unwrap().unwrap().updated_at;
+    s.store_with_parent(&test_row(&hid(3), "b", "b", &[]), &hid(1), "b")
+        .await
+        .unwrap();
+    let second = s.recall_by_id(&hid(1)).await.unwrap().unwrap().updated_at;
+    assert!(second > first, "{second} must be newer than {first}");
+}
+
+#[tokio::test]
+async fn appending_a_pointer_keeps_a_rejected_edge_rejected() {
+    let (s, _dir) = make_store().await;
+    let (root, a) = (hid(1), hid(2));
+    s.store(&test_row(&root, "root", "r", &[])).await.unwrap();
+    s.store_with_parent(&test_row(&a, "a", "a", &[]), &root, "a")
+        .await
+        .unwrap();
+    let edge = s.list_edges(Some(&a)).await.unwrap().remove(0);
+    s.set_edge_status(&edge.id, "rejected").await.unwrap();
+    s.store_with_parent(&test_row(&hid(3), "b", "b", &[]), &root, "b")
+        .await
+        .unwrap();
+    assert_eq!(s.list_edges(Some(&a)).await.unwrap()[0].status, "rejected");
+}
+
+#[tokio::test]
+async fn remove_tags_cannot_turn_a_project_root_into_a_second_org_wide_root() {
+    let (s, _dir) = make_store().await;
+    s.store(&test_row(&hid(1), "org", "o", &["role:root".into()]))
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &hid(2),
+        "proj",
+        "p",
+        &["role:root".into(), "project:p".into()],
+    ))
+    .await
+    .unwrap();
+    let err = s
+        .remove_tags(&hid(2), &["project:p".into()])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already has a root"), "{err}");
+}
+
+#[tokio::test]
+async fn a_fixed_namespace_rejects_an_unregistered_value_in_any_case() {
+    let (s, _dir) = make_store().await;
+    let err = s
+        .store(&test_row(&hid(1), "t", "c", &["Role:bogus".into()]))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not a registered value"), "{err}");
+}
+
+#[tokio::test]
+async fn delete_impact_counts_only_parsed_links() {
+    let (s, _dir) = make_store().await;
+    let (index, child) = (hid(1), hid(2));
+    s.store(&test_row(&index, "index", "i", &[])).await.unwrap();
+    s.store_with_parent(&test_row(&child, "c", "c", &[]), &index, "c")
+        .await
+        .unwrap();
+    s.store(&test_row(
+        &hid(3),
+        "prose",
+        &format!("mentions (child:{child}) and (see {index}) without a link"),
+        &[],
+    ))
+    .await
+    .unwrap();
+    let impact = s.delete_impact(&index).await.unwrap();
+    assert_eq!(impact.orphaned_children.len(), 1, "prose is not a home");
+    assert!(impact.dangling_in.is_empty(), "prose is not a link");
 }

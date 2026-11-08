@@ -2202,6 +2202,37 @@ async fn org_update_checked_against_orgs_own_max_content_tokens() {
 }
 
 #[tokio::test]
+async fn a_second_root_is_invalid_params_on_store_and_update() {
+    let (hm, _dir) = test_mynd().await;
+    store_mem(&hm, "root", "r", &["role:root", "project:mynd"], None).await;
+    let other = store_mem(&hm, "other", "o", &["project:mynd"], None).await;
+    let err = hm
+        .do_memory_store(MemoryStoreInput {
+            title: "second".to_string(),
+            content: "c".to_string(),
+            tags: vec!["role:root".to_string(), "project:mynd".to_string()],
+            token_count: None,
+            layer: None,
+            memory_type: None,
+            parent_id: None,
+            pointer: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{err}");
+    let err = hm
+        .do_memory_update(MemoryUpdateInput {
+            id: other["id"].as_str().unwrap().to_string(),
+            title: None,
+            content: None,
+            tags: Some(vec!["role:root".to_string(), "project:mynd".to_string()]),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{err}");
+}
+
+#[tokio::test]
 async fn memory_store_with_parent_appends_pointer_and_reports_home() {
     let (hm, _dir) = test_mynd().await;
     let root = store_mem(

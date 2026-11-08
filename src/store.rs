@@ -239,7 +239,8 @@ async fn sync_relationship_edges(
              SELECT 'edge_' || lower(hex(randomblob(16))), ?1, ?2, ?3, 'active', ?4, ?5
              WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?2)
              ON CONFLICT(source_id, target_id, relationship)
-             DO UPDATE SET link_text = excluded.link_text, status = 'active'",
+             DO UPDATE SET link_text = excluded.link_text,
+               status = CASE WHEN edges.link_text IS excluded.link_text THEN edges.status ELSE 'active' END",
             params![source_id, target.as_str(), kind.as_str(), now, phrase.as_str()],
         )
         .await?;
@@ -287,6 +288,12 @@ async fn insert_memory_tx(
     token_count: i64,
     hive_hash: &str,
 ) -> Result<()> {
+    let is_new = tx
+        .query("SELECT 1 FROM memories WHERE id = ?1", params![m.id])
+        .await?
+        .next()
+        .await?
+        .is_none();
     tx.execute(
         "INSERT INTO memories (id, title, content, created_at, updated_at, token_count, layer, memory_type, hive_content_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -327,6 +334,25 @@ async fn insert_memory_tx(
     .await?;
 
     sync_relationship_edges(tx, m.id, m.content, now).await?;
+
+    // Links to this id made while it did not exist got no edge (a hive pull
+    // can apply an index before its child): re-sync the memories holding one.
+    // ponytail: content scan per new row; index links if stores grow large.
+    if is_new {
+        let mut rows = tx
+            .query(
+                "SELECT id, content FROM memories WHERE id != ?1 AND instr(content, ?1) > 0",
+                params![m.id],
+            )
+            .await?;
+        let mut linkers: Vec<(String, String)> = Vec::new();
+        while let Some(row) = rows.next().await? {
+            linkers.push((row.get(0)?, row.get(1)?));
+        }
+        for (id, content) in &linkers {
+            sync_relationship_edges(tx, id, content, now).await?;
+        }
+    }
 
     // Journal the write
     tx.execute(
@@ -594,7 +620,11 @@ async fn validate_tags_against_registry(store: &SqliteStore, tags: &[String]) ->
     for tag in tags {
         let Some(idx) = tag.find(':') else { continue };
         let (ns, value) = (&tag[..idx], &tag[idx + 1..]);
-        let Some(entry) = obj.get(ns) else { continue };
+        // Tags are stored lowercased, so a mixed-case namespace must not skip
+        // the check here and then fail it on every later edit and hive apply.
+        let Some((_, entry)) = obj.iter().find(|(k, _)| k.eq_ignore_ascii_case(ns)) else {
+            continue;
+        };
         if entry.get("values_mode").and_then(|v| v.as_str()) != Some("fixed") {
             continue;
         }
@@ -689,7 +719,9 @@ impl SqliteStore {
     pub async fn store(&self, m: &NewMemoryRow<'_>) -> Result<()> {
         // Local writes only. The hive apply path calls store_with_timestamp
         // directly and must never be refused, or sync would wedge on a
-        // peer's root.
+        // peer's root or on a parent `store_with_parent` let grow past
+        // max_content_tokens.
+        self.check_content_size(m.title, m.content).await?;
         self.check_root_unique(m.id, m.tags).await?;
         self.store_with_timestamp(m, chrono_now()).await
     }
@@ -706,23 +738,27 @@ impl SqliteStore {
         m: &NewMemoryRow<'_>,
         updated_at: i64,
     ) -> Result<()> {
+        let (token_count, hive_hash) = self.prepare_row(m).await?;
+        let _w = self.write().await;
+        let tx = self.begin().await?;
+        insert_memory_tx(&tx, m, updated_at, token_count, &hive_hash).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Validates `m`'s layer, type and tags and returns its token count and
+    /// hive content hash, ready for `insert_memory_tx`.
+    async fn prepare_row(&self, m: &NewMemoryRow<'_>) -> Result<(i64, String)> {
         m.layer.parse::<crate::model::Layer>()?;
         m.memory_type.parse::<crate::model::MemoryType>()?;
         validate_tag_format(m.tags)?;
         validate_tags_against_registry(self, m.tags).await?;
-        self.check_content_size(m.title, m.content).await?;
-        let now = updated_at;
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
-
         let hive_hash =
             compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
-        let _w = self.write().await;
-        let tx = self.begin().await?;
-        insert_memory_tx(&tx, m, now, token_count, &hive_hash).await?;
-        tx.commit().await?;
-        Ok(())
+        Ok((token_count, hive_hash))
     }
 
     /// Stores `m` and, in the same transaction, appends
@@ -740,25 +776,18 @@ impl SqliteStore {
         if parent_id == m.id {
             return Err(anyhow!("a memory cannot be its own parent"));
         }
-        m.layer.parse::<crate::model::Layer>()?;
-        m.memory_type.parse::<crate::model::MemoryType>()?;
-        validate_tag_format(m.tags)?;
-        validate_tags_against_registry(self, m.tags).await?;
+        let (token_count, hive_hash) = self.prepare_row(m).await?;
         self.check_content_size(m.title, m.content).await?;
         self.check_root_unique(m.id, m.tags).await?;
         let limit = self.max_content_tokens().await;
         let now = chrono_now();
-        let token_count = m
-            .token_count
-            .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
-        let hive_hash =
-            compute_hive_content_hash(m.title, m.content, m.tags, m.layer, m.memory_type);
 
         let _w = self.write().await;
         // Read the parent inside the IMMEDIATE transaction so no other writer,
         // in this process or another, can change it before the append commits.
         let tx = self.begin().await?;
         let Some(parent) = self.recall_by_id(parent_id).await? else {
+            tx.rollback().await?;
             return Err(anyhow!(
                 "parent {parent_id} not found in this store: a memory's home must live in the same store as the memory"
             ));
@@ -774,19 +803,24 @@ impl SqliteStore {
             &parent.memory_type,
         );
         insert_memory_tx(&tx, m, now, token_count, &hive_hash).await?;
+        // Strictly newer than the version it replaces: hive last-write-wins
+        // treats equal timestamps with different content as a conflict, and
+        // several appends can land on one parent within a second.
+        let parent_now = now.max(parent.updated_at + 1);
         if !rewrite_memory_tx(
             &tx,
             parent_id,
             &parent.title,
             &parent_content,
             &parent.tags,
-            now,
+            parent_now,
             parent_tokens,
             &parent_hash,
         )
         .await?
         {
-            // Dropping `tx` rolls the child insert back too.
+            // Explicit: a remote-replica transaction does not roll back on drop.
+            tx.rollback().await?;
             return Err(anyhow!("parent {parent_id} was deleted during the write"));
         }
         tx.commit().await?;
@@ -968,10 +1002,10 @@ impl SqliteStore {
     ) -> Result<bool> {
         validate_tag_format(tags)?;
         validate_tags_against_registry(self, tags).await?;
-        self.check_root_unique(id, tags).await?;
         let Some(current) = self.recall_by_id(id).await? else {
             return Ok(false);
         };
+        self.check_root_unique(id, tags).await?;
         self.check_content_size(title, content).await?;
         let now = chrono_now();
         let token_count = crate::budget::count_entry_tokens(title, content) as i64;
@@ -980,6 +1014,7 @@ impl SqliteStore {
         let _w = self.write().await;
         let tx = self.begin().await?;
         if !rewrite_memory_tx(&tx, id, title, content, tags, now, token_count, &hive_hash).await? {
+            tx.rollback().await?;
             return Ok(false);
         }
         tx.commit().await?;
@@ -1052,6 +1087,8 @@ impl SqliteStore {
             .filter(|t| !removed_lower.contains(t))
             .cloned()
             .collect();
+        // Dropping project:* moves a root's claim to the org-wide scope.
+        self.check_root_unique(id, &remaining).await?;
         let now = chrono_now();
         let hive_hash = compute_hive_content_hash(
             &current.title,
@@ -1089,51 +1126,46 @@ impl SqliteStore {
     /// Computes `DeleteImpact` for `id` without deleting anything.
     pub async fn delete_impact(&self, id: &str) -> Result<DeleteImpact> {
         let mut impact = DeleteImpact::default();
+        let Some(me) = self.recall_by_id(id).await? else {
+            return Ok(impact);
+        };
+        // One scan with the real link parser, the same source of truth as
+        // `memory_tree`; children some other memory also points to keep a home.
+        let mut homed = std::collections::HashSet::new();
         let mut rows = self
             .conn
             .query(
-                "SELECT id, title FROM memories WHERE id != ?1 AND content LIKE '%' || ?1 || ')%' \
+                "SELECT id, title, content FROM memories WHERE id != ?1 AND instr(content, 'mem_') > 0 \
                  ORDER BY title, id",
                 params![id],
             )
             .await?;
         while let Some(row) = rows.next().await? {
-            impact.dangling_in.push(RelatedMemory {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                link_text: None,
-            });
+            let other: String = row.get(0)?;
+            let content: String = row.get(2)?;
+            let links = parse_relationship_links(&other, &content);
+            if links.iter().any(|(_, _, target)| target == id) {
+                impact.dangling_in.push(RelatedMemory {
+                    id: other,
+                    title: row.get(1)?,
+                    link_text: None,
+                });
+            }
+            homed.extend(
+                links
+                    .into_iter()
+                    .filter(|(_, kind, _)| kind == "child")
+                    .map(|(_, _, target)| target),
+            );
         }
-        // Children come from content, not edges: edges are only created for
-        // targets that already exist, so a hive pull that applies the parent
-        // first leaves them missing. Same source of truth as `memory_tree`.
-        let mut rows = self
-            .conn
-            .query("SELECT content FROM memories WHERE id = ?1", params![id])
-            .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(impact);
-        };
-        let content: String = row.get(0)?;
-        for (link_text, kind, child) in parse_relationship_links(id, &content) {
-            if kind != "child" {
+        for (link_text, kind, child) in parse_relationship_links(id, &me.content) {
+            if kind != "child" || homed.contains(&child) {
                 continue;
             }
-            let mut rows = self
-                .conn
-                .query(
-                    "SELECT m.title, (SELECT COUNT(*) FROM memories o WHERE o.id != ?2 \
-                       AND o.content LIKE '%(child:' || ?1 || ')%') \
-                     FROM memories m WHERE m.id = ?1",
-                    params![child.clone(), id],
-                )
-                .await?;
-            if let Some(row) = rows.next().await?
-                && row.get::<i64>(1)? == 0
-            {
+            if let Some(c) = self.recall_by_id(&child).await? {
                 impact.orphaned_children.push(RelatedMemory {
                     id: child,
-                    title: row.get(0)?,
+                    title: c.title,
                     link_text: Some(link_text),
                 });
             }

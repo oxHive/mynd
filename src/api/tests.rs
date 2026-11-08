@@ -3400,3 +3400,42 @@ async fn import_rejects_two_roots_for_one_project_in_the_same_batch() {
     );
     assert_eq!(store.count().await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn rest_create_and_patch_report_a_second_root_as_422() {
+    let (app, _store, _dir) = test_router_with_store().await;
+    let tags = json!(["role:root", "project:mynd"]);
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "root", "content": "c", "tags": tags })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "second", "content": "c", "tags": tags })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, body) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories",
+        Some(json!({ "title": "plain", "content": "c" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["id"].as_str().unwrap();
+    let (status, _) = req(
+        app,
+        "PATCH",
+        &format!("/api/v1/memories/{id}"),
+        Some(json!({ "tags": tags })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}

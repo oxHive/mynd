@@ -102,6 +102,10 @@ pub(super) async fn create_memory(
         .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     let id = format!("mem_{}", uuid::Uuid::new_v4().simple());
     target_store
+        .check_root_unique(&id, &b.tags)
+        .await
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    target_store
         .store(&crate::store::NewMemoryRow {
             id: &id,
             title: &b.title,
@@ -159,6 +163,10 @@ pub(super) async fn patch_memory(
     let tags = b.tags.as_deref().unwrap_or(&current.tags);
     owning
         .check_content_size(title, content)
+        .await
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    owning
+        .check_root_unique(&id, tags)
         .await
         .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     let updated = owning.update(&id, title, content, tags).await?;

@@ -179,6 +179,21 @@ fn render_session_start_text_empty_when_nothing_loaded_or_skipped() {
 }
 
 #[test]
+fn render_session_start_text_marks_roots_and_reports_a_missing_root() {
+    let mut result = sample_result(true, false);
+    result.loaded[0].is_root = true;
+    let id = result.loaded[0].entry.id.clone();
+    let out = render_session_start(&result, false);
+    assert!(out.contains("## root: "), "{out}");
+    assert!(out.contains(&id), "{out}");
+
+    let mut result = sample_result(false, false);
+    result.roots_missing = true;
+    let out = render_session_start(&result, false);
+    assert!(out.contains("/memory-audit"), "{out}");
+}
+
+#[test]
 fn render_session_start_json_parses_and_matches_shape() {
     let result = sample_result(true, true);
     let out = render_session_start(&result, true);

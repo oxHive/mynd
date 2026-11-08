@@ -192,7 +192,8 @@ async fn recall_pass(
 /// project root, then the org store's project root, then the org-wide root.
 /// Roots spend budget first because they are the map the agent navigates
 /// from. Returns whether a project root exists in either store (whether or
-/// not it fit); the org-wide root does not count.
+/// not it fit; a failed lookup counts, since the root may well exist); the
+/// org-wide root does not count.
 async fn load_roots(
     project: &str,
     store: &SqliteStore,
@@ -215,6 +216,7 @@ async fn load_roots(
             Ok(None) => continue,
             Err(e) => {
                 tracing::warn!("root lookup \"{query}\" failed: {e:#}; skipping");
+                found_project_root |= scope.is_some();
                 continue;
             }
         };
@@ -241,11 +243,12 @@ async fn load_roots(
 }
 
 /// Run the configured session-start recalls under the token budget.
-/// Personal/workspace recalls (from `store`) fill the budget first, exactly
-/// as before this function gained org support. Org recalls (from
-/// `org_store`, if present) then spend whatever budget remains — org never
-/// displaces personal/workspace. A missing `org_store`, or any error running
-/// org recalls, is treated as "nothing more to load" rather than a failure.
+/// The project's roots (see `load_roots`, org roots included) spend budget
+/// first, then personal/workspace recalls (from `store`). Org recalls (from
+/// `org_store`, if present) then spend whatever budget remains: an org recall
+/// never displaces a personal/workspace one. A missing `org_store`, or any
+/// error running org recalls, is treated as "nothing more to load" rather
+/// than a failure.
 pub async fn execute_session_start(
     config: &MyndConfig,
     store: &SqliteStore,
@@ -737,6 +740,20 @@ mod tests {
 
         let (org_proj, _b) = org_with(&[("id_p", "org proj", root_tags(Some("test-proj")))]).await;
         let r = execute_session_start(&config(2000, vec![]), &s, Some(&org_proj))
+            .await
+            .unwrap();
+        assert!(!r.roots_missing);
+    }
+
+    #[tokio::test]
+    async fn a_failed_root_lookup_does_not_report_the_root_missing() {
+        let (s, _dir) = store_with(&[]).await;
+        let (org, _od) = org_with(&[]).await;
+        org.conn
+            .execute("DROP TABLE memory_tags", ())
+            .await
+            .unwrap();
+        let r = execute_session_start(&config(2000, vec![]), &s, Some(&org))
             .await
             .unwrap();
         assert!(!r.roots_missing);
