@@ -2314,6 +2314,29 @@ fn tags_predefined_namespace_is_guarded_by_default() {
 }
 
 #[test]
+fn tags_writes_stamp_the_registry_for_hive_sync() {
+    with_isolated_cli_env(|| {
+        cmd_tags(TagsAction::Add {
+            name: "myns".to_string(),
+            color: "#123456".to_string(),
+            description: None,
+            single_value: false,
+            values_mode: "suggestion".to_string(),
+        })
+        .unwrap();
+        let stamp = common::block_on(async {
+            let store = common::open_store().await?;
+            store.get_meta("tag_namespaces_updated_at").await
+        })
+        .unwrap();
+        assert!(
+            stamp.is_some(),
+            "peers only pull a registry with a newer stamp"
+        );
+    });
+}
+
+#[test]
 fn tags_writes_pass_the_guard_with_a_stale_stored_part_entry() {
     with_isolated_cli_env(|| {
         let stale = serde_json::json!({ "part": {

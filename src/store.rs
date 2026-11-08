@@ -343,13 +343,17 @@ async fn insert_memory_tx(
 
     // Links to this id made while it did not exist got no edge (a hive pull
     // can apply an index before its child): re-sync the memories holding one.
-    // An overwrite already had its edges, so only a new row needs the scan.
-    // ponytail: content scan per insert; index links if stores grow large.
-    if is_new {
+    // An overwrite already had its edges, so only a new row needs the lookup,
+    // and only a link-shaped id can be a link target (an empty one would also
+    // be an FTS syntax error). The FTS index keeps a bulk import or a first
+    // hive pull from scanning every memory's content per row.
+    if is_new && m.id.starts_with("mem_") {
         let mut rows = tx
             .query(
-                "SELECT id, content FROM memories WHERE id != ?1 AND instr(content, ?1) > 0",
-                params![m.id],
+                "SELECT m.id, m.content FROM memories m
+                 JOIN memories_fts f ON m.rowid = f.rowid
+                 WHERE memories_fts MATCH ?1 AND m.id != ?2",
+                params![fts_quote(m.id), m.id],
             )
             .await?;
         let mut linkers: Vec<(String, String)> = Vec::new();
@@ -759,13 +763,18 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Rejects tags that are malformed or break the namespace registry.
+    pub async fn check_tags(&self, tags: &[String]) -> Result<()> {
+        validate_tag_format(tags)?;
+        validate_tags_against_registry(self, tags).await
+    }
+
     /// Validates `m`'s layer, type and tags and returns its token count and
     /// hive content hash, ready for `insert_memory_tx`.
     async fn prepare_row(&self, m: &NewMemoryRow<'_>) -> Result<(i64, String)> {
         m.layer.parse::<crate::model::Layer>()?;
         m.memory_type.parse::<crate::model::MemoryType>()?;
-        validate_tag_format(m.tags)?;
-        validate_tags_against_registry(self, m.tags).await?;
+        self.check_tags(m.tags).await?;
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
@@ -1632,7 +1641,7 @@ impl SqliteStore {
     /// Import's edge write: creates the edge with the backup's status, or,
     /// when importing a memory already made it from a content link (as
     /// 'active'), puts the backup's status and reason on it. Returns whether
-    /// a new edge was created.
+    /// the first attempt created a new edge.
     pub async fn import_edge(
         &self,
         source_id: &str,
@@ -1655,13 +1664,26 @@ impl SqliteStore {
             .await?
         {
             EdgeCreate::Created(_) => Ok(true),
+            // The duplicate check also matches the reverse direction, which
+            // has no row to update, so this upserts the backup's own edge.
             EdgeCreate::Duplicate => {
                 let _w = self.write().await;
                 self.conn
                     .execute(
-                        "UPDATE edges SET status = ?4, reason = ?5
-                         WHERE source_id = ?1 AND target_id = ?2 AND relationship = ?3",
-                        params![source_id, target_id, relationship, status, reason],
+                        "INSERT INTO edges (id, source_id, target_id, relationship, status, created_at, link_text, reason)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                         ON CONFLICT(source_id, target_id, relationship)
+                         DO UPDATE SET status = excluded.status, reason = excluded.reason",
+                        params![
+                            format!("edge_{}", uuid::Uuid::new_v4().simple()),
+                            source_id,
+                            target_id,
+                            relationship,
+                            status,
+                            chrono_now(),
+                            link_text,
+                            reason
+                        ],
                     )
                     .await?;
                 Ok(false)

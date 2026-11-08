@@ -69,15 +69,22 @@ pub enum TagsAction {
 
 async fn save_registry(store: &crate::store::SqliteStore, body: Value) -> Result<()> {
     let settings = crate::config::load_server_settings(&crate::config::global_config_path())?;
-    crate::api::settings::validate_tag_namespaces(&body).map_err(|e| anyhow!(e))?;
+    crate::api::validate_tag_namespaces(&body).map_err(|e| anyhow!(e))?;
     if settings.guard_predefined_namespaces {
-        crate::api::settings::validate_predefined_namespaces_unchanged(
+        crate::api::validate_predefined_namespaces_unchanged(
             &body,
             &store.tag_namespace_registry().await,
         )
         .map_err(|e| anyhow!(e))?;
     }
     store.set_meta("tag_namespaces", &body.to_string()).await?;
+    // Peers only pull a registry whose stamp is newer than theirs.
+    store
+        .set_meta(
+            "tag_namespaces_updated_at",
+            &crate::store::chrono_now().to_string(),
+        )
+        .await?;
     Ok(())
 }
 

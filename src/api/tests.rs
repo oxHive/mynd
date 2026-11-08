@@ -3501,3 +3501,92 @@ async fn rest_create_and_patch_report_a_second_root_as_422() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn import_rejects_a_bad_tag_without_writing_anything() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({ "memories": [
+            { "id": "mem_ok", "title": "ok", "content": "c" },
+            { "id": "mem_bad", "title": "bad", "content": "c", "tags": ["role:bogus"] },
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("mem_bad:"),
+        "{body}"
+    );
+    assert_eq!(store.count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn import_restores_an_edge_whose_reverse_came_from_a_content_link() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let (a, b) = (
+        "mem_0000000000000000000000000000000a",
+        "mem_0000000000000000000000000000000b",
+    );
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/import",
+        Some(json!({
+            "memories": [
+                { "id": a, "title": "a", "content": format!("[see b]({b})") },
+                { "id": b, "title": "b", "content": "c" },
+            ],
+            "edges": [
+                { "source_id": b, "target_id": a, "relationship": "sibling", "status": "rejected" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let edges = store.list_edges(None).await.unwrap();
+    let reverse = edges.iter().find(|e| e.source_id == b).unwrap();
+    assert_eq!(reverse.status, "rejected");
+}
+
+#[tokio::test]
+async fn tag_endpoints_report_a_root_conflict_as_422() {
+    let (app, store, _dir) = test_router_with_store().await;
+    for (id, tags) in [
+        ("mem_org", vec!["role:root"]),
+        ("mem_root", vec!["role:root", "project:mynd"]),
+        ("mem_leaf", vec!["project:mynd"]),
+    ] {
+        let tags: Vec<String> = tags.into_iter().map(String::from).collect();
+        store
+            .store(&crate::store::NewMemoryRow {
+                id,
+                title: id,
+                content: "c",
+                tags: &tags,
+                token_count: None,
+                layer: "workspace",
+                memory_type: "project",
+            })
+            .await
+            .unwrap();
+    }
+    let (status, body) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/memories/mem_leaf/tags/add",
+        Some(json!({ "tags": ["role:root"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = req(
+        app,
+        "POST",
+        "/api/v1/memories/mem_root/tags/remove",
+        Some(json!({ "tags": ["project:mynd"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}

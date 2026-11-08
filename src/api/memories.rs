@@ -198,6 +198,16 @@ pub(super) async fn add_memory_tags(
     let owning = find_owning_store(&store, &org_store, &id)
         .await?
         .ok_or_else(|| not_found(format!("no memory {id}")))?;
+    let mut merged = owning
+        .recall_by_id(&id)
+        .await?
+        .ok_or_else(|| not_found(format!("no memory {id}")))?
+        .tags;
+    merged.extend(b.tags.iter().map(|t| t.to_lowercase()));
+    owning
+        .check_root_unique(&id, &merged)
+        .await
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     if !owning.add_tags(&id, &b.tags).await? {
         return Err(not_found(format!("no memory {id}")));
     }
@@ -221,6 +231,16 @@ pub(super) async fn remove_memory_tags(
     let owning = find_owning_store(&store, &org_store, &id)
         .await?
         .ok_or_else(|| not_found(format!("no memory {id}")))?;
+    let mut remaining = owning
+        .recall_by_id(&id)
+        .await?
+        .ok_or_else(|| not_found(format!("no memory {id}")))?
+        .tags;
+    remaining.retain(|t| !b.tags.iter().any(|r| r.to_lowercase() == *t));
+    owning
+        .check_root_unique(&id, &remaining)
+        .await
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     if !owning.remove_tags(&id, &b.tags).await? {
         return Err(not_found(format!("no memory {id}")));
     }

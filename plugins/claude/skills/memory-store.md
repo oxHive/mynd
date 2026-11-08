@@ -23,7 +23,7 @@ Input from $ARGUMENTS: a title and content, or a description of what to remember
 
 The home is the index memory this one is filed under.
 
-1. The memory has no `project:*` tag and is not going to the org layer (for example a personal preference): it needs no home. Skip to step 5 (Pick tags).
+1. The memory has no `project:*` tag and is not going to the org layer (for example a personal preference): it needs no home. Skip to step 5 (Pick tags), leave out step 6, and store without `parent_id` or `pointer`.
 2. Find the root. For the workspace layer it is the memory tagged `role:root` and `project:<name>`; for the org layer (`layer: "org"`) it is the org-layer memory tagged `role:root` and `project:<name>`, or, for an org memory with no project tag, the org-layer `role:root` memory with no `project:*` tag.
    - The root is already in context (session start injected it under a `## root: <title> (<id>)` heading, `(<id>, org)` for a root in the org store, or marked it `root: true`, or you recalled it earlier this session): use it as it is.
    - Otherwise: `memory_search` with those tags, then `memory_recall` the match by id.
@@ -32,7 +32,7 @@ The home is the index memory this one is filed under.
 5. No pointer fits at some level: propose two options and let the user pick: the current index as the home, or a new sub-index under it (title, a one-line intro, its own pointer). A new sub-index is stored first, with `role:index`, using step 6 (Write the pointer) and step 7 (Confirm, then store) for its own pointer and parent.
 6. No root exists:
    - `memory_search` with `tags: ["project:<name>"]` returns nothing: offer to create the root first, titled `<name> root`, tagged `role:root` and `project:<name>`, with content `# <name>` plus one line on what the project is. It is stored without `parent_id`.
-   - The project already has memories: pick tags (step 5), then in one message suggest running `/memory-audit` to build the tree first and show the title, content and tags that would be saved now, without a home. The user answers that they want to store now: that answer is the confirmation for what you showed. Store it without `parent_id` and say the audit will place it.
+   - The project already has memories: pick tags (step 5), then in one message suggest running `/memory-audit` to build the tree first and show the title, content and tags that would be saved now, without a home. The user answers that they want to store now: that answer is the confirmation for what you showed. Store it without `parent_id` or `pointer` and say the audit will place it.
 
 ### 4. Check for a duplicate
 
@@ -56,7 +56,7 @@ A later reader decides from this line alone whether to open the memory, so it na
 
 ### 7. Confirm, then store
 
-Show the user the title, content, tags, home path (for example `mynd root › Sync › Hive`) and pointer, then wait for confirmation. Call `memory_store` with `title`, `content`, `tags`, `parent_id` (the home's id) and `pointer`, plus `layer` when it is not the workspace default. The server appends `- [pointer](child:<new id>)` to the home in the same write, so this one call is the whole write.
+Show the user the title, content, tags, home path (for example `mynd root › Sync › Hive`) and pointer, then wait for confirmation. Call `memory_store` with `title`, `content`, `tags`, `parent_id` (the home's id) and `pointer`, plus `layer` when it is not the workspace default. A memory with no home passes neither `parent_id` nor `pointer`: the server refuses one without the other. The server appends `- [pointer](child:<new id>)` to the home in the same write, so this one call is the whole write.
 
 The response has `parent_oversized: true`: tell the user the home index is now over the size limit and offer `/memory-audit` to split it.
 
@@ -64,7 +64,7 @@ The response has `parent_oversized: true`: tell the user the home index is now o
 
 `memory_store` rejects the content for exceeding `max_content_tokens`: split it by structure (headings, sections, list groups), never by character count, and confirm the split with the user once.
 
-1. Store a new index first: a short intro as content, the step 5 tags plus `role:index`, and the `parent_id` and a pointer for the whole document from steps 3 and 6. Keep the returned id.
+1. Store a new index first: a short intro as content, the step 5 tags plus `role:index`, and the `parent_id` and a pointer for the whole document from steps 3 and 6 (neither when the memory has no home). Keep the returned id.
 2. Store each piece with `parent_id` set to that new index's id and its own pointer, specific to that piece. Tag each piece with what is true of it; `project:*` is identical on every piece.
 3. A piece is still too large: split it the same way, one level further down.
 
