@@ -27,6 +27,15 @@ pub struct MemoryStoreInput {
     /// Memory type: "preference" | "project" | "history". Default: project.
     #[serde(default)]
     pub memory_type: Option<String>,
+    /// Id of the index memory to file this under (its home). Pass together
+    /// with `pointer`. Must live in the same store as this memory.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// One line (max 300 chars, no "]" or newline) saying what this memory
+    /// contains and when to open it. Appended to the parent as
+    /// `- [pointer](child:<new id>)`.
+    #[serde(default)]
+    pub pointer: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -160,6 +169,16 @@ pub struct MemoryGetEdgesInput {
     pub memory_id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MemoryTreeInput {
+    /// Project name, i.e. the value of its project:* tag (e.g. "mynd")
+    pub project: String,
+    /// Which store to walk: "workspace" (default; also holds personal
+    /// memories) or "org"
+    #[serde(default)]
+    pub layer: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Mynd {
     store: Arc<SqliteStore>,
@@ -273,6 +292,20 @@ impl Mynd {
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))
     }
 
+    /// The store a memory of `layer` lives in: org for the org layer (an
+    /// error when no org store is configured), the primary store otherwise.
+    fn store_for_layer(&self, layer: &crate::model::Layer) -> Result<&Arc<SqliteStore>, ErrorData> {
+        if *layer != crate::model::Layer::Org {
+            return Ok(&self.store);
+        }
+        self.org_store.as_ref().ok_or_else(|| {
+            ErrorData::invalid_params(
+                "org layer not configured: set [org_sync] in the global config",
+                None,
+            )
+        })
+    }
+
     /// Tries the primary store first, then the org store if configured.
     /// Returns the store that has a memory with this id, or `None` if
     /// neither does. Used by every ID-addressed tool (recall/update/delete)
@@ -315,32 +348,66 @@ impl Mynd {
             .parse::<crate::model::MemoryType>()
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        let target_store = if parsed_layer == crate::model::Layer::Org {
-            self.org_store.as_ref().ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "org layer not configured — set [org_sync] in the global config",
-                    None,
-                )
-            })?
-        } else {
-            &self.store
-        };
+        let target_store = self.store_for_layer(&parsed_layer)?;
 
         self.check_content_size(target_store, &p.title, &p.content)
             .await?;
-
         target_store
-            .store(&crate::store::NewMemoryRow {
-                id: &id,
-                title: &p.title,
-                content: &p.content,
-                tags: &p.tags,
-                token_count: p.token_count,
-                layer,
-                memory_type,
-            })
+            .check_root_unique(&id, &p.tags)
             .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+        let parent = match (p.parent_id.as_deref(), p.pointer.as_deref()) {
+            (None, None) => None,
+            (Some(pid), Some(ptr)) => {
+                let ptr = crate::store::validate_pointer(ptr)
+                    .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+                let exists = target_store
+                    .recall_by_id(pid)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .is_some();
+                if !exists {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "parent {pid} not found in the {layer} store: a memory's home must live in the same store as the memory"
+                        ),
+                        None,
+                    ));
+                }
+                Some((pid, ptr))
+            }
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    "parent_id and pointer must be passed together",
+                    None,
+                ));
+            }
+        };
+
+        let row = crate::store::NewMemoryRow {
+            id: &id,
+            title: &p.title,
+            content: &p.content,
+            tags: &p.tags,
+            token_count: p.token_count,
+            layer,
+            memory_type,
+        };
+        let mut parent_oversized = false;
+        match parent {
+            Some((pid, ptr)) => {
+                parent_oversized = target_store
+                    .store_with_parent(&row, pid, ptr)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .parent_oversized;
+            }
+            None => target_store
+                .store(&row)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }
         let trigger = if parsed_layer == crate::model::Layer::Org {
             &self.org_sync_trigger
         } else {
@@ -351,10 +418,13 @@ impl Mynd {
         }
         self.notify_change();
         self.spawn_hive_push(&id);
-        Ok(CallToolResult::structured(json!({
-            "id": id,
-            "title": title,
-        })))
+        let mut out = json!({ "id": id, "title": title });
+        if let Some((pid, _)) = parent {
+            self.spawn_hive_push(pid);
+            out["parent_id"] = json!(pid);
+            out["parent_oversized"] = json!(parent_oversized);
+        }
+        Ok(CallToolResult::structured(out))
     }
 
     pub async fn do_memory_recall(
@@ -555,6 +625,10 @@ impl Mynd {
 
         self.check_content_size(owning_store, title, content)
             .await?;
+        owning_store
+            .check_root_unique(&p.id, tags)
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         let updated = owning_store
             .update(&p.id, title, content, tags)
@@ -580,12 +654,19 @@ impl Mynd {
                 None,
             ));
         }
-        let deleted = match self.find_owning_store(&p.id).await? {
-            Some(store) => store
-                .delete(&p.id)
-                .await
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
-            None => false,
+        let (deleted, impact) = match self.find_owning_store(&p.id).await? {
+            Some(store) => {
+                let impact = store
+                    .delete_impact(&p.id)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let deleted = store
+                    .delete(&p.id)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                (deleted, if deleted { impact } else { Default::default() })
+            }
+            None => (false, crate::store::DeleteImpact::default()),
         };
         if deleted {
             self.notify_change();
@@ -593,6 +674,8 @@ impl Mynd {
         Ok(CallToolResult::structured(json!({
             "deleted": deleted,
             "id": p.id,
+            "dangling_in": impact.dangling_in,
+            "orphaned_children": impact.orphaned_children,
         })))
     }
 
@@ -920,12 +1003,34 @@ impl Mynd {
 
         Ok(CallToolResult::structured(result.to_json()))
     }
+
+    pub async fn do_memory_tree(&self, p: MemoryTreeInput) -> Result<CallToolResult, ErrorData> {
+        let project = p.project.trim();
+        if project.is_empty() {
+            return Err(ErrorData::invalid_params("project must not be empty", None));
+        }
+        let layer = p.layer.as_deref().unwrap_or("workspace");
+        let parsed = layer
+            .parse::<crate::model::Layer>()
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let tree = self
+            .store_for_layer(&parsed)?
+            .memory_tree(project)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::structured(json!({
+            "project": project.to_lowercase(),
+            "layer": layer,
+            "root_id": tree.root_id,
+            "nodes": tree.nodes,
+        })))
+    }
 }
 
 #[tool_router]
 impl Mynd {
     #[tool(
-        description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones."
+        description = "Store a memory, preference, or project context for future recall across sessions. Use when the user explicitly asks to remember something, or when important context should persist beyond this session. Call tag_namespaces_list first to pick tags that match the project's existing namespaces/values rather than inventing new ones. To file the memory under an index, pass parent_id (the index's id) and pointer (one line saying what this memory contains and when to open it); the server appends `- [pointer](child:<new id>)` to the parent in the same write. A response with parent_oversized: true means the parent index should be split."
     )]
     async fn memory_store(
         &self,
@@ -975,7 +1080,7 @@ impl Mynd {
     }
 
     #[tool(
-        description = "Permanently delete a memory by id. Requires confirm=true; always confirm with the user before calling."
+        description = "Permanently delete a memory by id. Requires confirm=true; always confirm with the user before calling. The response lists dangling_in (memories whose content still links here) and orphaned_children (memories this was the only home of), so you can offer to remove the stale links and re-home the children."
     )]
     async fn memory_delete(
         &self,
@@ -1152,6 +1257,16 @@ impl Mynd {
             )),
             Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
         }
+    }
+
+    #[tool(
+        description = "Get a project's memory index tree without any content: the root, every memory reachable through [pointer](child:mem_x) links, and the project's memories nothing points to (reachable: false). Each node lists its role, token cost, homes and outgoing pointers. Use to audit structure or see a project's layout cheaply before deciding what to recall."
+    )]
+    async fn memory_tree(
+        &self,
+        Parameters(p): Parameters<MemoryTreeInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.do_memory_tree(p).await
     }
 }
 
