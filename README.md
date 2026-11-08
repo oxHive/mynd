@@ -86,6 +86,12 @@ curl -fsSL https://get.oxhive.dev/mynd | sh    # pre-built binary into ~/.local/
 brew install oxhive/tap/mynd                   # or via Homebrew
 ```
 
+The install script reads `INSTALL_DIR` to change the location and `VERSION` to pin a release. Set them on the `sh` side of the pipe:
+
+```sh
+curl -fsSL https://get.oxhive.dev/mynd | INSTALL_DIR="$HOME/bin" VERSION=v0.19.0 sh
+```
+
 Upgrade later with `mynd upgrade` (install-script installs) or `brew update && brew upgrade oxhive/tap/mynd`.
 
 Compile from source instead:
@@ -765,7 +771,7 @@ Detection failures are silent: a missing config file or unavailable CLI simply m
 
 If `mynd_session_start` errors during a session, the most likely causes are:
 
-- **`mynd` not found in PATH**: verify with `which mynd`. If you installed via `cargo install`, make sure `~/.cargo/bin` is in your PATH.
+- **`mynd` not found in PATH**: verify with `which mynd`. Make sure its install directory is in your PATH: `~/.local/bin` for the install script (or your `INSTALL_DIR`), `~/.cargo/bin` for `cargo install`.
 - **Database error**: check `MYND_DB_PATH` and ensure the directory is writable.
 - **Corrupt config**: run `mynd status` in the project directory to validate `.mynd.toml`.
 - **Recalls with special characters**: recall titles containing FTS special characters (`/`, `+`, `-`, quotes) no longer fail the whole call; unmatched entries are simply reported as `not_found` in the result.
