@@ -65,7 +65,8 @@ pub struct DeleteImpact {
     pub orphaned_children: Vec<RelatedMemory>,
 }
 
-/// One outgoing `[text](child:target_id)` pointer, in content order.
+/// One outgoing `[text](child:target_id)` pointer or `[text](target_id)`
+/// cross-reference, in content order.
 #[derive(Debug, Clone, Serialize)]
 pub struct TreePointer {
     pub target_id: String,
@@ -93,6 +94,12 @@ pub struct TreeNode {
     pub broken_pointers: Vec<String>,
     /// Ids this memory's content links as `parent:` (deprecated form).
     pub parent_links: Vec<String>,
+    /// Bare `[text](mem_x)` links to memories in this store. Any memory may
+    /// hold them; they are never a home.
+    pub cross_refs: Vec<TreePointer>,
+    /// Ids this memory's content links bare that are not in this store
+    /// (deleted, or living in the other store).
+    pub broken_cross_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -186,6 +193,15 @@ static RELATIONSHIP_LINK_RE: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     regex::Regex::new(r"\[([^\]]+)\]\((?:(parent|child|sibling):)?(mem_[0-9a-f]{32})\)").unwrap()
 });
 
+/// A whole line as `append_pointer` writes it, text capped at
+/// `MAX_POINTER_CHARS` so the size guard can't be bypassed through it.
+static POINTER_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(&format!(
+        r"^- \[[^\]]{{1,{MAX_POINTER_CHARS}}}\]\(child:mem_[0-9a-f]{{32}}\)\s*$"
+    ))
+    .unwrap()
+});
+
 /// Extract `[phrase](kind:mem_xxx)` relationship links from memory content
 /// (bare `[phrase](mem_xxx)` defaults to "sibling"). Deduped by (kind, target)
 /// pair — the same target under two different kinds both survive, first
@@ -216,8 +232,10 @@ pub(crate) fn parse_relationship_links(
 /// Maintain parent/child/sibling edges for `source_id` from its content's
 /// `[phrase](kind:mem_xxx)` links (bare `[phrase](mem_xxx)` defaults to
 /// "sibling"): upserts an active edge per surviving (kind, target) pair
-/// (refreshing `link_text` and resetting `status` to 'active' on rephrase),
-/// and deletes any (kind, target) pair no longer present in the content.
+/// (refreshing `link_text` and resetting `status` to 'active' on rephrase;
+/// an unchanged link keeps its status, so rewriting the memory, e.g. to
+/// append a pointer, never revives a rejected edge), and deletes any
+/// (kind, target) pair no longer present in the content.
 ///
 /// Deletion is scoped to `link_text IS NOT NULL` — i.e. edges this same
 /// function previously created from content. Edges created out-of-band
@@ -309,19 +327,7 @@ async fn insert_memory_tx(
     )
     .await?;
 
-    tx.execute(
-        "DELETE FROM memory_tags WHERE memory_id = ?1",
-        params![m.id],
-    )
-    .await?;
-    for tag in m.tags {
-        let tag_lower = tag.to_lowercase();
-        tx.execute(
-            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-            params![m.id, tag_lower.as_str()],
-        )
-        .await?;
-    }
+    set_tags_tx(tx, m.id, m.tags).await?;
 
     // A (re)written memory is alive again: drop any tombstone for its id
     // so the manifest doesn't advertise both a live row and a deletion,
@@ -337,12 +343,17 @@ async fn insert_memory_tx(
 
     // Links to this id made while it did not exist got no edge (a hive pull
     // can apply an index before its child): re-sync the memories holding one.
-    // ponytail: content scan per new row; index links if stores grow large.
-    if is_new {
+    // An overwrite already had its edges, so only a new row needs the lookup,
+    // and only a link-shaped id can be a link target (an empty one would also
+    // be an FTS syntax error). The FTS index keeps a bulk import or a first
+    // hive pull from scanning every memory's content per row.
+    if is_new && m.id.starts_with("mem_") {
         let mut rows = tx
             .query(
-                "SELECT id, content FROM memories WHERE id != ?1 AND instr(content, ?1) > 0",
-                params![m.id],
+                "SELECT m.id, m.content FROM memories m
+                 JOIN memories_fts f ON m.rowid = f.rowid
+                 WHERE memories_fts MATCH ?1 AND m.id != ?2",
+                params![fts_quote(m.id), m.id],
             )
             .await?;
         let mut linkers: Vec<(String, String)> = Vec::new();
@@ -354,16 +365,7 @@ async fn insert_memory_tx(
         }
     }
 
-    // Journal the write
-    tx.execute(
-        "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-         VALUES (?1, ?2, ?3, ?3)
-         ON CONFLICT(memory_id) DO UPDATE SET
-           content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-        params![m.id, m.content, now],
-    )
-    .await?;
-    Ok(())
+    journal_tx(tx, m.id, m.content, now).await
 }
 
 /// Rewrites an existing memory's title, content and tags on `tx`, syncs its
@@ -389,20 +391,28 @@ async fn rewrite_memory_tx(
     if changed == 0 {
         return Ok(false);
     }
+    set_tags_tx(tx, id, tags).await?;
+    sync_relationship_edges(tx, id, content, now).await?;
+    journal_tx(tx, id, content, now).await?;
+    Ok(true)
+}
+
+/// Replaces `id`'s tags with `tags`, lowercased, on `tx`.
+async fn set_tags_tx(tx: &libsql::Transaction, id: &str, tags: &[String]) -> Result<()> {
     tx.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])
         .await?;
     for tag in tags {
-        let tag_lower = tag.to_lowercase();
         tx.execute(
             "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-            params![id, tag_lower.as_str()],
+            params![id, tag.to_lowercase()],
         )
         .await?;
     }
+    Ok(())
+}
 
-    sync_relationship_edges(tx, id, content, now).await?;
-
-    // Journal the write
+/// Records a write of `id` in the sync journal on `tx`.
+async fn journal_tx(tx: &libsql::Transaction, id: &str, content: &str, now: i64) -> Result<()> {
     tx.execute(
         "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
          VALUES (?1, ?2, ?3, ?3)
@@ -411,7 +421,7 @@ async fn rewrite_memory_tx(
         params![id, content, now],
     )
     .await?;
-    Ok(true)
+    Ok(())
 }
 
 /// Quote a raw user query for FTS5 MATCH: every whitespace-separated term is
@@ -575,15 +585,6 @@ fn merge_tag_namespaces(defaults: Value, stored: Value) -> Value {
     Value::Object(merged)
 }
 
-/// The registry with the code defaults laid over every predefined namespace
-/// (the inverse of `tag_namespace_registry`'s merge: defaults win). Read paths
-/// that feed a save use it while the predefined-namespace guard is on, so a
-/// stale stored copy (e.g. an old `part` description) is replaced by the
-/// current default instead of being echoed back and rejected by the guard.
-pub(crate) fn overlay_predefined_namespaces(registry: Value) -> Value {
-    merge_tag_namespaces(registry, default_tag_namespaces())
-}
-
 /// Validates `tags` against the `tag_namespaces` registry: at most one tag
 /// per namespace marked `single_value` (falls back to `["project"]` alone
 /// when the registry has no singleton namespaces at all), and — for any
@@ -702,8 +703,16 @@ impl SqliteStore {
     /// `max_content_tokens` guardrail. Called by `store`/`update` so no
     /// entry point (MCP, REST, CLI, import) can bypass it; callers that
     /// want a nicer status code can call it first themselves.
+    ///
+    /// `- [pointer](child:mem_x)` lines don't count: `store_with_parent`
+    /// grows an index by them past the limit, and that index must stay
+    /// editable and survive export/import. Its own text is still limited.
     pub async fn check_content_size(&self, title: &str, content: &str) -> Result<()> {
-        let tokens = crate::budget::count_entry_tokens(title, content) as i64;
+        let own_text: Vec<&str> = content
+            .lines()
+            .filter(|l| !POINTER_LINE_RE.is_match(l))
+            .collect();
+        let tokens = crate::budget::count_entry_tokens(title, &own_text.join("\n")) as i64;
         let limit = self.max_content_tokens().await;
         if tokens > limit {
             return Err(anyhow!(
@@ -723,6 +732,14 @@ impl SqliteStore {
         // max_content_tokens.
         self.check_content_size(m.title, m.content).await?;
         self.check_root_unique(m.id, m.tags).await?;
+        self.store_with_timestamp(m, chrono_now()).await
+    }
+
+    /// Import's write: like `store`, but never refuses a second root for a
+    /// scope, the way hive apply doesn't. An export of a store that sync gave
+    /// two roots must import again; `/memory-audit` reports the duplicate.
+    pub async fn restore(&self, m: &NewMemoryRow<'_>) -> Result<()> {
+        self.check_content_size(m.title, m.content).await?;
         self.store_with_timestamp(m, chrono_now()).await
     }
 
@@ -746,13 +763,18 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Rejects tags that are malformed or break the namespace registry.
+    pub async fn check_tags(&self, tags: &[String]) -> Result<()> {
+        validate_tag_format(tags)?;
+        validate_tags_against_registry(self, tags).await
+    }
+
     /// Validates `m`'s layer, type and tags and returns its token count and
     /// hive content hash, ready for `insert_memory_tx`.
     async fn prepare_row(&self, m: &NewMemoryRow<'_>) -> Result<(i64, String)> {
         m.layer.parse::<crate::model::Layer>()?;
         m.memory_type.parse::<crate::model::MemoryType>()?;
-        validate_tag_format(m.tags)?;
-        validate_tags_against_registry(self, m.tags).await?;
+        self.check_tags(m.tags).await?;
         let token_count = m
             .token_count
             .unwrap_or_else(|| crate::budget::count_entry_tokens(m.title, m.content) as i64);
@@ -1062,14 +1084,7 @@ impl SqliteStore {
             params![id, now, hive_hash],
         )
         .await?;
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, current.content, now],
-        )
-        .await?;
+        journal_tx(&tx, id, &current.content, now).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -1111,19 +1126,16 @@ impl SqliteStore {
             params![id, now, hive_hash],
         )
         .await?;
-        tx.execute(
-            "INSERT INTO sync_journal (memory_id, content, updated_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET
-               content = excluded.content, updated_at = excluded.updated_at, recorded_at = excluded.recorded_at",
-            params![id, current.content, now],
-        )
-        .await?;
+        journal_tx(&tx, id, &current.content, now).await?;
         tx.commit().await?;
         Ok(true)
     }
 
-    /// Computes `DeleteImpact` for `id` without deleting anything.
+    /// Computes `DeleteImpact` for `id` without deleting anything. Links,
+    /// including children, are read from content with the same parser as
+    /// `memory_tree`, not from edges: edges are only created for targets
+    /// that already exist, so a hive pull that applies the parent first
+    /// leaves them missing.
     pub async fn delete_impact(&self, id: &str) -> Result<DeleteImpact> {
         let mut impact = DeleteImpact::default();
         let Some(me) = self.recall_by_id(id).await? else {
@@ -1195,6 +1207,8 @@ impl SqliteStore {
         let mut homes: HashMap<String, Vec<String>> = HashMap::new();
         let mut broken: HashMap<&str, Vec<String>> = HashMap::new();
         let mut parent_links: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut cross_refs: HashMap<&str, Vec<TreePointer>> = HashMap::new();
+        let mut broken_cross: HashMap<&str, Vec<String>> = HashMap::new();
         for m in &all {
             for (text, kind, target) in parse_relationship_links(&m.id, &m.content) {
                 match kind.as_str() {
@@ -1210,7 +1224,14 @@ impl SqliteStore {
                     }
                     "child" => broken.entry(m.id.as_str()).or_default().push(target),
                     "parent" => parent_links.entry(m.id.as_str()).or_default().push(target),
-                    _ => {}
+                    _ if by_id.contains_key(target.as_str()) => cross_refs
+                        .entry(m.id.as_str())
+                        .or_default()
+                        .push(TreePointer {
+                            target_id: target,
+                            text,
+                        }),
+                    _ => broken_cross.entry(m.id.as_str()).or_default().push(target),
                 }
             }
         }
@@ -1262,6 +1283,8 @@ impl SqliteStore {
                     tags: m.tags.clone(),
                     broken_pointers: broken.get(id.as_str()).cloned().unwrap_or_default(),
                     parent_links: parent_links.get(id.as_str()).cloned().unwrap_or_default(),
+                    cross_refs: cross_refs.get(id.as_str()).cloned().unwrap_or_default(),
+                    broken_cross_refs: broken_cross.get(id.as_str()).cloned().unwrap_or_default(),
                 })
             })
             .collect();
@@ -1613,6 +1636,60 @@ impl SqliteStore {
             )
             .await?;
         Ok(EdgeCreate::Created(id))
+    }
+
+    /// Import's edge write: creates the edge with the backup's status, or,
+    /// when importing a memory already made it from a content link (as
+    /// 'active'), puts the backup's status and reason on it. Returns whether
+    /// the first attempt created a new edge.
+    pub async fn import_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        relationship: &str,
+        status: &str,
+        link_text: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        use crate::model::EdgeCreate;
+        match self
+            .create_edge_with_status(
+                source_id,
+                target_id,
+                relationship,
+                status,
+                link_text,
+                reason,
+            )
+            .await?
+        {
+            EdgeCreate::Created(_) => Ok(true),
+            // The duplicate check also matches the reverse direction, which
+            // has no row to update, so this upserts the backup's own edge.
+            EdgeCreate::Duplicate => {
+                let _w = self.write().await;
+                self.conn
+                    .execute(
+                        "INSERT INTO edges (id, source_id, target_id, relationship, status, created_at, link_text, reason)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                         ON CONFLICT(source_id, target_id, relationship)
+                         DO UPDATE SET status = excluded.status, reason = excluded.reason",
+                        params![
+                            format!("edge_{}", uuid::Uuid::new_v4().simple()),
+                            source_id,
+                            target_id,
+                            relationship,
+                            status,
+                            chrono_now(),
+                            link_text,
+                            reason
+                        ],
+                    )
+                    .await?;
+                Ok(false)
+            }
+            EdgeCreate::MissingEndpoint | EdgeCreate::InvalidRelationship => Ok(false),
+        }
     }
 
     pub async fn set_edge_status(&self, id: &str, status: &str) -> Result<bool> {

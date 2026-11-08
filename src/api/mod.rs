@@ -468,7 +468,7 @@ use settings::*;
 // Shared with the hive receive paths (`hive_push`, `sync_loop::pull_from_peer`)
 // so a peer-supplied tag-namespace registry is held to the same rules as a
 // dashboard save.
-pub(crate) use settings::validate_tag_namespaces;
+pub(crate) use settings::{validate_predefined_namespaces_unchanged, validate_tag_namespaces};
 use status::*;
 use suggest::*;
 use transfer::*;

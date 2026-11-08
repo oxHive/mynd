@@ -127,25 +127,23 @@ pub(crate) fn validate_tag_namespaces(body: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// True if `body[name]` matches `crate::store::default_tag_namespaces()[name]`
-/// exactly — used to detect whether a predefined namespace was left alone.
-fn matches_predefined_default(name: &str, body: &Value, defaults: &Value) -> bool {
-    let default_entry = defaults.get(name);
-    body.get(name) == default_entry
-}
-
-/// Rejects deleting or modifying any predefined namespace (name, color,
-/// description, values, single_value, values_mode — the entry must match
-/// `default_tag_namespaces()` exactly). Namespaces not in the predefined set
-/// are unaffected — freely addable/editable/removable as before.
-fn validate_predefined_namespaces_unchanged(body: &Value) -> Result<(), String> {
+/// Rejects deleting or modifying any predefined namespace. Each entry must
+/// match either `current` (the registry as stored, so a copy saved before a
+/// default changed, or customized while the guard was off, is kept) or the
+/// code default (so a stale copy can be reset). Namespaces not in the
+/// predefined set are unaffected. Shared with `mynd tags`.
+pub(crate) fn validate_predefined_namespaces_unchanged(
+    body: &Value,
+    current: &Value,
+) -> Result<(), String> {
     let defaults = crate::store::default_tag_namespaces();
     let names = defaults
         .as_object()
         .expect("default_tag_namespaces returns an object")
         .keys();
     for name in names {
-        if !matches_predefined_default(name, body, &defaults) {
+        let entry = body.get(name);
+        if entry != current.get(name) && entry != defaults.get(name) {
             return Err(format!(
                 "namespace {name:?} is predefined and cannot be deleted or modified. \
                  Disable this guard with [tags] guard_predefined_namespaces = false \
@@ -160,10 +158,7 @@ pub(super) async fn get_tag_settings(
     State(store): State<Store>,
     Extension(guard): Extension<GuardPredefinedNamespaces>,
 ) -> Result<Json<Value>, ApiError> {
-    let mut namespaces = store.tag_namespace_registry().await;
-    if guard.0 {
-        namespaces = crate::store::overlay_predefined_namespaces(namespaces);
-    }
+    let namespaces = store.tag_namespace_registry().await;
     let defaults = crate::store::default_tag_namespaces();
     let predefined: Vec<&String> = defaults
         .as_object()
@@ -185,7 +180,7 @@ pub(super) async fn save_tag_settings(
 ) -> Result<Json<Value>, ApiError> {
     validate_tag_namespaces(&body).map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     if guard.0 {
-        validate_predefined_namespaces_unchanged(&body)
+        validate_predefined_namespaces_unchanged(&body, &store.tag_namespace_registry().await)
             .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     }
     store.set_meta("tag_namespaces", &body.to_string()).await?;
