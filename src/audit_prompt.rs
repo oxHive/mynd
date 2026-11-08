@@ -40,7 +40,7 @@ pub(crate) async fn build_audit_prompt(
                 "UNREACHED"
             },
             n.updated_at,
-            n.tags.join(", "),
+            single_line(&n.tags.join(", ")),
         );
         if !n.broken_pointers.is_empty() {
             line.push_str(&format!(
@@ -133,7 +133,10 @@ mod tests {
                 id: "mem_00000000000000000000000000000001",
                 title: "orphan\nwith newline",
                 content: "body text that must not appear",
-                tags: &["project:mynd".to_string()],
+                tags: &[
+                    "project:mynd".to_string(),
+                    "topic:x\nspoofed line".to_string(),
+                ],
                 token_count: None,
                 layer: "workspace",
                 memory_type: "project",
@@ -157,6 +160,7 @@ mod tests {
             .unwrap();
         assert!(p.contains(crate::prompt_data::DATA_NOTICE));
         assert!(p.contains("orphan with newline"), "titles stay on one line");
+        assert!(!p.contains("\nspoofed line"), "tags stay on one line");
         assert!(p.contains("UNREACHED"));
         assert!(
             p.contains("~> mem_00000000000000000000000000000001 : the orphan's setup notes"),

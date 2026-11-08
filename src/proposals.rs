@@ -4,8 +4,8 @@
 //! if none of the memories it touches changed since it was proposed.
 
 use crate::store::{
-    NewMemoryRow, SqliteStore, append_pointer, chrono_now, compute_hive_content_hash,
-    insert_memory_tx, rewrite_memory_tx, validate_pointer, validate_tag_format,
+    MemoryEntry, NewMemoryRow, SqliteStore, append_pointer, chrono_now, compute_hive_content_hash,
+    insert_memory_tx, rewrite_memory_tx, root_scope, validate_pointer, validate_tag_format,
     validate_tags_against_registry,
 };
 use anyhow::{Result, anyhow, bail};
@@ -77,8 +77,8 @@ pub struct ProposalEntry {
     pub summary: String,
     pub reason: String,
     pub ops: Vec<ProposalOp>,
-    /// `updated_at` of every existing memory the ops touch, at proposal time.
-    pub base: HashMap<String, i64>,
+    /// `base_hash` of every existing memory the ops touch, at proposal time.
+    pub base: HashMap<String, String>,
     pub status: String,
     pub created_at: i64,
 }
@@ -93,31 +93,39 @@ pub enum ApplyOutcome {
 
 static REF_NAME_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z0-9][a-z0-9-]*$").unwrap());
-static REF_LINK_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"\((?:[a-z]+:)?ref:([a-z0-9][a-z0-9-]*)\)").unwrap()
-});
+static REF_LINK_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\(((?:[a-z]+:)?)ref:([^)\s]+)\)").unwrap());
+
+/// A memory's whole state, to tell whether it changed since a proposal was
+/// made. Not `updated_at`: that has one-second resolution, so an edit in the
+/// same second as the proposal would go unnoticed and be overwritten.
+fn base_hash(m: &MemoryEntry) -> String {
+    compute_hive_content_hash(&m.title, &m.content, &m.tags, &m.layer, &m.memory_type)
+}
 
 /// Every `ref:<name>` a content links must name a create that comes earlier,
 /// so its row exists when the link's edge is made.
 fn check_refs_defined(text: &str, earlier: &HashSet<String>) -> Result<()> {
     for cap in REF_LINK_RE.captures_iter(text) {
-        if !earlier.contains(&cap[1]) {
+        if !earlier.contains(&cap[2]) {
             bail!(
                 "content links ref:{} but no earlier create op defines it",
-                &cap[1]
+                &cap[2]
             );
         }
     }
     Ok(())
 }
 
-/// Replaces each `ref:<name>)` link target with the id that create got.
+/// Replaces each `(ref:<name>)` or `(kind:ref:<name>)` link target with the id
+/// that create got, leaving any other text alone.
 pub(crate) fn substitute_refs(text: &str, ids: &HashMap<String, String>) -> String {
-    let mut out = text.to_string();
-    for (r, id) in ids {
-        out = out.replace(&format!("ref:{r})"), &format!("{id})"));
-    }
-    out
+    REF_LINK_RE
+        .replace_all(text, |c: &regex::Captures| match ids.get(&c[2]) {
+            Some(id) => format!("({}{id})", &c[1]),
+            None => c[0].to_string(),
+        })
+        .into_owned()
 }
 
 fn row_to_proposal(row: &libsql::Row) -> Result<ProposalEntry> {
@@ -142,11 +150,17 @@ const PROPOSAL_COLS: &str =
 
 impl SqliteStore {
     /// Checks `ops` against this store (the one they would apply to) and
-    /// returns their `base`: the current `updated_at` of every existing memory
+    /// returns their `base`: the current `base_hash` of every existing memory
     /// they touch (updated memories and existing parents).
-    pub async fn validate_proposal_ops(&self, ops: &[ProposalOp]) -> Result<HashMap<String, i64>> {
+    pub async fn validate_proposal_ops(
+        &self,
+        ops: &[ProposalOp],
+    ) -> Result<HashMap<String, String>> {
         let mut base = HashMap::new();
         let mut earlier: HashSet<String> = HashSet::new();
+        // Root scopes this proposal claims: each op is checked against the
+        // store alone, so a second claim would only fail once approved.
+        let mut new_roots = HashSet::new();
         // Existing parent id -> the create that appends a pointer line to it.
         let mut appended_to: HashMap<String, String> = HashMap::new();
         for op in ops {
@@ -173,6 +187,11 @@ impl SqliteStore {
                     self.check_content_size(title, content).await?;
                     self.check_root_unique(&format!("ref:{}", r#ref), tags)
                         .await?;
+                    if let Some(scope) = root_scope(tags)
+                        && !new_roots.insert(scope)
+                    {
+                        bail!("create {}: this proposal already adds that root", r#ref);
+                    }
                     check_refs_defined(content, &earlier)?;
                     match (parent, pointer) {
                         (Some(p), Some(ptr)) => {
@@ -184,7 +203,7 @@ impl SqliteStore {
                                         r#ref
                                     )
                                 })?;
-                                base.insert(p.clone(), m.updated_at);
+                                base.insert(p.clone(), base_hash(&m));
                                 appended_to
                                     .entry(p.clone())
                                     .or_insert_with(|| r#ref.clone());
@@ -217,10 +236,20 @@ impl SqliteStore {
                     validate_tag_format(&new_tags)?;
                     validate_tags_against_registry(self, &new_tags).await?;
                     self.check_root_unique(id, &new_tags).await?;
+                    if let Some(scope) = root_scope(&new_tags)
+                        && root_scope(&m.tags).as_ref() != Some(&scope)
+                        && !new_roots.insert(scope)
+                    {
+                        bail!("update {id}: this proposal already adds that root");
+                    }
                     let new_content = content.as_deref().unwrap_or(&m.content);
                     self.check_content_size(&m.title, new_content).await?;
-                    check_refs_defined(new_content, &earlier)?;
-                    base.insert(id.clone(), m.updated_at);
+                    // Only proposed content can use refs; an unchanged memory
+                    // may legitimately contain the text `(ref:x)`.
+                    if let Some(c) = content {
+                        check_refs_defined(c, &earlier)?;
+                    }
+                    base.insert(id.clone(), base_hash(&m));
                 }
             }
         }
@@ -230,7 +259,7 @@ impl SqliteStore {
     pub async fn create_proposal(
         &self,
         p: &NewProposal<'_>,
-        base: &HashMap<String, i64>,
+        base: &HashMap<String, String>,
     ) -> Result<String> {
         let id = format!("prop_{}", uuid::Uuid::new_v4().simple());
         let _w = self.write().await;
@@ -260,7 +289,7 @@ impl SqliteStore {
         &self,
         id: &str,
         p: &NewProposal<'_>,
-        base: &HashMap<String, i64>,
+        base: &HashMap<String, String>,
     ) -> Result<bool> {
         let _w = self.write().await;
         let changed = self
@@ -347,24 +376,46 @@ impl SqliteStore {
     }
 
     /// Applies `ops` in one transaction, but only if every memory in `base`
-    /// still has its recorded `updated_at`. Ops are re-validated as they run,
+    /// still has its recorded `base_hash`. Ops are re-validated as they run,
     /// against the transaction's own view, so a conflict that appeared after
     /// proposing (for example a new root) aborts the whole proposal.
     pub async fn apply_proposal_ops(
         &self,
         ops: &[ProposalOp],
-        base: &HashMap<String, i64>,
+        base: &HashMap<String, String>,
         layer: &str,
     ) -> Result<ApplyOutcome> {
         let _w = self.write().await;
         // BEGIN IMMEDIATE before any read: SQLite's write lock then covers the
         // base check and every op, so no other process can change a touched
-        // memory in between. Any `?` or early return drops `tx`, rolling back.
+        // memory in between.
         let tx = self.begin().await?;
+        // Explicit: a remote-replica transaction does not roll back on drop,
+        // and one left open blocks every later write on this connection.
+        match self.write_proposal_ops(&tx, ops, base, layer).await {
+            Ok(out @ ApplyOutcome::Applied(_)) => {
+                tx.commit().await?;
+                Ok(out)
+            }
+            other => {
+                tx.rollback().await?;
+                other
+            }
+        }
+    }
+
+    /// The base check and the writes of `apply_proposal_ops`, on `tx`.
+    async fn write_proposal_ops(
+        &self,
+        tx: &libsql::Transaction,
+        ops: &[ProposalOp],
+        base: &HashMap<String, String>,
+        layer: &str,
+    ) -> Result<ApplyOutcome> {
         let mut stale = Vec::new();
-        for (id, at) in base {
+        for (id, hash) in base {
             match self.recall_by_id(id).await? {
-                Some(m) if m.updated_at == *at => {}
+                Some(m) if base_hash(&m) == *hash => {}
                 _ => stale.push(id.clone()),
             }
         }
@@ -413,7 +464,7 @@ impl SqliteStore {
                         layer,
                         memory_type: "project",
                     };
-                    insert_memory_tx(&tx, &row, now, tokens, &hash).await?;
+                    insert_memory_tx(tx, &row, now, tokens, &hash).await?;
                     touched.push(id.clone());
                     if let (Some(p), Some(ptr)) = (parent, pointer) {
                         let pid = ids.get(p).cloned().unwrap_or_else(|| p.clone());
@@ -432,13 +483,16 @@ impl SqliteStore {
                             &parent.layer,
                             &parent.memory_type,
                         );
+                        // Strictly newer than the version it replaces: hive
+                        // last-write-wins treats equal timestamps with
+                        // different content as a conflict.
                         rewrite_memory_tx(
-                            &tx,
+                            tx,
                             &pid,
                             &parent.title,
                             &new_content,
                             &parent.tags,
-                            now,
+                            now.max(parent.updated_at + 1),
                             p_tokens,
                             &p_hash,
                         )
@@ -467,13 +521,12 @@ impl SqliteStore {
                         &m.layer,
                         &m.memory_type,
                     );
-                    rewrite_memory_tx(&tx, id, &m.title, &content, &tags, now, tokens, &hash)
-                        .await?;
+                    let at = now.max(m.updated_at + 1);
+                    rewrite_memory_tx(tx, id, &m.title, &content, &tags, at, tokens, &hash).await?;
                     touched.push(id.clone());
                 }
             }
         }
-        tx.commit().await?;
         touched.sort();
         touched.dedup();
         Ok(ApplyOutcome::Applied(touched))
@@ -597,6 +650,10 @@ mod tests {
                 "parent",
             ),
             (
+                vec![create("a", "- [x](child:ref:Upper)", None)],
+                "ref:Upper",
+            ),
+            (
                 vec![ProposalOp::Create {
                     r#ref: "r2".into(),
                     title: "second root".into(),
@@ -636,7 +693,7 @@ mod tests {
         let got = s.get_proposal(&id).await.unwrap().unwrap();
         assert_eq!(got.status, "pending");
         assert_eq!(got.ops, ops);
-        assert_eq!(got.base.get(&hid(1)).copied(), base.get(&hid(1)).copied());
+        assert_eq!(got.base.get(&hid(1)), base.get(&hid(1)));
         assert_eq!(
             s.list_proposals(Some("mynd"), "pending")
                 .await
@@ -730,7 +787,7 @@ mod tests {
         ];
         let mut base = s.validate_proposal_ops(&ops).await.unwrap();
         // The user edited the memory after the proposal was made.
-        base.insert(hid(1), base[&hid(1)] - 10);
+        base.insert(hid(1), "an older version".to_string());
         let out = s
             .apply_proposal_ops(&ops, &base, "workspace")
             .await
@@ -803,8 +860,7 @@ mod tests {
         }];
         let b1 = s.validate_proposal_ops(&first).await.unwrap();
         let b2 = s.validate_proposal_ops(&second).await.unwrap();
-        // Make sure the first apply lands in a later second than the proposals.
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        // All within one second: the check must not depend on the clock.
         assert!(matches!(
             s.apply_proposal_ops(&first, &b1, "workspace")
                 .await
@@ -820,6 +876,52 @@ mod tests {
         assert_eq!(
             s.recall_by_id(&hid(1)).await.unwrap().unwrap().content,
             "one"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_two_new_roots_in_one_proposal() {
+        let (s, _d) = make_store().await;
+        let root = |r: &str| ProposalOp::Create {
+            r#ref: r.into(),
+            title: r.into(),
+            content: "#".into(),
+            tags: vec!["role:root".into(), "project:mynd".into()],
+            parent: None,
+            pointer: None,
+        };
+        let err = s
+            .validate_proposal_ops(&[root("a"), root("b")])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already adds"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_tags_only_update_ignores_ref_text_already_in_the_memory() {
+        let (s, _d) = make_store().await;
+        put(
+            &s,
+            &hid(1),
+            "doc",
+            "use (child:ref:x) links",
+            &["project:mynd"],
+        )
+        .await;
+        let ops = vec![ProposalOp::Update {
+            id: hid(1),
+            content: None,
+            tags: Some(vec!["project:mynd".into(), "topic:docs".into()]),
+        }];
+        s.validate_proposal_ops(&ops).await.unwrap();
+    }
+
+    #[test]
+    fn substitute_refs_only_touches_link_targets() {
+        let ids = HashMap::from([("a".to_string(), "mem_1".to_string())]);
+        assert_eq!(
+            substitute_refs("[x](child:ref:a) [y](ref:a) (see xref:a) (ref:b)", &ids),
+            "[x](child:mem_1) [y](mem_1) (see xref:a) (ref:b)"
         );
     }
 

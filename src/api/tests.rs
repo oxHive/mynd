@@ -3809,6 +3809,29 @@ async fn applying_a_stale_proposal_is_409_and_writes_nothing() {
 }
 
 #[tokio::test]
+async fn approving_a_create_only_proposal_twice_at_once_applies_it_once() {
+    let (app, store, _dir) = test_router_with_store().await;
+    let ops = vec![crate::proposals::ProposalOp::Create {
+        r#ref: "note".into(),
+        title: "new note".into(),
+        content: "body".into(),
+        tags: vec!["project:mynd".into()],
+        parent: None,
+        pointer: None,
+    }];
+    let id = propose(&store, ops, "workspace").await;
+    let path = format!("/api/v1/audit-proposals/{id}/apply");
+    let (a, b) = tokio::join!(
+        req(app.clone(), "POST", &path, None),
+        req(app.clone(), "POST", &path, None),
+    );
+    let mut codes = [a.0, b.0];
+    codes.sort();
+    assert_eq!(codes, [StatusCode::OK, StatusCode::CONFLICT]);
+    assert_eq!(store.count().await.unwrap(), 1, "one memory, not two");
+}
+
+#[tokio::test]
 async fn applying_an_org_proposal_without_an_org_store_is_422() {
     let (app, store, _dir) = test_router_with_store().await;
     let base = std::collections::HashMap::new();

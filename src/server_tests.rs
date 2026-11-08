@@ -448,6 +448,52 @@ async fn memory_propose_stores_a_pending_proposal_and_revises_in_place() {
 }
 
 #[tokio::test]
+async fn a_revised_proposal_is_still_stale_after_an_edit_made_before_the_revision() {
+    let (hm, _dir) = test_mynd().await;
+    let leaf = store_mem(&hm, "leaf", "old", &["project:mynd"], None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let input = |replaces: Option<String>| MemoryProposeInput {
+        project: "mynd".into(),
+        layer: None,
+        kind: "stale-pointer".into(),
+        summary: "s".into(),
+        reason: "r".into(),
+        ops: vec![crate::proposals::ProposalOp::Update {
+            id: leaf.clone(),
+            content: Some("rewritten from what the agent recalled".into()),
+            tags: None,
+        }],
+        replaces,
+    };
+    let v = hm
+        .do_memory_propose(input(None))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let id = v["id"].as_str().unwrap().to_string();
+    hm.store
+        .update(&leaf, "leaf", "hand edit", &["project:mynd".to_string()])
+        .await
+        .unwrap();
+    hm.do_memory_propose(input(Some(id.clone()))).await.unwrap();
+    let p = hm.store.get_proposal(&id).await.unwrap().unwrap();
+    assert_eq!(
+        hm.store
+            .apply_proposal_ops(&p.ops, &p.base, "workspace")
+            .await
+            .unwrap(),
+        crate::proposals::ApplyOutcome::Stale(vec![leaf.clone()])
+    );
+    assert_eq!(
+        hm.store.recall_by_id(&leaf).await.unwrap().unwrap().content,
+        "hand edit"
+    );
+}
+
+#[tokio::test]
 async fn memory_propose_rejects_unknown_kinds_empty_ops_and_bad_ops() {
     let (hm, _dir) = test_mynd().await;
     let base = MemoryProposeInput {

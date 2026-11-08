@@ -1,4 +1,5 @@
 use crate::config::AgentSettings;
+use crate::prompt_data::single_line;
 use crate::store::SqliteStore;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -6,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, broadcast, mpsc};
 
-const TURN_TIMEOUT: Duration = Duration::from_secs(180);
+// A first audit of a project with no root recalls every memory, then calls
+// memory_propose once per fix.
+const TURN_TIMEOUT: Duration = Duration::from_secs(900);
 
 #[derive(Debug)]
 pub enum StartError {
@@ -105,9 +108,25 @@ impl AuditSessionManager {
         } else {
             &self.store
         };
-        let prompt = crate::audit_prompt::build_audit_prompt(target, &project, &layer)
+        let failed = |e: anyhow::Error| StartError::Failed(e.to_string());
+        let mut prompt = crate::audit_prompt::build_audit_prompt(target, &project, &layer)
             .await
-            .map_err(|e| StartError::Failed(e.to_string()))?;
+            .map_err(failed)?;
+        let pending: Vec<String> = self
+            .store
+            .list_proposals(Some(&project), "pending")
+            .await
+            .map_err(failed)?
+            .iter()
+            .filter(|p| p.layer == layer)
+            .map(|p| format!("- {}: {}", p.kind, single_line(&p.summary)))
+            .collect();
+        if !pending.is_empty() {
+            prompt.push_str(&format!(
+                "\n\nALREADY PENDING REVIEW (do not propose these again):\n{}",
+                pending.join("\n")
+            ));
+        }
         let mut inner = self.inner.lock().await;
         if inner.active {
             return Err(StartError::AlreadyActive);
@@ -263,7 +282,7 @@ impl AuditSessionManager {
              Call memory_propose with replaces \"{proposal_id}\", project \"{}\", layer \"{}\" \
              and the corrected fix. Do not touch other proposals.",
             p.kind,
-            crate::prompt_data::single_line(&p.summary),
+            single_line(&p.summary),
             p.project,
             p.layer,
         ))
@@ -342,10 +361,11 @@ impl AuditSessionManager {
         let out = Self::spawn_and_wait(cmd, &self.agent.command).await?;
         let v: Value =
             serde_json::from_str(&out).map_err(|e| format!("unparseable agent output: {e}"))?;
-        v.get("session_id")
+        // `opencode run --format json` prints one event per line, each with `sessionID`.
+        v.get("sessionID")
             .and_then(|s| s.as_str())
             .map(String::from)
-            .ok_or_else(|| "agent output missing session_id".to_string())
+            .ok_or_else(|| "agent output missing sessionID".to_string())
     }
 
     async fn spawn_and_wait(
@@ -368,8 +388,8 @@ impl AuditSessionManager {
             ));
         }
         let stdout = String::from_utf8_lossy(&out.stdout);
-        // Both CLIs print a single JSON object on success; take the last
-        // non-empty line to survive any leading noise on stdout.
+        // Claude prints a single JSON object on success, OpenCode one per
+        // event; the last non-empty line has what both turns need.
         stdout
             .lines()
             .rev()
@@ -548,6 +568,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_tells_the_agent_what_is_already_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, store, mut rx, _, _db_dir) = test_manager(dir.path()).await;
+        let entry = crate::proposals::NewProposal {
+            project: "mynd",
+            layer: "workspace",
+            kind: "duplicate",
+            summary: "a and b say the same",
+            reason: "same facts",
+            ops: &[],
+        };
+        store
+            .create_proposal(&entry, &Default::default())
+            .await
+            .unwrap();
+        mgr.start("mynd".into(), "workspace".into()).await.unwrap();
+        while next_state(&mut rx).await != "proposals_ready" {}
+        let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
+        assert!(log.contains("- duplicate: a and b say the same"), "{log}");
+    }
+
+    #[tokio::test]
     async fn revise_of_an_unknown_proposal_errors() {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _store, _rx, _, _db_dir) = test_manager(dir.path()).await;
@@ -644,7 +686,7 @@ mod tests {
         let script = dir.path().join("stub-opencode.sh");
         std::fs::write(
             &script,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/args.log\"\necho '{\"session_id\":\"stub-oc-1\",\"result\":\"done\"}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/args.log\"\necho '{\"type\":\"step_finish\",\"timestamp\":1,\"sessionID\":\"ses_stub\"}'\n",
         )
         .unwrap();
         use std::os::unix::fs::PermissionsExt;

@@ -14,11 +14,14 @@ const expanded = ref(null)    // proposal id whose details are open
 const revisingFor = ref(null) // proposal id whose revise textbox is open
 const feedbackText = ref('')
 
-const projects = computed(() => [...new Set(
-  memories.all.flatMap(m => (m.tags || []).filter(t => t.startsWith('project:')).map(t => t.slice('project:'.length))),
-)].sort())
+// Proposal projects too: otherwise a pending fix counted in the review bar
+// can sit under a project the dropdown doesn't offer.
+const projects = computed(() => [...new Set([
+  ...memories.all.flatMap(m => (m.tags || []).filter(t => t.startsWith('project:')).map(t => t.slice('project:'.length))),
+  ...audit.proposals.map(p => p.project),
+])].sort())
 watch(projects, ps => {
-  if (!audit.project && ps.length) audit.project = ps[0]
+  if (!audit.project && ps.length) audit.project = audit.proposals[0]?.project ?? ps[0]
 }, { immediate: true })
 
 const visible = computed(() => audit.proposals.filter(p => !audit.project || p.project === audit.project))

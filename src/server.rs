@@ -981,7 +981,7 @@ impl Mynd {
         } else {
             &self.store
         };
-        let base = target
+        let mut base = target
             .validate_proposal_ops(&p.ops)
             .await
             .map_err(|e| invalid(e.to_string()))?;
@@ -997,6 +997,14 @@ impl Mynd {
         let internal = |e: anyhow::Error| ErrorData::internal_error(e.to_string(), None);
         let (id, replaced) = match &p.replaces {
             Some(old) => {
+                // A revision keeps the original base: the resumed agent
+                // rewrites from what it recalled back then, so a memory edited
+                // since must still read as stale on apply.
+                if let Some(original) = self.store.get_proposal(old).await.map_err(internal)? {
+                    for (id, hash) in original.base {
+                        base.entry(id).and_modify(|h| *h = hash);
+                    }
+                }
                 if !self
                     .store
                     .replace_proposal(old, &entry, &base)

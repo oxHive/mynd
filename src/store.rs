@@ -1341,6 +1341,8 @@ impl SqliteStore {
         let changed = tx.execute("DELETE FROM memories", ()).await?;
         tx.execute("DELETE FROM sync_journal", ()).await?;
         tx.execute("DELETE FROM session_start_log", ()).await?;
+        // Proposals hold copies of memory content.
+        tx.execute("DELETE FROM audit_proposals", ()).await?;
         tx.commit().await?;
         Ok(changed as i64)
     }

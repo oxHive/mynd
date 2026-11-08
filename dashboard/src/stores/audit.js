@@ -38,7 +38,9 @@ export const useAuditStore = defineStore('audit', () => {
     error.value = null
     try {
       await api.reviseSession(id, feedback)
-      if (!queuedProposalIds.value.includes(id)) queuedProposalIds.value.push(id)
+      // Ask the server: the 'revising' SSE event can beat this response, and an
+      // id added after it would stay "queued" with its buttons hidden.
+      queuedProposalIds.value = (await api.getSession()).queued_proposal_ids ?? []
     } catch (e) {
       error.value = e.detail || String(e.message)
     }

@@ -119,11 +119,27 @@ pub(super) async fn apply_audit_proposal(
     } else {
         store.clone()
     };
-    let outcome = target
-        .apply_proposal_ops(&p.ops, &p.base, &p.layer)
-        .await
-        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
-    match outcome {
+    // Claim it first, so two approvals can't both write and a reject can't
+    // land mid-apply. The ops may target the org store, so this can't share
+    // their transaction.
+    // ponytail: a crash mid-apply leaves it "applying"; that hides it rather
+    // than risking a second apply. Add a sweep if that ever happens in practice.
+    if !store
+        .set_proposal_status(&id, "pending", "applying")
+        .await?
+    {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!("proposal {id} is no longer pending"),
+        ));
+    }
+    let outcome = target.apply_proposal_ops(&p.ops, &p.base, &p.layer).await;
+    if !matches!(outcome, Ok(crate::proposals::ApplyOutcome::Applied(_))) {
+        store
+            .set_proposal_status(&id, "applying", "pending")
+            .await?;
+    }
+    match outcome.map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))? {
         crate::proposals::ApplyOutcome::Stale(ids) => Err(ApiError(
             StatusCode::CONFLICT,
             format!(
@@ -132,7 +148,9 @@ pub(super) async fn apply_audit_proposal(
             ),
         )),
         crate::proposals::ApplyOutcome::Applied(touched) => {
-            store.set_proposal_status(&id, "pending", "applied").await?;
+            store
+                .set_proposal_status(&id, "applying", "applied")
+                .await?;
             let _ = events.send(json!({ "type": "changed" }));
             let _ = events.send(json!({ "type": "audit_proposals" }));
             if p.layer != "org" {
