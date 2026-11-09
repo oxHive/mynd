@@ -40,6 +40,9 @@ jobs:
       DISCORD_ALERT_WEBHOOK_URL: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
 
   publish-opencode:
+    # Disabled: npm publish fails with a 404 (run 42495857762). Remove this
+    # `if` to re-enable.
+    if: false
     permissions:
       contents: read
       id-token: write
