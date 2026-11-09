@@ -30,6 +30,23 @@
 # breaking bump hyper 0.14 can't take), and libsql 0.9.30 is still the latest
 # stable release. Low severity DoS (unbounded memory growth from undrained
 # streams), same revisit condition as above.
+#
+# RUSTSEC-2026-0346, -0349 and -0382 are the same pin. rustls 0.22.4 and
+# rustls-webpki 0.102.8 come from libsql 0.10.0 (still hyper-rustls 0.25) and
+# serenity 0.12.5 (tokio-tungstenite 0.21), both the latest stable releases.
+# The fixes need rustls 0.23.46 and rustls-webpki 0.103.16. Revisit when either
+# crate moves to rustls 0.23+.
+#
+# - 0346 only affects custom ClientSessionStore implementations that log with
+#   Debug. Neither mynd nor the crates using rustls 0.22 have one.
+# - 0349 is a loss of post-quantum confidentiality. rustls 0.22.4 has no hybrid
+#   key exchange group (only X25519, P-256, P-384), so nothing can be downgraded.
+# - 0382 is the one with real residual risk. serenity's Discord gateway uses
+#   webpki-roots, which carries the fix from 1.0.10 (RUSTSEC-2026-0381). libsql's
+#   remote-replica sync uses the OS trust store (with_native_roots), so a host
+#   that trusts the distrusted emSign intermediates is exposed on sync.enabled
+#   connections. The ignore is by ID, so it also covers the rustls-webpki 0.103
+#   line: keep that at 0.103.16 or later.
 [advisories]
 ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki: URI name constraints incorrectly accepted
@@ -37,4 +54,7 @@ ignore = [
     "RUSTSEC-2026-0099", # rustls-webpki: wildcard name constraint bypass
     "RUSTSEC-2026-0104", # rustls-webpki: reachable panic parsing CRLs
     "RUSTSEC-2026-0258", # h2: unbounded empty DATA frames (libsql's old hyper 0.14 stack)
+    "RUSTSEC-2026-0346", # rustls 0.22: Debug impls of client session values expose TLS secrets
+    "RUSTSEC-2026-0349", # rustls 0.22: ServerHello can downgrade post-quantum key exchange
+    "RUSTSEC-2026-0382", # rustls-webpki 0.102: distrusted emSign intermediates accepted
 ]
