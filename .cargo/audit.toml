@@ -47,6 +47,17 @@
 #   that trusts the distrusted emSign intermediates is exposed on sync.enabled
 #   connections. The ignore is by ID, so it also covers the rustls-webpki 0.103
 #   line: keep that at 0.103.16 or later.
+#
+# RUSTSEC-2026-0459 (SQLite before 3.54 can return uninitialized page-cache
+# memory for a database opened with a -wal file of a different page size):
+# libsqlite3-sys 0.38.2 comes from matrix-sdk-sqlite 0.19.1, the latest release,
+# which pins rusqlite 0.40.2. The fix needs rusqlite 0.41. Its "bundled" feature
+# is off, so the flagged copy is not compiled. In the Linux build the sqlite3
+# symbols resolve to libsql-ffi's static SQLite 3.47.0 fork instead, so a bump
+# here would not change the SQLite mynd runs, and no advisory tracks that copy.
+# Exposure needs a database and -wal pair written by a less trusted party. mynd
+# only opens files in its own data directory or at a user-set MYND_DB_PATH.
+# Revisit when matrix-sdk moves to rusqlite 0.41 and libsql to SQLite 3.54+.
 [advisories]
 ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki: URI name constraints incorrectly accepted
@@ -57,4 +68,5 @@ ignore = [
     "RUSTSEC-2026-0346", # rustls 0.22: Debug impls of client session values expose TLS secrets
     "RUSTSEC-2026-0349", # rustls 0.22: ServerHello can downgrade post-quantum key exchange
     "RUSTSEC-2026-0382", # rustls-webpki 0.102: distrusted emSign intermediates accepted
+    "RUSTSEC-2026-0459", # libsqlite3-sys: uninitialized memory via mismatched -wal page size
 ]
